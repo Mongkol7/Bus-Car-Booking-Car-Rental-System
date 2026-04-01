@@ -229,6 +229,180 @@ const css = `
 
   /* ICON SVG helpers */
   svg.icon { width: 16px; height: 16px; display: inline-block; vertical-align: middle; }
+
+  /* ── MOBILE BOTTOM NAV ── */
+  .admin-mobilebar {
+    display: none;
+    position: sticky;
+    top: 0;
+    z-index: 130;
+    background: rgba(10,10,20,0.9);
+    backdrop-filter: var(--blur);
+    border-bottom: 0.5px solid var(--glass-border);
+    padding: 10px 14px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .admin-mobilebar-logo {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--text-2);
+    text-transform: uppercase;
+  }
+  .admin-mobilebar-logo span { color: var(--accent); }
+  .admin-mobilebar-sub {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: var(--text-3);
+  }
+  .admin-mobile-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .admin-menu-btn {
+    border: 0.5px solid var(--glass-border);
+    background: var(--glass);
+    padding: 6px 8px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .mac-dots {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .mac-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .mac-dot.red { background: #ff5f57; }
+  .mac-dot.yellow { background: #febc2e; }
+  .mac-dot.green { background: #28c840; }
+  .admin-logout-btn {
+    border: 0.5px solid var(--glass-border);
+    background: var(--glass);
+    color: var(--text);
+    padding: 6px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .admin-menu-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    backdrop-filter: blur(6px);
+    z-index: 140;
+    display: flex;
+    justify-content: flex-start;
+  }
+  .admin-menu-panel {
+    width: min(320px, 88vw);
+    background: rgba(15,15,25,0.95);
+    border-left: 0.5px solid var(--glass-border);
+    padding: 18px;
+    transform: translateX(-100%);
+    animation: adminMenuIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+  @keyframes adminMenuIn {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+  }
+  .admin-menu-title { font-size: 12px; color: var(--text-3); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .admin-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    color: var(--text-2);
+  }
+  .admin-menu-item:hover { background: var(--surface-hover); color: var(--text); }
+
+  .admin-bottomnav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 120;
+    background: rgba(10,10,20,0.9);
+    backdrop-filter: var(--blur);
+    border-top: 0.5px solid var(--glass-border);
+    display: none;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    gap: 6px;
+    row-gap: 6px;
+  }
+  .admin-bottomnav-link {
+    flex: 1 0 auto;
+    min-width: 0;
+    padding: 7px 6px;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--text-2);
+    border: 0.5px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .admin-bottomnav-link.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: rgba(79,142,247,0.25);
+  }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 1024px) {
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .grid2 { grid-template-columns: 1fr; }
+    .grid3 { grid-template-columns: 1fr; }
+    .car-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  @media (max-width: 760px) {
+    body { padding-bottom: 128px; }
+    .app { flex-direction: column; }
+    .sidebar {
+      display: none;
+    }
+    .admin-mobilebar { display: flex; }
+    .admin-bottomnav {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+    .main { padding: 20px 16px; }
+    .main { padding-bottom: 96px; }
+    .metrics { grid-template-columns: 1fr; }
+    .car-grid { grid-template-columns: 1fr; }
+    table { font-size: 11px; }
+    thead th { padding: 8px 10px; }
+    td { padding: 8px 10px; }
+  }
+
+  @media (max-width: 520px) {
+    .page-title { font-size: 20px; }
+    .page-sub { font-size: 12px; }
+    .card { padding: 16px; }
+    .toolbar { flex-direction: column; align-items: stretch; }
+    .toolbar-right { margin-left: 0; }
+    .pill-nav { flex-wrap: wrap; }
+    table { font-size: 10px; }
+    thead th { font-size: 9px; }
+  }
 `;
 
 // ── SVG Icons ──────────────────────────────────────────────────────────────────
@@ -1542,18 +1716,89 @@ const PAGES = {
 
 export default function App({ onLogout }) {
   const [active, setActive] = useState('dashboard');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const Page = PAGES[active];
   const handleLogout = onLogout || (() => {
     window.location.href = '/login';
   });
+  const primaryNav = ['dashboard', 'routes', 'vehicles', 'bookings', 'rentals'];
+  const extraNav = NAV.filter((n) => !primaryNav.includes(n.id));
   return (
     <>
       <style>{css}</style>
+      <div className="admin-mobilebar">
+        <div className="admin-mobile-actions">
+          <button className="admin-menu-btn" onClick={() => setMobileMenuOpen(true)}>
+            <span className="mac-dots">
+              <span className="mac-dot red" />
+              <span className="mac-dot yellow" />
+              <span className="mac-dot green" />
+            </span>
+          </button>
+          <button className="admin-logout-btn" onClick={handleLogout}>
+            <Icon d={icons.logout} size={12} color="currentColor" />
+          </button>
+        </div>
+        <div
+          className="admin-mobilebar-logo"
+          onClick={() => setActive('dashboard')}
+          style={{ cursor: 'pointer' }}
+        >
+          <div>Admin<span>.</span>Panel</div>
+          <div className="admin-mobilebar-sub">AdminPanel</div>
+        </div>
+      </div>
       <div className="app">
         <Sidebar active={active} setActive={setActive} onLogout={handleLogout} />
         <div className="main">
           <Page />
         </div>
+      </div>
+      {mobileMenuOpen && (
+        <div className="admin-menu-overlay" onClick={() => setMobileMenuOpen(false)}>
+          <div className="admin-menu-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-menu-title">More</div>
+            {extraNav.map((n) => (
+              <div
+                key={`menu-${n.id}`}
+                className="admin-menu-item"
+                onClick={() => {
+                  setActive(n.id);
+                  setMobileMenuOpen(false);
+                }}
+              >
+                <Icon d={icons[n.icon]} size={14} color="currentColor" />
+                {n.label}
+              </div>
+            ))}
+            <div className="admin-menu-title" style={{ marginTop: 16 }}>Account</div>
+            <div className="admin-menu-item" onClick={handleLogout}>
+              <Icon d={icons.logout} size={14} color="currentColor" />
+              Logout
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="admin-bottomnav">
+        {NAV.filter((n) => primaryNav.includes(n.id)).map((n) => {
+          const mobileLabel = {
+            dashboard: 'Dashboard',
+            routes: 'Routes',
+            vehicles: 'Vehicles',
+            bookings: 'Bookings',
+            rentals: 'Rentals',
+          }[n.id] || n.label;
+          return (
+          <div
+            key={`admin-bottom-${n.id}`}
+            className={`admin-bottomnav-link ${active === n.id ? 'active' : ''}`}
+            onClick={() => setActive(n.id)}
+          >
+            <Icon d={icons[n.icon]} size={16} color="currentColor" />
+            {mobileLabel}
+          </div>
+          );
+        })}
       </div>
     </>
   );

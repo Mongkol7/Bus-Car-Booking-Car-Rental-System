@@ -52,9 +52,11 @@ const css = `
     padding: 6px 14px; border-radius: var(--radius-xs);
     font-size: 13px; font-weight: 400; color: var(--text-2);
     cursor: pointer; transition: all 0.15s; border: 0.5px solid transparent;
+    display: inline-flex; align-items: center; gap: 8px;
   }
   .topnav-link:hover { background: var(--surface-hover); color: var(--text); }
   .topnav-link.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(79,142,247,0.2); }
+  .topnav-icon { display: none; }
   .topnav-right { display: flex; align-items: center; gap: 16px; }
   .avatar-sm {
     width: 32px; height: 32px; border-radius: 50%;
@@ -70,6 +72,44 @@ const css = `
     transition: all 0.2s;
   }
   .login-btn:hover { opacity: 0.85; transform: translateY(-1px); }
+
+  /* ── BOTTOM NAV (MOBILE) ── */
+  .bottomnav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 110;
+    background: rgba(10,10,20,0.9);
+    backdrop-filter: var(--blur);
+    border-top: 0.5px solid var(--glass-border);
+    display: none;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    gap: 6px;
+    row-gap: 6px;
+  }
+  .bottomnav-link {
+    flex: 1 0 auto;
+    min-width: 0;
+    padding: 7px 6px;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-size: 9.5px;
+    color: var(--text-2);
+    border: 0.5px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .bottomnav-link.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: rgba(79,142,247,0.25);
+  }
+  .bottomnav-icon { display: inline-flex; }
 
   /* ── LAYOUT ── */
   .page { max-width: 900px; margin: 0 auto; padding: 36px 24px; }
@@ -163,6 +203,7 @@ const css = `
   .route-price { font-size: 17px; font-weight: 600; color: var(--accent); margin-left: auto; }
   
   .seat-map-wrap { background: var(--glass); border: 0.5px solid var(--glass-border); border-radius: var(--radius); padding: 28px; }
+  .seat-layout { display: flex; gap: 32px; align-items: flex-start; }
   .seat-legend { display: flex; gap: 20px; margin-bottom: 24px; }
   .seat-legend-item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); }
   .seat-dot { width: 14px; height: 14px; border-radius: 3px; }
@@ -272,6 +313,79 @@ const css = `
   .qr-mini-grid { display: grid; grid-template-columns: repeat(8,1fr); gap: 1px; width: 78px; height: 78px; }
 
   .profile-avatar { width: 64px; height: 64px; border-radius: 50%; background: var(--accent-soft); border: 1.5px solid rgba(79,142,247,0.3); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 600; color: var(--accent); margin: 0 auto 12px; }
+
+  /* ── TICKET STYLE ── */
+  .ticket-card {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, rgba(79,142,247,0.12), rgba(255,255,255,0.04));
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 18px 40px rgba(0,0,0,0.25);
+  }
+  .ticket-card::before,
+  .ticket-card::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 1px dashed rgba(255,255,255,0.2);
+    transform: translateY(-50%);
+  }
+  .ticket-card::before { left: -9px; }
+  .ticket-card::after { right: -9px; }
+  .ticket-divider {
+    height: 1px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.05), rgba(255,255,255,0.25), rgba(255,255,255,0.05));
+    margin: 10px 0;
+  }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 900px) {
+    .page, .page-wide { padding: 28px 18px; }
+    .service-grid { grid-template-columns: 1fr; }
+    .search-bar { grid-template-columns: 1fr; }
+    .car-grid { grid-template-columns: 1fr 1fr; }
+    .booking-meta { grid-template-columns: 1fr 1fr; }
+  }
+
+  @media (max-width: 700px) {
+    body { padding-bottom: 120px; }
+    .topnav { padding: 0 16px; }
+    .topnav-links { display: none; }
+    .topnav-right { margin-left: auto; }
+    .bottomnav {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+    .hero-title { font-size: 26px; }
+    .service-card { padding: 22px 18px; }
+    .steps { flex-wrap: wrap; gap: 8px; }
+    .step-line { display: none; }
+    .seat-map-wrap { padding: 20px; }
+    .seat-layout { flex-direction: column; align-items: center; gap: 18px; }
+    .route-card { flex-wrap: wrap; gap: 10px; }
+    .route-arrow { order: 4; width: 100%; text-align: left; }
+    .booking-meta { grid-template-columns: 1fr; }
+    .car-grid { grid-template-columns: 1fr; }
+    .date-range, .form-row { grid-template-columns: 1fr; }
+    .modal-card { padding: 24px; }
+  }
+
+  @media (max-width: 520px) {
+    .topnav { height: auto; padding: 10px 14px; flex-wrap: wrap; gap: 6px; }
+    .topnav-logo { margin-right: 0; }
+    .topnav-right { gap: 10px; }
+    .hero { padding: 36px 0; }
+    .hero-sub { font-size: 13px; }
+    .card { padding: 18px; }
+    .route-time { font-size: 16px; }
+    .route-price { font-size: 15px; }
+    .seat { width: 38px; height: 36px; font-size: 10px; }
+    .seat-grid { max-width: 200px; }
+  }
 `;
 
 const Icon = ({ d, size = 16, color = 'currentColor' }) => (
@@ -304,31 +418,61 @@ const NAV = [
 function TopNav({ active, setActive, role, onLogout }) {
   const navigate = useNavigate();
   return (
-    <nav className="topnav">
-      <div
-        className="topnav-logo"
-        style={{ cursor: 'pointer' }}
-        onClick={() => {
-          setActive('home');
-          navigate('/');
-        }}
-      >
-        Book<span>.</span>Ride
+    <>
+      <nav className="topnav">
+        <div
+          className="topnav-logo"
+          style={{ cursor: 'pointer' }}
+          onClick={() => {
+            setActive('home');
+            navigate('/');
+          }}
+        >
+          Book<span>.</span>Ride
+        </div>
+        <div className="topnav-links">
+          {NAV.map((n) => (
+            <div key={n.id} className={`topnav-link ${active === n.id ? 'active' : ''}`} onClick={() => setActive(n.id)}>
+              <span className="topnav-icon">
+                <Icon d={icons[n.icon]} size={14} />
+              </span>
+              {n.label}
+            </div>
+          ))}
+        </div>
+        <div className="topnav-right">
+          {role === 'guest' ? (
+            <button className="login-btn" onClick={() => navigate('/login')}>Login</button>
+          ) : (
+            <button className="btn btn-ghost btn-sm" style={{ padding: '4px 10px', height: 28 }} onClick={onLogout}>Logout</button>
+          )}
+          <div className="avatar-sm">{role === 'guest' ? '?' : 'ST'}</div>
+        </div>
+      </nav>
+      <div className="bottomnav">
+        {NAV.map((n) => {
+          const mobileLabel = {
+            home: 'Home',
+            search: 'Bus booking',
+            cars: 'Car rental',
+            bookings: 'My booking',
+            profile: 'Profile',
+          }[n.id] || n.label;
+          return (
+          <div
+            key={`bottom-${n.id}`}
+            className={`bottomnav-link ${active === n.id ? 'active' : ''}`}
+            onClick={() => setActive(n.id)}
+          >
+            <span className="bottomnav-icon">
+              <Icon d={icons[n.icon]} size={14} />
+            </span>
+            {mobileLabel}
+          </div>
+          );
+        })}
       </div>
-      <div className="topnav-links">
-        {NAV.map((n) => (
-          <div key={n.id} className={`topnav-link ${active === n.id ? 'active' : ''}`} onClick={() => setActive(n.id)}>{n.label}</div>
-        ))}
-      </div>
-      <div className="topnav-right">
-        {role === 'guest' ? (
-          <button className="login-btn" onClick={() => navigate('/login')}>Login</button>
-        ) : (
-          <button className="btn btn-ghost btn-sm" style={{ padding: '4px 10px', height: 28 }} onClick={onLogout}>Logout</button>
-        )}
-        <div className="avatar-sm">{role === 'guest' ? '?' : 'ST'}</div>
-      </div>
-    </nav>
+    </>
   );
 }
 
@@ -365,7 +509,7 @@ function Home({ role, setActive }) {
           [{ type: 'ticket', route: 'Phnom Penh → Siem Reap', date: 'Apr 5, 06:00', seat: 'A12', status: 'Confirmed' },
            { type: 'rental', route: 'Toyota Camry rental', date: 'Mar 28 – Apr 3', seat: '3 days', status: 'Returned' }
           ].map((b, i) => (
-            <div key={i} className="booking-item">
+            <div key={i} className="booking-item ticket-card">
               <div className="booking-header">
                 <div>
                   <span className={`badge ${b.type === 'ticket' ? 'badge-blue' : 'badge-purple'}`} style={{ marginBottom: 6, fontSize: 9 }}>
@@ -541,7 +685,7 @@ function BusSearch({ role, setActive }) {
           {routes.map((r) => (
             <div
               key={r.id}
-              className={`route-card ${selectedRoute === r.id ? 'selected' : ''}`}
+              className={`route-card ticket-card ${selectedRoute === r.id ? 'selected' : ''}`}
               onClick={() => {
                 if (role === 'guest') {
                   setShowAuthModal(true);
@@ -662,7 +806,7 @@ function BusSearch({ role, setActive }) {
               <span>Selected</span>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 32, alignItems: 'flex-start' }}>
+          <div className="seat-layout">
             <div>
               <div className="bus-front">
                 <span className="steering">🚌</span>
@@ -992,7 +1136,7 @@ function CarRental({ role, setActive }) {
       {step === 1 && (
         <div className="car-grid">
           {cars.map(c => (
-            <div key={c.id} className={`car-card ${shaking === c.id ? 'shake-anim' : ''}`} onClick={() => {
+            <div key={c.id} className={`car-card ticket-card ${shaking === c.id ? 'shake-anim' : ''}`} onClick={() => {
                if (c.status === 'Rented') {
                  setShaking(c.id);
                  if (window.navigator.vibrate) window.navigator.vibrate(50); // Haptic feedback
@@ -1159,7 +1303,7 @@ function MyBookings({ role }) {
       )}
 
       {currentBookings.map(b => (
-        <div key={b.id} className="booking-item">
+        <div key={b.id} className="booking-item ticket-card">
           <div className="booking-header">
             <div>
               <span className={`badge ${b.type === 'ticket' ? 'badge-blue' : 'badge-purple'}`} style={{ marginBottom: 6, fontSize: 9 }}>{b.type === 'ticket' ? 'BUS TICKET' : 'CAR RENTAL'}</span>

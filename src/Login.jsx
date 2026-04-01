@@ -202,6 +202,22 @@ const css = `
     margin-top: 12px;
     text-align: center;
   }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 700px) {
+    .auth-wrap { padding: 16px; }
+    .auth-logo-mark { font-size: 26px; }
+    .card { padding: 24px; }
+    .auth-sub { font-size: 13px; }
+  }
+
+  @media (max-width: 520px) {
+    .auth-card { max-width: 100%; }
+    .card { padding: 20px; }
+    .btn { padding: 12px; font-size: 13px; }
+    .label { font-size: 11px; }
+    .back-btn { top: 16px; left: 16px; font-size: 12px; padding: 6px 12px; }
+  }
 `;
 
 export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
