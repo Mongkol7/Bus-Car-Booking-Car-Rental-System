@@ -80,26 +80,7 @@ function App() {
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
 
-      {/* Guest Banner logic moved into UserApp or kept here */}
-      {role === 'guest' && (
-        <div style={{
-          position: 'fixed',
-          bottom: '10px',
-          right: '10px',
-          zIndex: 1000,
-          padding: '10px 20px',
-          background: 'rgba(79, 142, 247, 0.1)',
-          backdropFilter: 'blur(20px)',
-          border: '1px solid rgba(79, 142, 247, 0.2)',
-          borderRadius: '12px',
-          color: '#4f8ef7',
-          fontSize: '12px',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-          pointerEvents: 'none'
-        }}>
-          Browsing as <strong>Guest</strong>
-        </div>
-      )}
+      {/* Guest Banner removed per request */}
     </BrowserRouter>
   );
 }

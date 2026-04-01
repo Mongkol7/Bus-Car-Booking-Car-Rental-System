@@ -51,9 +51,13 @@ const css = `
     color: var(--text);
   }
 
-  .auth-logo-mark span {
+  .auth-logo-mark .logo-dot {
     color: var(--accent);
+    display: inline-block;
+    text-shadow: 0 0 10px rgba(79,142,247,1), 0 0 24px rgba(79,142,247,0.9), 0 0 40px rgba(79,142,247,0.7);
+    animation: logoPulse 1.2s ease-in-out infinite;
   }
+  .auth-logo-mark .logo-ride { color: var(--accent); }
 
   .card {
     background: var(--glass);
@@ -164,15 +168,18 @@ const css = `
     background: var(--glass);
     border: 0.5px solid var(--glass-border);
     color: var(--text-2);
-    padding: 8px 16px;
-    border-radius: 8px;
-    font-size: 13px;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 14px;
     cursor: pointer;
     display: flex;
     align-items: center;
     gap: 8px;
     transition: all 0.2s;
     z-index: 100;
+    justify-content: center;
   }
   .back-btn:hover { background: var(--glass-strong); color: var(--text); }
 
@@ -203,6 +210,12 @@ const css = `
     text-align: center;
   }
 
+  @keyframes logoPulse {
+    0%, 100% { opacity: 0.6; transform: scale(0.96); text-shadow: 0 0 8px rgba(79,142,247,0.8), 0 0 18px rgba(79,142,247,0.7); }
+    40% { opacity: 1; transform: scale(1.08); text-shadow: 0 0 16px rgba(79,142,247,1), 0 0 36px rgba(79,142,247,0.95), 0 0 54px rgba(79,142,247,0.8); }
+    70% { opacity: 0.85; transform: scale(1.02); text-shadow: 0 0 12px rgba(79,142,247,0.95), 0 0 28px rgba(79,142,247,0.85); }
+  }
+
   /* ── RESPONSIVE ── */
   @media (max-width: 700px) {
     .auth-wrap { padding: 16px; }
@@ -216,7 +229,7 @@ const css = `
     .card { padding: 20px; }
     .btn { padding: 12px; font-size: 13px; }
     .label { font-size: 11px; }
-    .back-btn { top: 16px; left: 16px; font-size: 12px; padding: 6px 12px; }
+    .back-btn { top: 16px; left: 16px; font-size: 12px; width: 34px; height: 34px; }
   }
 `;
 
@@ -226,6 +239,17 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+
+  const handleBack = () => {
+    if (typeof window !== 'undefined') {
+      const storedRole = window.localStorage.getItem('role');
+      if (storedRole === 'admin') {
+        navigate('/admin');
+        return;
+      }
+    }
+    navigate('/');
+  };
 
   const handleLogin = (e) => {
     e.preventDefault();
@@ -255,13 +279,24 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
     <div className="auth-wrap">
       <style>{css}</style>
       
-      <div className="back-btn" onClick={() => navigate('/')}>
-        ← Back to Home
+      <div className="back-btn" onClick={handleBack} aria-label="Back" title="Back">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M19 12H5M12 19l-7-7 7-7" />
+        </svg>
       </div>
 
       <div className="auth-card">
         <div className="auth-logo">
-          <div className="auth-logo-mark">Book<span>.</span>Ride</div>
+          <div className="auth-logo-mark">Book<span className="logo-dot">.</span><span className="logo-ride">Ride</span></div>
           <div className="auth-logo-sub" style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 4 }}>Bus & Car Booking + Car Rental</div>
         </div>
         

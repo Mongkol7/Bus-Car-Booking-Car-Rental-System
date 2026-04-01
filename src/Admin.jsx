@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { busFleet, carModels } from './data/transportData';
 
 const css = `
@@ -55,7 +55,13 @@ const css = `
     border-bottom: 0.5px solid var(--glass-border);
     margin-bottom: 16px;
   }
-  .sidebar-logo span { color: var(--accent); }
+  .logo-dot {
+    color: var(--accent);
+    display: inline-block;
+    text-shadow: 0 0 10px rgba(79,142,247,1), 0 0 24px rgba(79,142,247,0.9), 0 0 40px rgba(79,142,247,0.7);
+    animation: logoPulse 1.2s ease-in-out infinite;
+  }
+  .logo-ride { color: var(--accent); }
   .nav-section { padding: 0 12px; margin-bottom: 4px; }
   .nav-label {
     font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
@@ -113,7 +119,7 @@ const css = `
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
 
   /* TABLE */
-  .table-wrap { overflow-x: auto; }
+  .table-wrap { overflow-x: auto; width: 100%; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   thead th {
     text-align: left; padding: 10px 14px;
@@ -209,6 +215,23 @@ const css = `
   .bar { flex: 1; border-radius: 3px 3px 0 0; background: var(--accent-soft); border: 0.5px solid var(--accent-glow); transition: height 0.3s ease; }
   .bar.lit { background: var(--accent); }
 
+  .observe-animate {
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .observe-animate.in-view {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .chart-animate .bar {
+    height: 0;
+    transition: height 0.9s ease;
+  }
+  .chart-animate.in-view .bar {
+    height: var(--bar-h);
+  }
+
   /* DIVIDER */
   .divider { height: 0.5px; background: var(--glass-border); margin: 16px 0; }
 
@@ -253,7 +276,7 @@ const css = `
     color: var(--text-2);
     text-transform: uppercase;
   }
-  .admin-mobilebar-logo span { color: var(--accent); }
+  .admin-mobilebar-logo .logo-dot { color: var(--accent); }
   .admin-mobilebar-sub {
     font-size: 9px;
     letter-spacing: 0.2em;
@@ -284,17 +307,24 @@ const css = `
   .mac-dot.red { background: #ff5f57; }
   .mac-dot.yellow { background: #febc2e; }
   .mac-dot.green { background: #28c840; }
-  .admin-logout-btn {
+  .admin-report-btn {
     border: 0.5px solid var(--glass-border);
     background: var(--glass);
     color: var(--text);
     padding: 6px 8px;
     border-radius: 10px;
-    font-size: 12px;
+    font-size: 11px;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    white-space: nowrap;
+  }
+
+  @keyframes logoPulse {
+    0%, 100% { opacity: 0.6; transform: scale(0.96); text-shadow: 0 0 8px rgba(79,142,247,0.8), 0 0 18px rgba(79,142,247,0.7); }
+    40% { opacity: 1; transform: scale(1.08); text-shadow: 0 0 16px rgba(79,142,247,1), 0 0 36px rgba(79,142,247,0.95), 0 0 54px rgba(79,142,247,0.8); }
+    70% { opacity: 0.85; transform: scale(1.02); text-shadow: 0 0 12px rgba(79,142,247,0.95), 0 0 28px rgba(79,142,247,0.85); }
   }
   .admin-menu-overlay {
     position: fixed;
@@ -312,6 +342,7 @@ const css = `
     padding: 18px;
     transform: translateX(-100%);
     animation: adminMenuIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    touch-action: pan-y;
   }
   @keyframes adminMenuIn {
     from { transform: translateX(-100%); }
@@ -388,9 +419,11 @@ const css = `
     .main { padding-bottom: 96px; }
     .metrics { grid-template-columns: 1fr; }
     .car-grid { grid-template-columns: 1fr; }
-    table { font-size: 11px; }
-    thead th { padding: 8px 10px; }
-    td { padding: 8px 10px; }
+    table { font-size: 11px; table-layout: auto; width: 100%; white-space: nowrap; }
+    thead th { padding: 8px 10px; white-space: nowrap; overflow: visible; text-overflow: clip; }
+    td { padding: 8px 10px; white-space: nowrap; overflow: visible; text-overflow: clip; }
+    td > div { display: inline; }
+    td > div + div { margin-left: 6px; }
   }
 
   @media (max-width: 520px) {
@@ -468,7 +501,7 @@ function Sidebar({ active, setActive, onLogout }) {
         style={{ cursor: 'pointer' }}
         onClick={() => setActive('dashboard')}
       >
-        Admin<span>.</span>Panel
+        Book<span className="logo-dot">.</span><span className="logo-ride">Ride</span>
       </div>
       <div className="nav-section">
         <div className="nav-label">Overview</div>
@@ -485,7 +518,7 @@ function Sidebar({ active, setActive, onLogout }) {
       </div>
       <div className="nav-section">
         <div className="nav-label">Manage</div>
-        {NAV.slice(1).map((n) => (
+        {NAV.slice(1).filter((n) => n.id !== 'reports').map((n) => (
           <div
             key={n.id}
             className={`nav-item ${active === n.id ? 'active' : ''}`}
@@ -514,12 +547,12 @@ function Sidebar({ active, setActive, onLogout }) {
 function Dashboard() {
   const bars = [30, 55, 40, 70, 60, 85, 50, 90, 65, 75, 80, 95];
   return (
-    <div>
-      <div className="page-header">
+      <div>
+        <div className="page-header observe-animate">
         <div className="page-title">Dashboard</div>
         <div className="page-sub">Bus & Car Booking + Car Rental System</div>
       </div>
-      <div className="metrics">
+        <div className="metrics observe-animate">
         {[
           {
             label: 'Total bookings',
@@ -556,17 +589,17 @@ function Dashboard() {
         ))}
       </div>
       <div className="grid2">
-        <div className="card">
-          <div className="sec-title">Booking activity — last 12 days</div>
-          <div className="chart-row">
-            {bars.map((h, i) => (
-              <div
-                key={i}
-                className={`bar ${i === bars.length - 1 ? 'lit' : ''}`}
-                style={{ height: `${h}%` }}
-              />
-            ))}
-          </div>
+          <div className="card observe-animate">
+            <div className="sec-title">Booking activity — last 12 days</div>
+            <div className="chart-row chart-animate observe-animate">
+              {bars.map((h, i) => (
+                <div
+                  key={i}
+                  className={`bar ${i === bars.length - 1 ? 'lit' : ''}`}
+                  style={{ '--bar-h': `${h}%` }}
+                />
+              ))}
+            </div>
           <div
             style={{
               display: 'flex',
@@ -578,7 +611,7 @@ function Dashboard() {
             <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Apr 5</span>
           </div>
         </div>
-        <div className="card">
+          <div className="card observe-animate">
           <div className="sec-title">Recent bookings</div>
           <table>
             <thead>
@@ -634,7 +667,7 @@ function Dashboard() {
             color: 'var(--purple)',
           },
         ].map((s) => (
-          <div key={s.label} className="card card-sm">
+          <div key={s.label} className="card card-sm observe-animate">
             <div className="sec-title" style={{ marginBottom: 4 }}>
               {s.label}
             </div>
@@ -1542,12 +1575,12 @@ function Reports() {
       <div className="grid2">
         <div className="card">
           <div className="sec-title">Booking revenue — daily</div>
-          <div className="chart-row" style={{ height: 60 }}>
+          <div className="chart-row chart-animate observe-animate" style={{ height: 60 }}>
             {bars.map((h, i) => (
               <div
                 key={i}
                 className={`bar ${i === bars.length - 1 ? 'lit' : ''}`}
-                style={{ height: `${h}%` }}
+                style={{ '--bar-h': `${h}%` }}
               />
             ))}
           </div>
@@ -1564,13 +1597,13 @@ function Reports() {
         </div>
         <div className="card">
           <div className="sec-title">Rental revenue — daily</div>
-          <div className="chart-row" style={{ height: 60 }}>
+          <div className="chart-row chart-animate observe-animate" style={{ height: 60 }}>
             {rentalBars.map((h, i) => (
               <div
                 key={i}
                 className={`bar ${i === rentalBars.length - 1 ? 'lit' : ''}`}
                 style={{
-                  height: `${h}%`,
+                  '--bar-h': `${h}%`,
                   background: 'var(--purple-soft)',
                   borderColor: 'rgba(167,139,250,0.35)',
                 }}
@@ -1717,12 +1750,79 @@ const PAGES = {
 export default function App({ onLogout }) {
   const [active, setActive] = useState('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const edgeStartX = useRef(0);
+  const edgeStartY = useRef(0);
+  const edgeFromLeft = useRef(false);
+  const menuTouchStartX = useRef(0);
+  const menuTouchStartY = useRef(0);
   const Page = PAGES[active];
   const handleLogout = onLogout || (() => {
     window.location.href = '/login';
   });
   const primaryNav = ['dashboard', 'routes', 'vehicles', 'bookings', 'rentals'];
-  const extraNav = NAV.filter((n) => !primaryNav.includes(n.id));
+  const extraNav = NAV.filter((n) => !primaryNav.includes(n.id) && n.id !== 'reports');
+
+  useEffect(() => {
+    const handleTouchStart = (e) => {
+      const touch = e.touches[0];
+      edgeStartX.current = touch.clientX;
+      edgeStartY.current = touch.clientY;
+      edgeFromLeft.current = touch.clientX <= 24;
+    };
+    const handleTouchEnd = (e) => {
+      if (mobileMenuOpen || !edgeFromLeft.current) return;
+      const touch = e.changedTouches[0];
+      const dx = touch.clientX - edgeStartX.current;
+      const dy = touch.clientY - edgeStartY.current;
+      if (dx > 60 && Math.abs(dy) < 40) {
+        setMobileMenuOpen(true);
+      }
+    };
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchend', handleTouchEnd);
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchend', handleTouchEnd);
+    };
+  }, [mobileMenuOpen]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const elements = Array.from(document.querySelectorAll('.observe-animate'));
+    if (!('IntersectionObserver' in window)) {
+      elements.forEach((el) => el.classList.add('in-view'));
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('in-view');
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.2, rootMargin: '0px 0px -10% 0px' }
+    );
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [active]);
+
+  const handleMenuTouchStart = (e) => {
+    const touch = e.touches[0];
+    menuTouchStartX.current = touch.clientX;
+    menuTouchStartY.current = touch.clientY;
+  };
+  const handleMenuTouchEnd = (e) => {
+    const touch = e.changedTouches[0];
+    const dx = touch.clientX - menuTouchStartX.current;
+    const dy = touch.clientY - menuTouchStartY.current;
+    if (dx < -60 && Math.abs(dy) < 40) {
+      setMobileMenuOpen(false);
+    }
+  };
+
   return (
     <>
       <style>{css}</style>
@@ -1735,8 +1835,9 @@ export default function App({ onLogout }) {
               <span className="mac-dot green" />
             </span>
           </button>
-          <button className="admin-logout-btn" onClick={handleLogout}>
-            <Icon d={icons.logout} size={12} color="currentColor" />
+          <button className="admin-report-btn" onClick={() => setActive('reports')}>
+            <Icon d={icons.chart} size={12} color="currentColor" />
+            Reports
           </button>
         </div>
         <div
@@ -1744,7 +1845,7 @@ export default function App({ onLogout }) {
           onClick={() => setActive('dashboard')}
           style={{ cursor: 'pointer' }}
         >
-          <div>Admin<span>.</span>Panel</div>
+          <div>Book<span className="logo-dot">.</span><span className="logo-ride">Ride</span></div>
           <div className="admin-mobilebar-sub">AdminPanel</div>
         </div>
       </div>
@@ -1756,7 +1857,12 @@ export default function App({ onLogout }) {
       </div>
       {mobileMenuOpen && (
         <div className="admin-menu-overlay" onClick={() => setMobileMenuOpen(false)}>
-          <div className="admin-menu-panel" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="admin-menu-panel"
+            onClick={(e) => e.stopPropagation()}
+            onTouchStart={handleMenuTouchStart}
+            onTouchEnd={handleMenuTouchEnd}
+          >
             <div className="admin-menu-title">More</div>
             {extraNav.map((n) => (
               <div

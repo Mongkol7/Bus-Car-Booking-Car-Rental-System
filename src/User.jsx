@@ -45,8 +45,14 @@ const css = `
     display: flex; align-items: center; gap: 0;
     padding: 0 32px; height: 54px;
   }
-  .topnav-logo { font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; margin-right: 32px; }
-  .topnav-logo span { color: var(--accent); }
+  .topnav-logo { font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; margin-right: 33px; }
+  .topnav-logo .logo-dot {
+    color: var(--accent);
+    display: inline-block;
+    text-shadow: 0 0 10px rgba(79,142,247,1), 0 0 24px rgba(79,142,247,0.9), 0 0 40px rgba(79,142,247,0.7);
+    animation: logoPulse 1.2s ease-in-out infinite;
+  }
+  .topnav-logo .logo-ride { color: var(--accent); }
   .topnav-links { display: flex; align-items: center; gap: 2px; flex: 1; }
   .topnav-link {
     padding: 6px 14px; border-radius: var(--radius-xs);
@@ -97,7 +103,7 @@ const css = `
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    font-size: 9.5px;
+    font-size: 9px;
     color: var(--text-2);
     border: 0.5px solid transparent;
     cursor: pointer;
@@ -110,6 +116,12 @@ const css = `
     border-color: rgba(79,142,247,0.25);
   }
   .bottomnav-icon { display: inline-flex; }
+
+  @keyframes logoPulse {
+    0%, 100% { opacity: 0.6; transform: scale(0.96); text-shadow: 0 0 8px rgba(79,142,247,0.8), 0 0 18px rgba(79,142,247,0.7); }
+    40% { opacity: 1; transform: scale(1.08); text-shadow: 0 0 16px rgba(79,142,247,1), 0 0 36px rgba(79,142,247,0.95), 0 0 54px rgba(79,142,247,0.8); }
+    70% { opacity: 0.85; transform: scale(1.02); text-shadow: 0 0 12px rgba(79,142,247,0.95), 0 0 28px rgba(79,142,247,0.85); }
+  }
 
   /* ── LAYOUT ── */
   .page { max-width: 900px; margin: 0 auto; padding: 36px 24px; }
@@ -154,6 +166,12 @@ const css = `
     font-size: 13px; font-weight: 500; cursor: pointer;
     border: 0.5px solid; transition: all 0.15s; font-family: var(--font);
   }
+  .btn-round-back {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border-radius: 50%;
+  }
   .btn-primary { background: var(--accent); color: #fff; border-color: transparent; }
   .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn-ghost { background: var(--glass); color: var(--text-2); border-color: var(--glass-border); }
@@ -176,11 +194,56 @@ const css = `
   .divider { height: 0.5px; background: var(--glass-border); margin: 20px 0; }
 
   /* ── HOME ── */
-  .hero { text-align: center; padding: 56px 0; background: radial-gradient(ellipse 70% 50% at 50% 0%, rgba(79,142,247,0.1) 0%, transparent 70%); }
+  .hero {
+    position: relative;
+    text-align: center;
+    padding: 56px 0;
+    background: radial-gradient(ellipse 70% 50% at 50% 0%, rgba(79,142,247,0.12) 0%, transparent 70%);
+    overflow: hidden;
+  }
+  .hero::before,
+  .hero::after {
+    content: '';
+    position: absolute;
+    width: 420px;
+    height: 420px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(79,142,247,0.18) 0%, transparent 65%);
+    filter: blur(10px);
+    opacity: 0.6;
+    animation: heroGlow 6s ease-in-out infinite;
+    pointer-events: none;
+  }
+  .hero::before { top: -120px; left: -140px; }
+  .hero::after { bottom: -160px; right: -120px; animation-delay: 1.2s; }
+  .hero-content { position: relative; z-index: 1; }
   .hero-sub { font-size: 15px; color: var(--text-2); max-width: 420px; margin: 0 auto 36px; line-height: 1.6; }
   .service-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 620px; margin: 0 auto; }
   .service-card { background: var(--glass); border: 0.5px solid var(--glass-border); border-radius: var(--radius); padding: 28px 24px; cursor: pointer; text-align: left; }
   .service-card:hover { transform: translateY(-2px); background: var(--glass-strong); }
+  .hero-title { animation: heroIn 0.8s ease both; }
+  .hero-sub { animation: heroIn 0.8s ease 0.08s both; }
+  .service-card { animation: cardIn 0.7s ease both; }
+  .service-card:nth-child(2) { animation-delay: 0.12s; }
+  .hero-emoji { font-size: 28px; margin-bottom: 12px; animation: floaty 3.2s ease-in-out infinite; }
+  .service-card:nth-child(2) .hero-emoji { animation-delay: 0.4s; }
+
+  @keyframes heroIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes cardIn {
+    from { opacity: 0; transform: translateY(16px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes floaty {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+  @keyframes heroGlow {
+    0%, 100% { transform: translateY(0) scale(0.98); opacity: 0.45; }
+    50% { transform: translateY(12px) scale(1.05); opacity: 0.7; }
+  }
 
   /* ── SHAKE ANIMATION ── */
   @keyframes shake {
@@ -360,6 +423,9 @@ const css = `
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
     }
+    .search-bar > div { min-width: 0; }
+    .search-bar .label { font-size: 11px; white-space: nowrap; }
+    .date-range .label { font-size: 11px; white-space: nowrap; }
     .hero-title { font-size: 26px; }
     .service-card { padding: 22px 18px; }
     .steps { flex-wrap: wrap; gap: 8px; }
@@ -389,22 +455,35 @@ const css = `
 `;
 
 const Icon = ({ d, size = 16, color = 'currentColor' }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke={color}
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d={d} />
+  </svg>
 );
 
 const icons = {
   home: 'M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2V9z M9 22V12h6v10',
   bus: 'M6 2h12a2 2 0 012 2v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2zM6 18h12M6 6h12',
   car: 'M5 17h14M5 17a2 2 0 11-4 0M5 17V9l2-5h10l2 5v8a2 2 0 01-2 2h-2M17 17a2 2 0 104 0',
-  ticket: 'M15 5v2M15 11v2M15 17v2M5 5h14a2 2 0 012 2v3a2 2 0 000 4v3a2 2 0 01-2 2H5a2 2 0 01-2-2v-3a2 2 0 000-4V7a2 2 0 012-2z',
+  ticket:
+    'M15 5v2M15 11v2M15 17v2M5 5h14a2 2 0 012 2v3a2 2 0 000 4v3a2 2 0 01-2 2H5a2 2 0 01-2-2v-3a2 2 0 000-4V7a2 2 0 012-2z',
   user: 'M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2 M12 11a4 4 0 100-8 4 4 0 000 8z',
+  back: 'M19 12H5M12 19l-7-7 7-7',
   arrow: 'M5 12h14M12 5l7 7-7 7',
   check: 'M20 6L9 17l-5-5',
   qr: 'M3 3h6v6H3zm12 0h6v6h-6zM3 15h6v6H3zm12 0h2v2h-2zm4 0h2v2h-2zm-2 2h2v2h-2zm2 2h2v2h-2z',
   x: 'M18 6L6 18M6 6l12 12',
   edit: 'M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z',
   logout: 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9',
-  filter: 'M22 3H2l8 9.46V19l4 2v-8.54L22 3z'
+  filter: 'M22 3H2l8 9.46V19l4 2v-8.54L22 3z',
 };
 
 const NAV = [
@@ -422,17 +501,22 @@ function TopNav({ active, setActive, role, onLogout }) {
       <nav className="topnav">
         <div
           className="topnav-logo"
-          style={{ cursor: 'pointer' }}
+          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
           onClick={() => {
             setActive('home');
             navigate('/');
           }}
         >
-          Book<span>.</span>Ride
+          Book<span className="logo-dot">.</span>
+          <span className="logo-ride">Ride</span>
         </div>
         <div className="topnav-links">
           {NAV.map((n) => (
-            <div key={n.id} className={`topnav-link ${active === n.id ? 'active' : ''}`} onClick={() => setActive(n.id)}>
+            <div
+              key={n.id}
+              className={`topnav-link ${active === n.id ? 'active' : ''}`}
+              onClick={() => setActive(n.id)}
+            >
               <span className="topnav-icon">
                 <Icon d={icons[n.icon]} size={14} />
               </span>
@@ -442,33 +526,42 @@ function TopNav({ active, setActive, role, onLogout }) {
         </div>
         <div className="topnav-right">
           {role === 'guest' ? (
-            <button className="login-btn" onClick={() => navigate('/login')}>Login</button>
+            <button className="login-btn" onClick={() => navigate('/login')}>
+              Login
+            </button>
           ) : (
-            <button className="btn btn-ghost btn-sm" style={{ padding: '4px 10px', height: 28 }} onClick={onLogout}>Logout</button>
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ padding: '4px 10px', height: 28 }}
+              onClick={onLogout}
+            >
+              Logout
+            </button>
           )}
           <div className="avatar-sm">{role === 'guest' ? '?' : 'ST'}</div>
         </div>
       </nav>
       <div className="bottomnav">
         {NAV.map((n) => {
-          const mobileLabel = {
-            home: 'Home',
-            search: 'Bus booking',
-            cars: 'Car rental',
-            bookings: 'My booking',
-            profile: 'Profile',
-          }[n.id] || n.label;
+          const mobileLabel =
+            {
+              home: 'Home',
+              search: 'Bus booking',
+              cars: 'Car rental',
+              bookings: 'My booking',
+              profile: 'Profile',
+            }[n.id] || n.label;
           return (
-          <div
-            key={`bottom-${n.id}`}
-            className={`bottomnav-link ${active === n.id ? 'active' : ''}`}
-            onClick={() => setActive(n.id)}
-          >
-            <span className="bottomnav-icon">
-              <Icon d={icons[n.icon]} size={14} />
-            </span>
-            {mobileLabel}
-          </div>
+            <div
+              key={`bottom-${n.id}`}
+              className={`bottomnav-link ${active === n.id ? 'active' : ''}`}
+              onClick={() => setActive(n.id)}
+            >
+              <span className="bottomnav-icon">
+                <Icon d={icons[n.icon]} size={12} />
+              </span>
+              {mobileLabel}
+            </div>
           );
         })}
       </div>
@@ -480,21 +573,43 @@ function Home({ role, setActive }) {
   return (
     <div>
       <div className="hero">
-        <div className="page">
-          <div className="hero-title">Travel smarter<br />across <span>Cambodia</span></div>
-          <div className="hero-sub">Book bus seats or rent a car — fast, simple, and on the go.</div>
+        <div className="page hero-content">
+          <div className="hero-title">
+            Travel smarter
+            <br />
+            across <span>Cambodia</span>
+          </div>
+          <div className="hero-sub">
+            Book bus seats or rent a car — fast, simple, and on the go.
+          </div>
           <div className="service-grid">
             <div className="service-card" onClick={() => setActive('search')}>
-              <div style={{ fontSize: 28, marginBottom: 12 }}>🚌</div>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Bus seat booking</div>
-              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Search routes, pick seats and pay.</div>
-              <button className="btn btn-primary btn-sm" style={{ marginTop: 16 }}>Book now</button>
+              <div className="hero-emoji">🚌</div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                Bus seat booking
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                Search routes, pick seats and pay.
+              </div>
+              <button
+                className="btn btn-primary btn-sm"
+                style={{ marginTop: 16 }}
+              >
+                Book now
+              </button>
             </div>
             <div className="service-card" onClick={() => setActive('cars')}>
-              <div style={{ fontSize: 28, marginBottom: 12 }}>🚗</div>
+              <div className="hero-emoji">🚗</div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>Car rental</div>
-              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Browse sedans and SUVs for rent.</div>
-              <button className="btn btn-ghost btn-sm" style={{ marginTop: 16 }}>Browse cars</button>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                Browse sedans and SUVs for rent.
+              </div>
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{ marginTop: 16 }}
+              >
+                Browse cars
+              </button>
             </div>
           </div>
         </div>
@@ -502,26 +617,56 @@ function Home({ role, setActive }) {
       <div className="page">
         <div className="sec-title">Recent activity</div>
         {role === 'guest' ? (
-          <div className="card" style={{ textAlign: 'center', padding: '32px' }}>
-            <p style={{ color: 'var(--text-3)', fontSize: '13px' }}>No recent activity. Sign in to track your trips.</p>
+          <div
+            className="card"
+            style={{ textAlign: 'center', padding: '32px' }}
+          >
+            <p style={{ color: 'var(--text-3)', fontSize: '13px' }}>
+              No recent activity. Sign in to track your trips.
+            </p>
           </div>
         ) : (
-          [{ type: 'ticket', route: 'Phnom Penh → Siem Reap', date: 'Apr 5, 06:00', seat: 'A12', status: 'Confirmed' },
-           { type: 'rental', route: 'Toyota Camry rental', date: 'Mar 28 – Apr 3', seat: '3 days', status: 'Returned' }
+          [
+            {
+              type: 'ticket',
+              route: 'Phnom Penh → Siem Reap',
+              date: 'Apr 5, 06:00',
+              seat: 'A12',
+              status: 'Confirmed',
+            },
+            {
+              type: 'rental',
+              route: 'Toyota Camry rental',
+              date: 'Mar 28 – Apr 3',
+              seat: '3 days',
+              status: 'Returned',
+            },
           ].map((b, i) => (
             <div key={i} className="booking-item ticket-card">
               <div className="booking-header">
                 <div>
-                  <span className={`badge ${b.type === 'ticket' ? 'badge-blue' : 'badge-purple'}`} style={{ marginBottom: 6, fontSize: 9 }}>
+                  <span
+                    className={`badge ${b.type === 'ticket' ? 'badge-blue' : 'badge-purple'}`}
+                    style={{ marginBottom: 6, fontSize: 9 }}
+                  >
                     {b.type === 'ticket' ? 'BUS TICKET' : 'CAR RENTAL'}
                   </span>
                   <div className="booking-route">{b.route}</div>
                 </div>
-                <span className={`badge ${b.status === 'Confirmed' ? 'badge-green' : 'badge-purple'}`}>{b.status}</span>
+                <span
+                  className={`badge ${b.status === 'Confirmed' ? 'badge-green' : 'badge-purple'}`}
+                >
+                  {b.status}
+                </span>
               </div>
               <div className="booking-meta">
-                <div className="booking-meta-item">Date<span>{b.date}</span></div>
-                <div className="booking-meta-item">{b.type === 'ticket' ? 'Seat' : 'Duration'}<span>{b.seat}</span></div>
+                <div className="booking-meta-item">
+                  Date<span>{b.date}</span>
+                </div>
+                <div className="booking-meta-item">
+                  {b.type === 'ticket' ? 'Seat' : 'Duration'}
+                  <span>{b.seat}</span>
+                </div>
               </div>
             </div>
           ))
@@ -534,13 +679,20 @@ function Home({ role, setActive }) {
 function AuthModal({ onConfirm, onClose }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={e => e.stopPropagation()}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-icon">🔐</div>
         <div className="modal-title">Sign in required</div>
-        <div className="modal-text">To continue with your booking or rental, please sign in to your account. It's fast and secure.</div>
+        <div className="modal-text">
+          To continue with your booking or rental, please sign in to your
+          account. It's fast and secure.
+        </div>
         <div className="modal-btns">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={onConfirm}>Sign in now</button>
+          <button className="btn btn-ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={onConfirm}>
+            Sign in now
+          </button>
         </div>
       </div>
     </div>
@@ -552,64 +704,201 @@ function BusSearch({ role, setActive }) {
   const [step, setStep] = useState(1);
   const [selectedRoute, setSelectedRoute] = useState(null);
   const [selectedSeats, setSelectedSeats] = useState([]);
-  const [payMethod, setPayMethod] = useState("aba");
+  const [payMethod, setPayMethod] = useState('aba');
   const [done, setDone] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [fromCity, setFromCity] = useState("Phnom Penh");
-  const [toCity, setToCity] = useState("Siem Reap");
-  const [travelDate, setTravelDate] = useState("2026-04-05");
+  const [fromCity, setFromCity] = useState('Phnom Penh');
+  const [toCity, setToCity] = useState('Siem Reap');
+  const [travelDate, setTravelDate] = useState('2026-04-05');
+
+  const goBack = () => {
+    setStep((prev) => Math.max(1, prev - 1));
+  };
 
   const destinations = [
-    "Phnom Penh",
-    "Siem Reap",
-    "Battambang",
-    "Sihanoukville",
-    "Kampot",
-    "Kep",
-    "Kratie",
-    "Kampong Cham",
-    "Pursat",
-    "Banteay Meanchey",
+    'Phnom Penh',
+    'Siem Reap',
+    'Battambang',
+    'Sihanoukville',
+    'Kampot',
+    'Kep',
+    'Kratie',
+    'Kampong Cham',
+    'Pursat',
+    'Banteay Meanchey',
   ];
 
   const routes = [
-    { id: 1, from: "06:00", to: "11:00", vehicle: "Mekong Express", type: "VIP Sleeper", avail: 8, price: 12, color: "#22c55e", bg: "rgba(34,197,94,0.16)" },
-    { id: 2, from: "09:00", to: "14:00", vehicle: "Sorya Bus", type: "Express Coach", avail: 14, price: 12, color: "#f59e0b", bg: "rgba(245,158,11,0.16)" },
-    { id: 3, from: "13:00", to: "18:00", vehicle: "Giant Ibis", type: "Luxury Coach", avail: 3, price: 15, color: "#a855f7", bg: "rgba(168,85,247,0.16)" },
-    { id: 4, from: "15:30", to: "20:30", vehicle: "Larryta Express", type: "Mini Bus", avail: 10, price: 13, color: "#38bdf8", bg: "rgba(56,189,248,0.16)" },
-    { id: 5, from: "22:00", to: "04:00", vehicle: "VET Air Bus", type: "Night Sleeper", avail: 5, price: 16, color: "#f87171", bg: "rgba(248,113,113,0.16)" },
-    { id: 6, from: "07:30", to: "12:30", vehicle: "Capitol Tours", type: "Standard Coach", avail: 18, price: 11, color: "#60a5fa", bg: "rgba(96,165,250,0.16)" },
-    { id: 7, from: "17:00", to: "22:30", vehicle: "Sorya Bus", type: "Premium Coach", avail: 6, price: 14, color: "#f59e0b", bg: "rgba(245,158,11,0.16)" },
+    {
+      id: 1,
+      from: '06:00',
+      to: '11:00',
+      vehicle: 'Mekong Express',
+      type: 'VIP Sleeper',
+      layout: 'sleeper',
+      avail: 8,
+      price: 12,
+      color: '#22c55e',
+      bg: 'rgba(34,197,94,0.16)',
+    },
+    {
+      id: 2,
+      from: '09:00',
+      to: '14:00',
+      vehicle: 'Sorya Bus',
+      type: 'Express Coach',
+      avail: 14,
+      price: 12,
+      color: '#f59e0b',
+      bg: 'rgba(245,158,11,0.16)',
+    },
+    {
+      id: 3,
+      from: '13:00',
+      to: '18:00',
+      vehicle: 'Giant Ibis',
+      type: 'Luxury Coach',
+      avail: 3,
+      price: 15,
+      color: '#a855f7',
+      bg: 'rgba(168,85,247,0.16)',
+    },
+    {
+      id: 4,
+      from: '15:30',
+      to: '20:30',
+      vehicle: 'Larryta Express',
+      type: 'Mini Bus',
+      avail: 10,
+      price: 13,
+      color: '#38bdf8',
+      bg: 'rgba(56,189,248,0.16)',
+    },
+    {
+      id: 5,
+      from: '22:00',
+      to: '04:00',
+      vehicle: 'VET Air Bus',
+      type: 'Night Sleeper',
+      avail: 5,
+      price: 16,
+      color: '#f87171',
+      bg: 'rgba(248,113,113,0.16)',
+    },
+    {
+      id: 6,
+      from: '07:30',
+      to: '12:30',
+      vehicle: 'Capitol Tours',
+      type: 'Standard Coach',
+      avail: 18,
+      price: 11,
+      color: '#60a5fa',
+      bg: 'rgba(96,165,250,0.16)',
+    },
+    {
+      id: 7,
+      from: '17:00',
+      to: '22:30',
+      vehicle: 'Sorya Bus',
+      type: 'Premium Coach',
+      avail: 6,
+      price: 14,
+      color: '#f59e0b',
+      bg: 'rgba(245,158,11,0.16)',
+    },
   ];
 
-  const currentRoute = routes.find(r => r.id === selectedRoute);
-  const takenSeats = ["A1", "A3", "B2", "B4", "C1", "D3", "D4"];
-  const seatRows = ["A", "B", "C", "D", "E"];
+  const currentRoute = routes.find((r) => r.id === selectedRoute);
+  const takenSeats = ['A1', 'A3', 'B2', 'B4', 'C1', 'D3', 'D4'];
+  const seatRows = ['A', 'B', 'C', 'D', 'E'];
   const seatCols = [1, 2, 3, 4];
 
   const toggleSeat = (sid) => {
     if (takenSeats.includes(sid)) return;
-    setSelectedSeats(prev => prev.includes(sid) ? prev.filter(s => s !== sid) : [...prev, sid]);
+    setSelectedSeats((prev) =>
+      prev.includes(sid) ? prev.filter((s) => s !== sid) : [...prev, sid],
+    );
   };
 
-  if (done) return (
-    <div className="page" style={{ maxWidth: 480 }}>
-      <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
-        <div className="confirm-icon" style={{ background: 'var(--green-soft)', color: 'var(--green)', width: 60, height: 60, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', fontSize: 24 }}>✓</div>
-        <div className="page-title">Booking confirmed!</div>
-        <div className="page-sub">Seat preserved. Show QR at boarding.</div>
-        <div style={{ background: "white", borderRadius: 12, padding: 16, width: 110, height: 110, margin: "0 auto 20px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(9,1fr)", gap: "1.5px", width: 82, height: 82 }}>
-            {Array.from({ length: 81 }, (_, i) => (
-              <div key={i} style={{ borderRadius: 1, background: Math.random() > 0.5 ? "#111" : "transparent", border: "0.5px solid #ddd" }} />
-            ))}
+  if (done)
+    return (
+      <div className="page" style={{ maxWidth: 480 }}>
+        <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
+          <div
+            className="confirm-icon"
+            style={{
+              background: 'var(--green-soft)',
+              color: 'var(--green)',
+              width: 60,
+              height: 60,
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 20px',
+              fontSize: 24,
+            }}
+          >
+            ✓
           </div>
+          <div className="page-title">Booking confirmed!</div>
+          <div className="page-sub">Seat preserved. Show QR at boarding.</div>
+          <div
+            style={{
+              background: 'white',
+              borderRadius: 12,
+              padding: 16,
+              width: 110,
+              height: 110,
+              margin: '0 auto 20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(9,1fr)',
+                gap: '1.5px',
+                width: 82,
+                height: 82,
+              }}
+            >
+              {Array.from({ length: 81 }, (_, i) => (
+                <div
+                  key={i}
+                  style={{
+                    borderRadius: 1,
+                    background: Math.random() > 0.5 ? '#111' : 'transparent',
+                    border: '0.5px solid #ddd',
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+          <button
+            className="btn btn-primary btn-full"
+            onClick={() => setActive('bookings')}
+          >
+            Go to My Bookings
+          </button>
+          <button
+            className="btn btn-ghost btn-full"
+            style={{ marginTop: 8 }}
+            onClick={() => {
+              setDone(false);
+              setStep(1);
+              setSelectedSeats([]);
+              setSelectedRoute(null);
+            }}
+          >
+            Book another
+          </button>
         </div>
-        <button className="btn btn-primary btn-full" onClick={() => setActive('bookings')}>Go to My Bookings</button>
-        <button className="btn btn-ghost btn-full" style={{ marginTop: 8 }} onClick={() => { setDone(false); setStep(1); setSelectedSeats([]); setSelectedRoute(null); }}>Book another</button>
       </div>
-    </div>
-  );
+    );
 
   return (
     <div className="page" style={{ maxWidth: 720 }}>
@@ -653,7 +942,10 @@ function BusSearch({ role, setActive }) {
           <div className="search-bar">
             <div>
               <div className="label">From</div>
-              <select value={fromCity} onChange={(e) => setFromCity(e.target.value)}>
+              <select
+                value={fromCity}
+                onChange={(e) => setFromCity(e.target.value)}
+              >
                 {destinations.map((city) => (
                   <option key={`from-${city}`} value={city}>
                     {city}
@@ -663,7 +955,10 @@ function BusSearch({ role, setActive }) {
             </div>
             <div>
               <div className="label">To</div>
-              <select value={toCity} onChange={(e) => setToCity(e.target.value)}>
+              <select
+                value={toCity}
+                onChange={(e) => setToCity(e.target.value)}
+              >
                 {destinations.map((city) => (
                   <option key={`to-${city}`} value={city}>
                     {city}
@@ -841,11 +1136,15 @@ function BusSearch({ role, setActive }) {
               <div className="card card-sm">
                 <div className="summary-row">
                   <span className="summary-key">Route</span>
-                  <span className="summary-val">{fromCity} → {toCity}</span>
+                  <span className="summary-val">
+                    {fromCity} → {toCity}
+                  </span>
                 </div>
                 <div className="summary-row">
                   <span className="summary-key">Date</span>
-                  <span className="summary-val">{travelDate} • {currentRoute?.from}</span>
+                  <span className="summary-val">
+                    {travelDate} • {currentRoute?.from}
+                  </span>
                 </div>
                 <div className="summary-row">
                   <span className="summary-key">Vehicle</span>
@@ -885,7 +1184,9 @@ function BusSearch({ role, setActive }) {
                 </div>
                 <div className="summary-row">
                   <span className="summary-key">Price each</span>
-                  <span className="summary-val">${currentRoute?.price ?? 0}</span>
+                  <span className="summary-val">
+                    ${currentRoute?.price ?? 0}
+                  </span>
                 </div>
                 <div className="divider" style={{ margin: '10px 0' }} />
                 <div className="summary-row">
@@ -899,7 +1200,10 @@ function BusSearch({ role, setActive }) {
                     className="summary-val"
                     style={{ color: 'var(--green)', fontSize: 16 }}
                   >
-                    ${((currentRoute?.price ?? 0) * selectedSeats.length).toFixed(2)}
+                    $
+                    {(
+                      (currentRoute?.price ?? 0) * selectedSeats.length
+                    ).toFixed(2)}
                   </span>
                 </div>
               </div>
@@ -912,8 +1216,12 @@ function BusSearch({ role, setActive }) {
               marginTop: 24,
             }}
           >
-            <button className="btn btn-ghost" onClick={() => setStep(1)}>
-              Back
+            <button
+              className="btn btn-ghost btn-round-back"
+              aria-label="Back"
+              onClick={goBack}
+            >
+              <Icon d={icons.back} size={15} />
             </button>
             <button
               className="btn btn-primary"
@@ -958,8 +1266,12 @@ function BusSearch({ role, setActive }) {
               marginTop: 20,
             }}
           >
-            <button className="btn btn-ghost" onClick={() => setStep(2)}>
-              Back
+            <button
+              className="btn btn-ghost btn-round-back"
+              aria-label="Back"
+              onClick={goBack}
+            >
+              <Icon d={icons.back} size={15} />
             </button>
             <button
               className="btn btn-primary btn-lg"
@@ -1038,7 +1350,8 @@ function BusSearch({ role, setActive }) {
               <div
                 style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 10 }}
               >
-                Amount: ${((currentRoute?.price ?? 0) * selectedSeats.length).toFixed(2)}
+                Amount: $
+                {((currentRoute?.price ?? 0) * selectedSeats.length).toFixed(2)}
               </div>
             </div>
           )}
@@ -1062,8 +1375,12 @@ function BusSearch({ role, setActive }) {
               marginTop: 24,
             }}
           >
-            <button className="btn btn-ghost" onClick={() => setStep(3)}>
-              Back
+            <button
+              className="btn btn-ghost btn-round-back"
+              aria-label="Back"
+              onClick={goBack}
+            >
+              <Icon d={icons.back} size={15} />
             </button>
             <button
               className="btn btn-primary btn-lg"
@@ -1082,10 +1399,14 @@ function CarRental({ role, setActive }) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [selected, setSelected] = useState(null);
-  const [payMethod, setPayMethod] = useState("aba");
+  const [payMethod, setPayMethod] = useState('aba');
   const [done, setDone] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [shaking, setShaking] = useState(null);
+
+  const goBack = () => {
+    setStep((prev) => Math.max(1, prev - 1));
+  };
 
   const cars = carModels.map((c) => ({
     id: c.id,
@@ -1098,34 +1419,75 @@ function CarRental({ role, setActive }) {
     status: c.status,
   }));
 
-  const car = cars.find(c => c.id === selected);
+  const car = cars.find((c) => c.id === selected);
   const days = 3; // Mocked duration
 
-  if (done) return (
-    <div className="page" style={{ maxWidth: 480 }}>
-      <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
-        <div className="confirm-icon" style={{ background: 'var(--green-soft)', color: 'var(--green)', width: 60, height: 60, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', fontSize: 24 }}>✓</div>
-        <div className="page-title">Rental Request Sent!</div>
-        <div className="page-sub">Your rental is being processed.</div>
-        <button className="btn btn-primary btn-full" onClick={() => setActive('bookings')}>Go to My Bookings</button>
+  if (done)
+    return (
+      <div className="page" style={{ maxWidth: 480 }}>
+        <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
+          <div
+            className="confirm-icon"
+            style={{
+              background: 'var(--green-soft)',
+              color: 'var(--green)',
+              width: 60,
+              height: 60,
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 20px',
+              fontSize: 24,
+            }}
+          >
+            ✓
+          </div>
+          <div className="page-title">Rental Request Sent!</div>
+          <div className="page-sub">Your rental is being processed.</div>
+          <button
+            className="btn btn-primary btn-full"
+            onClick={() => setActive('bookings')}
+          >
+            Go to My Bookings
+          </button>
+        </div>
       </div>
-    </div>
-  );
+    );
 
   return (
     <div className="page-wide">
-      {showAuthModal && <AuthModal onConfirm={() => navigate('/login')} onClose={() => setShowAuthModal(false)} />}
-      
+      {showAuthModal && (
+        <AuthModal
+          onConfirm={() => navigate('/login')}
+          onClose={() => setShowAuthModal(false)}
+        />
+      )}
+
       <div className="page-title">Car rental</div>
       <div className="page-sub">Premium vehicles for your personal use</div>
-      
+
       {step > 1 && (
-        <div className="steps" style={{ maxWidth: 640, margin: "0 auto 32px" }}>
+        <div className="steps" style={{ maxWidth: 640, margin: '0 auto 32px' }}>
           {['Details', 'Payment'].map((s, i) => (
-            <div key={s} style={{ display: 'flex', alignItems: 'center', flex: i === 1 ? 'initial' : 1 }}>
-              <div className={`step ${i + 2 === step ? 'active' : i + 2 < step ? 'done' : 'idle'}`}>
+            <div
+              key={s}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                flex: i === 1 ? 'initial' : 1,
+              }}
+            >
+              <div
+                className={`step ${i + 2 === step ? 'active' : i + 2 < step ? 'done' : 'idle'}`}
+              >
                 <div className="step-num">{i + 2 < step ? '✓' : i + 1}</div>
-                <div className="step-label" style={{ marginLeft: 6, fontSize: 11 }}>{s}</div>
+                <div
+                  className="step-label"
+                  style={{ marginLeft: 6, fontSize: 11 }}
+                >
+                  {s}
+                </div>
               </div>
               {i < 1 && <div className="step-line" />}
             </div>
@@ -1135,27 +1497,52 @@ function CarRental({ role, setActive }) {
 
       {step === 1 && (
         <div className="car-grid">
-          {cars.map(c => (
-            <div key={c.id} className={`car-card ticket-card ${shaking === c.id ? 'shake-anim' : ''}`} onClick={() => {
-               if (c.status === 'Rented') {
-                 setShaking(c.id);
-                 if (window.navigator.vibrate) window.navigator.vibrate(50); // Haptic feedback
-                 setTimeout(() => setShaking(null), 400);
-               } else if (role === 'guest') { 
-                 setShowAuthModal(true); 
-               } else { 
-                 setSelected(c.id); setStep(2); 
-               }
-            }}>
+          {cars.map((c) => (
+            <div
+              key={c.id}
+              className={`car-card ticket-card ${shaking === c.id ? 'shake-anim' : ''}`}
+              onClick={() => {
+                if (c.status === 'Rented') {
+                  setShaking(c.id);
+                  if (window.navigator.vibrate) window.navigator.vibrate(50); // Haptic feedback
+                  setTimeout(() => setShaking(null), 400);
+                } else if (role === 'guest') {
+                  setShowAuthModal(true);
+                } else {
+                  setSelected(c.id);
+                  setStep(2);
+                }
+              }}
+            >
               <div className="car-img-wrap">{c.emoji}</div>
               <div className="car-body">
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    marginBottom: 4,
+                  }}
+                >
                   <div className="car-name">{c.name}</div>
-                  <span className={`badge ${c.status === 'Available' ? 'badge-green' : 'badge-red'}`}>{c.status}</span>
+                  <span
+                    className={`badge ${c.status === 'Available' ? 'badge-green' : 'badge-red'}`}
+                  >
+                    {c.status}
+                  </span>
                 </div>
-                <div className="car-price">${c.price}<span>/day</span></div>
-                <button className={`btn btn-full btn-sm ${c.status === 'Rented' ? 'btn-ghost' : 'btn-primary'}`} style={{ marginTop: 12 }}>
-                  {c.status === 'Rented' ? 'Not Available' : role === 'guest' ? 'Sign in to rent' : 'Rent now'}
+                <div className="car-price">
+                  ${c.price}
+                  <span>/day</span>
+                </div>
+                <button
+                  className={`btn btn-full btn-sm ${c.status === 'Rented' ? 'btn-ghost' : 'btn-primary'}`}
+                  style={{ marginTop: 12 }}
+                >
+                  {c.status === 'Rented'
+                    ? 'Not Available'
+                    : role === 'guest'
+                      ? 'Sign in to rent'
+                      : 'Rent now'}
                 </button>
               </div>
             </div>
@@ -1166,29 +1553,101 @@ function CarRental({ role, setActive }) {
       {step === 2 && car && (
         <div className="page" style={{ maxWidth: 560, padding: 0 }}>
           <div className="card">
-            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 14,
+                marginBottom: 16,
+              }}
+            >
               <div style={{ fontSize: 32 }}>{car.emoji}</div>
               <div>
                 <div style={{ fontWeight: 600, fontSize: 15 }}>{car.name}</div>
-                <div style={{ fontSize: 12, color: "var(--text-2)" }}>{car.type} · {car.seats} seats · {car.trans}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                  {car.type} · {car.seats} seats · {car.trans}
+                </div>
               </div>
-              <div style={{ marginLeft: "auto", fontSize: 17, fontWeight: 600, color: "var(--accent)" }}>${car.price}<span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-2)" }}>/day</span></div>
+              <div
+                style={{
+                  marginLeft: 'auto',
+                  fontSize: 17,
+                  fontWeight: 600,
+                  color: 'var(--accent)',
+                }}
+              >
+                ${car.price}
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 400,
+                    color: 'var(--text-2)',
+                  }}
+                >
+                  /day
+                </span>
+              </div>
             </div>
             <div className="divider" />
             <div className="date-range">
-              <div><div className="label">Pickup date</div><input type="date" defaultValue="2026-04-05" /></div>
-              <div><div className="label">Return date</div><input type="date" defaultValue="2026-04-08" /></div>
+              <div>
+                <div className="label">Pickup</div>
+                <input type="date" defaultValue="2026-04-05" />
+              </div>
+              <div>
+                <div className="label">Return</div>
+                <input type="date" defaultValue="2026-04-08" />
+              </div>
             </div>
-            <div className="form-group"><div className="label">Driver full name</div><input placeholder="Sereymongkol Thoeung" /></div>
-            <div className="form-group"><div className="label">Driver license number</div><input placeholder="DL-12345678" /></div>
-            <div className="form-group"><div className="label">Phone number</div><input placeholder="+855 17 420 0051" /></div>
+            <div className="form-group">
+              <div className="label">Driver full name</div>
+              <input placeholder="Sereymongkol Thoeung" />
+            </div>
+            <div className="form-group">
+              <div className="label">Driver license number</div>
+              <input placeholder="DL-12345678" />
+            </div>
+            <div className="form-group">
+              <div className="label">Phone number</div>
+              <input placeholder="+855 17 420 0051" />
+            </div>
             <div className="total-box">
-              <div><div style={{ fontSize: 12, color: "var(--accent)" }}>Total ({days} days × ${car.price})</div></div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "var(--accent)" }}>${car.price * days}</div>
+              <div>
+                <div style={{ fontSize: 12, color: 'var(--accent)' }}>
+                  Total ({days} days × ${car.price})
+                </div>
+              </div>
+              <div
+                style={{
+                  fontSize: 20,
+                  fontWeight: 700,
+                  color: 'var(--accent)',
+                }}
+              >
+                ${car.price * days}
+              </div>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 24 }}>
-              <button className="btn btn-ghost" onClick={() => setStep(1)}>Back</button>
-              <button className="btn btn-primary btn-lg" onClick={() => setStep(3)}>Continue to Payment <Icon d={icons.arrow} size={15} color="#fff" /></button>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginTop: 24,
+              }}
+            >
+              <button
+                className="btn btn-ghost btn-round-back"
+                aria-label="Back"
+                onClick={goBack}
+              >
+                <Icon d={icons.back} size={15} />
+              </button>
+              <button
+                className="btn btn-primary btn-lg"
+                onClick={() => setStep(3)}
+              >
+                Continue to Payment{' '}
+                <Icon d={icons.arrow} size={15} color="#fff" />
+              </button>
             </div>
           </div>
         </div>
@@ -1199,37 +1658,102 @@ function CarRental({ role, setActive }) {
           <div className="card">
             <div className="sec-title">Choose payment method</div>
             {[
-              { id: "aba", icon: "🏦", name: "ABA Bank", sub: "Scan QR or transfer" },
-              { id: "khqr", icon: "🇰🇭", name: "KHQR", sub: "Cambodia QR payment standard" },
-            ].map(m => (
-              <div key={m.id} className={`pay-method ${payMethod === m.id ? "selected" : ""}`} onClick={() => setPayMethod(m.id)}>
+              {
+                id: 'aba',
+                icon: '🏦',
+                name: 'ABA Bank',
+                sub: 'Scan QR or transfer',
+              },
+              {
+                id: 'khqr',
+                icon: '🇰🇭',
+                name: 'KHQR',
+                sub: 'Cambodia QR payment standard',
+              },
+            ].map((m) => (
+              <div
+                key={m.id}
+                className={`pay-method ${payMethod === m.id ? 'selected' : ''}`}
+                onClick={() => setPayMethod(m.id)}
+              >
                 <div className="pay-method-icon">{m.icon}</div>
-                <div><div className="pay-method-name">{m.name}</div><div className="pay-method-sub">{m.sub}</div></div>
-                <div className={`pay-radio ${payMethod === m.id ? "checked" : ""}`} />
+                <div>
+                  <div className="pay-method-name">{m.name}</div>
+                  <div className="pay-method-sub">{m.sub}</div>
+                </div>
+                <div
+                  className={`pay-radio ${payMethod === m.id ? 'checked' : ''}`}
+                />
               </div>
             ))}
 
-            <div style={{ textAlign: "center", marginTop: 20 }}>
-              <div style={{ fontSize: 12, color: "var(--text-2)", marginBottom: 12 }}>Scan to pay deposit</div>
+            <div style={{ textAlign: 'center', marginTop: 20 }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--text-2)',
+                  marginBottom: 12,
+                }}
+              >
+                Scan to pay deposit
+              </div>
               <div className="qr-box">
                 <div className="qr-pattern">
                   {Array.from({ length: 100 }, (_, i) => (
-                    <div key={i} className="qr-cell" style={{ background: Math.random() > 0.45 ? "#111" : "transparent" }} />
+                    <div
+                      key={i}
+                      className="qr-cell"
+                      style={{
+                        background:
+                          Math.random() > 0.45 ? '#111' : 'transparent',
+                      }}
+                    />
                   ))}
                 </div>
               </div>
-              <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 10 }}>Deposit: ${(car.price * days * 0.2).toFixed(2)}</div>
+              <div
+                style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 10 }}
+              >
+                Deposit: ${(car.price * days * 0.2).toFixed(2)}
+              </div>
             </div>
 
             <div className="divider" />
             <div className="total-box">
-              <span style={{ fontSize: 13, color: "var(--accent)" }}>Remaining to pay on pickup</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>${(car.price * days * 0.8).toFixed(2)}</span>
+              <span style={{ fontSize: 13, color: 'var(--accent)' }}>
+                Remaining to pay on pickup
+              </span>
+              <span
+                style={{
+                  fontSize: 18,
+                  fontWeight: 700,
+                  color: 'var(--accent)',
+                }}
+              >
+                ${(car.price * days * 0.8).toFixed(2)}
+              </span>
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
-              <button className="btn btn-ghost" onClick={() => setStep(2)}>Back</button>
-              <button className="btn btn-primary btn-lg" onClick={() => setDone(true)}>Confirm Rental <Icon d={icons.check} size={15} color="#fff" /></button>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginTop: 24,
+              }}
+            >
+              <button
+                className="btn btn-ghost btn-round-back"
+                aria-label="Back"
+                onClick={goBack}
+              >
+                <Icon d={icons.back} size={15} />
+              </button>
+              <button
+                className="btn btn-primary btn-lg"
+                onClick={() => setDone(true)}
+              >
+                Confirm Rental <Icon d={icons.check} size={15} color="#fff" />
+              </button>
             </div>
           </div>
         </div>
@@ -1240,60 +1764,137 @@ function CarRental({ role, setActive }) {
 
 function MyBookings({ role }) {
   const navigate = useNavigate();
-  const [tab, setTab] = useState("upcoming");
+  const [tab, setTab] = useState('upcoming');
   const [qrOpen, setQrOpen] = useState(null);
-  const [rentalFilter, setRentalFilter] = useState("all");
+  const [rentalFilter, setRentalFilter] = useState('all');
 
-  if (role === 'guest') return (
-    <div className="page" style={{ textAlign: 'center' }}>
-      <div className="confirm-icon" style={{ background: 'var(--accent-soft)', color: 'var(--accent)', width: 60, height: 60, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', fontSize: 24 }}>🎫</div>
-      <div className="page-title">Sign in to see bookings</div>
-      <button className="btn btn-primary" style={{ marginTop: 20 }} onClick={() => navigate('/login')}>Sign in now</button>
-    </div>
-  );
+  if (role === 'guest')
+    return (
+      <div className="page" style={{ textAlign: 'center' }}>
+        <div
+          className="confirm-icon"
+          style={{
+            background: 'var(--accent-soft)',
+            color: 'var(--accent)',
+            width: 60,
+            height: 60,
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            margin: '0 auto 20px',
+            fontSize: 24,
+          }}
+        >
+          🎫
+        </div>
+        <div className="page-title">Sign in to see bookings</div>
+        <button
+          className="btn btn-primary"
+          style={{ marginTop: 20 }}
+          onClick={() => navigate('/login')}
+        >
+          Sign in now
+        </button>
+      </div>
+    );
 
   const bookings = {
     upcoming: [
-      { id: '#B-4811', type: 'ticket', route: 'Phnom Penh → Siem Reap', price: '$12.00', status: 'Confirmed', date: 'Apr 5, 2026', time: "06:00", seat: "A2" },
+      {
+        id: '#B-4811',
+        type: 'ticket',
+        route: 'Phnom Penh → Siem Reap',
+        price: '$12.00',
+        status: 'Confirmed',
+        date: 'Apr 5, 2026',
+        time: '06:00',
+        seat: 'A2',
+      },
     ],
     past: [
-      { id: '#B-4795', type: 'ticket', route: 'Phnom Penh → Kampot', price: '$8.00', status: 'Completed', date: 'Mar 12, 2026', time: "09:00", seat: "A5" },
+      {
+        id: '#B-4795',
+        type: 'ticket',
+        route: 'Phnom Penh → Kampot',
+        price: '$8.00',
+        status: 'Completed',
+        date: 'Mar 12, 2026',
+        time: '09:00',
+        seat: 'A5',
+      },
     ],
     rentals: [
-      { id: '#R-205', type: 'rental', route: 'Toyota Camry', price: '$135.00', status: 'Returned', date: 'Mar 28 – Apr 3', time: "3 days", seat: "PP-1122" },
-      { id: '#R-202', type: 'rental', route: 'Honda CRV', price: '$130.00', status: 'Pending', date: 'Apr 5 – Apr 7', time: "2 days", seat: "PP-3344" },
+      {
+        id: '#R-205',
+        type: 'rental',
+        route: 'Toyota Camry',
+        price: '$135.00',
+        status: 'Returned',
+        date: 'Mar 28 – Apr 3',
+        time: '3 days',
+        seat: 'PP-1122',
+      },
+      {
+        id: '#R-202',
+        type: 'rental',
+        route: 'Honda CRV',
+        price: '$130.00',
+        status: 'Pending',
+        date: 'Apr 5 – Apr 7',
+        time: '2 days',
+        seat: 'PP-3344',
+      },
     ],
   };
 
   const filteredRentals = (bookings.rentals || []).filter((b) => {
-    if (rentalFilter === "all") return true;
+    if (rentalFilter === 'all') return true;
     return b.status.toLowerCase() === rentalFilter;
   });
 
-  const currentBookings = tab === "rentals" ? filteredRentals : (bookings[tab] || []);
+  const currentBookings =
+    tab === 'rentals' ? filteredRentals : bookings[tab] || [];
 
   return (
     <div className="page" style={{ maxWidth: 640 }}>
       <div className="page-title">My bookings</div>
       <div className="page-sub">Track all your travel activity</div>
-      
-      <div className="pill-nav" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+
+      <div
+        className="pill-nav"
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <div style={{ display: 'flex', gap: 8 }}>
-          {[{ id: "upcoming", label: "Upcoming" }, { id: "past", label: "Past trips" }, { id: "rentals", label: "Rentals" }].map(t => (
-            <div key={t.id} className={`pill-tab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>{t.label}</div>
+          {[
+            { id: 'upcoming', label: 'Upcoming' },
+            { id: 'past', label: 'Past trips' },
+            { id: 'rentals', label: 'Rentals' },
+          ].map((t) => (
+            <div
+              key={t.id}
+              className={`pill-tab ${tab === t.id ? 'active' : ''}`}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </div>
           ))}
         </div>
       </div>
       {tab === 'rentals' && (
         <div className="pill-nav" style={{ marginTop: -6, marginBottom: 20 }}>
           {[
-            { id: "all", label: "All" },
-            { id: "pending", label: "Pending" },
-            { id: "returned", label: "Returned" },
+            { id: 'all', label: 'All' },
+            { id: 'pending', label: 'Pending' },
+            { id: 'returned', label: 'Returned' },
           ].map((f) => (
             <div
               key={f.id}
-              className={`pill-tab ${rentalFilter === f.id ? "active" : ""}`}
+              className={`pill-tab ${rentalFilter === f.id ? 'active' : ''}`}
               onClick={() => setRentalFilter(f.id)}
             >
               {f.label}
@@ -1302,43 +1903,84 @@ function MyBookings({ role }) {
         </div>
       )}
 
-      {currentBookings.map(b => (
+      {currentBookings.map((b) => (
         <div key={b.id} className="booking-item ticket-card">
           <div className="booking-header">
             <div>
-              <span className={`badge ${b.type === 'ticket' ? 'badge-blue' : 'badge-purple'}`} style={{ marginBottom: 6, fontSize: 9 }}>{b.type === 'ticket' ? 'BUS TICKET' : 'CAR RENTAL'}</span>
+              <span
+                className={`badge ${b.type === 'ticket' ? 'badge-blue' : 'badge-purple'}`}
+                style={{ marginBottom: 6, fontSize: 9 }}
+              >
+                {b.type === 'ticket' ? 'BUS TICKET' : 'CAR RENTAL'}
+              </span>
               <div className="booking-route">{b.route}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{b.id} · {b.date}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                {b.id} · {b.date}
+              </div>
             </div>
-            <span className={`badge ${b.status === 'Confirmed' ? 'badge-green' : b.status === 'Completed' || b.status === 'Returned' ? 'badge-purple' : 'badge-amber'}`}>{b.status}</span>
+            <span
+              className={`badge ${b.status === 'Confirmed' ? 'badge-green' : b.status === 'Completed' || b.status === 'Returned' ? 'badge-purple' : 'badge-amber'}`}
+            >
+              {b.status}
+            </span>
           </div>
           <div className="booking-meta">
-            <div className="booking-meta-item">{b.type === 'ticket' ? 'Departure' : 'Duration'}<span>{b.time}</span></div>
-            <div className="booking-meta-item">{b.type === 'ticket' ? 'Seat' : 'Plate'}<span>{b.seat}</span></div>
-            <div className="booking-meta-item">Paid<span>{b.price}</span></div>
+            <div className="booking-meta-item">
+              {b.type === 'ticket' ? 'Departure' : 'Duration'}
+              <span>{b.time}</span>
+            </div>
+            <div className="booking-meta-item">
+              {b.type === 'ticket' ? 'Seat' : 'Plate'}
+              <span>{b.seat}</span>
+            </div>
+            <div className="booking-meta-item">
+              Paid<span>{b.price}</span>
+            </div>
           </div>
 
-          {(b.status === 'Confirmed' || b.status === 'Completed') && b.type === 'ticket' && (
-            <div style={{ marginTop: 12, borderTop: "0.5px solid var(--glass-border)", paddingTop: 12 }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => setQrOpen(qrOpen === b.id ? null : b.id)}>
-                <Icon d={icons.qr} size={13} /> {qrOpen === b.id ? "Hide Ticket" : "Show Ticket"}
-              </button>
-              
-              {qrOpen === b.id && (
-                <div className="qr-reveal">
-                  <div style={{ fontSize: 12, color: "var(--text-2)" }}>Scan at boarding gate</div>
-                  <div className="qr-mini">
-                    <div className="qr-mini-grid">
-                      {Array.from({ length: 64 }, (_, i) => (
-                        <div key={i} style={{ borderRadius: 1, background: Math.random() > 0.5 ? "#111" : "transparent" }} />
-                      ))}
+          {(b.status === 'Confirmed' || b.status === 'Completed') &&
+            b.type === 'ticket' && (
+              <div
+                style={{
+                  marginTop: 12,
+                  borderTop: '0.5px solid var(--glass-border)',
+                  paddingTop: 12,
+                }}
+              >
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setQrOpen(qrOpen === b.id ? null : b.id)}
+                >
+                  <Icon d={icons.qr} size={13} />{' '}
+                  {qrOpen === b.id ? 'Hide Ticket' : 'Show Ticket'}
+                </button>
+
+                {qrOpen === b.id && (
+                  <div className="qr-reveal">
+                    <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                      Scan at boarding gate
+                    </div>
+                    <div className="qr-mini">
+                      <div className="qr-mini-grid">
+                        {Array.from({ length: 64 }, (_, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              borderRadius: 1,
+                              background:
+                                Math.random() > 0.5 ? '#111' : 'transparent',
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      {b.id} · {b.route}
                     </div>
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--text-3)" }}>{b.id} · {b.route}</div>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            )}
         </div>
       ))}
     </div>
@@ -1347,13 +1989,22 @@ function MyBookings({ role }) {
 
 function Profile({ role, onLogout }) {
   const navigate = useNavigate();
-  if (role === 'guest') return (
-    <div className="page" style={{ textAlign: 'center' }}>
-      <div className="profile-avatar" style={{ opacity: 0.3 }}>?</div>
-      <div className="page-title">Private Profile</div>
-      <button className="btn btn-primary" style={{ marginTop: 20 }} onClick={() => navigate('/login')}>Sign in now</button>
-    </div>
-  );
+  if (role === 'guest')
+    return (
+      <div className="page" style={{ textAlign: 'center' }}>
+        <div className="profile-avatar" style={{ opacity: 0.3 }}>
+          ?
+        </div>
+        <div className="page-title">Private Profile</div>
+        <button
+          className="btn btn-primary"
+          style={{ marginTop: 20 }}
+          onClick={() => navigate('/login')}
+        >
+          Sign in now
+        </button>
+      </div>
+    );
 
   return (
     <div className="page" style={{ maxWidth: 520 }}>
@@ -1363,7 +2014,7 @@ function Profile({ role, onLogout }) {
         className="card"
         style={{ textAlign: 'center', marginBottom: 16, padding: '28px' }}
       >
-        <div className="profile-avatar">SC</div>
+        <div className="profile-avatar">MK</div>
         <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
           Sereymongkol Thoeung
         </div>
@@ -1451,21 +2102,43 @@ function Profile({ role, onLogout }) {
   );
 }
 
-const PAGES = { home: Home, search: BusSearch, cars: CarRental, bookings: MyBookings, profile: Profile };
+const PAGES = {
+  home: Home,
+  search: BusSearch,
+  cars: CarRental,
+  bookings: MyBookings,
+  profile: Profile,
+};
 
 export default function App({ role, onLogout }) {
   const [page, setPage] = useState('home');
   const PageComp = PAGES[page] || Home;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+    <div
+      style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}
+    >
       <style>{css}</style>
-      <TopNav active={page} setActive={setPage} role={role} onLogout={onLogout} />
+      <TopNav
+        active={page}
+        setActive={setPage}
+        role={role}
+        onLogout={onLogout}
+      />
       <div style={{ flex: 1 }}>
         <PageComp role={role} setActive={setPage} onLogout={onLogout} />
       </div>
-      <div style={{ textAlign: "center", padding: "12px 0", borderTop: "0.5px solid var(--glass-border)" }}>
-        <span style={{ fontSize: 11, color: "var(--text-3)", cursor: "pointer" }} onClick={() => window.location.href = '/login'}>
+      <div
+        style={{
+          textAlign: 'center',
+          padding: '12px 0',
+          borderTop: '0.5px solid var(--glass-border)',
+        }}
+      >
+        <span
+          style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer' }}
+          onClick={() => (window.location.href = '/login')}
+        >
           Sign in to another account
         </span>
       </div>

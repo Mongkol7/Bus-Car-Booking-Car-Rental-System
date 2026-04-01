@@ -1,0 +1,17 @@
+{
+  "name": "Book.Ride - Cambodia's Travel App",
+  "short_name": "Book.Ride",
+  "description": "Book bus seats or rent a car in Cambodia with ease.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#4f8ef7",
+  "icons": [
+    {
+      "src": "BookRide_Logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
