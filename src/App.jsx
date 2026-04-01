@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import AdminApp from './Admin';
 import UserApp from './User';
 import Login from './Login';
 
 function App() {
-  const [role, setRole] = useState('guest'); // default to guest (Unknown User)
+  const [role, setRole] = useState(() => {
+    if (typeof window === 'undefined') return 'guest';
+    return window.localStorage.getItem('role') || 'guest';
+  });
+  const [redirectToLogin, setRedirectToLogin] = useState(false);
 
   const handleLogin = (userRole) => {
     setRole(userRole);
@@ -13,7 +17,7 @@ function App() {
 
   const handleLogout = () => {
     setRole('guest');
-    window.location.href = '/login';
+    setRedirectToLogin(true);
   };
 
   const RoleRoute = ({ targetRole }) => {
@@ -24,8 +28,15 @@ function App() {
     return <UserApp role={targetRole} onLogout={handleLogout} />;
   };
 
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('role', role);
+    }
+  }, [role]);
+
   return (
     <BrowserRouter>
+      <LogoutListener shouldRedirect={redirectToLogin} onDone={() => setRedirectToLogin(false)} />
       <Routes>
         {/* User / Guest Landing Route */}
         <Route 
@@ -94,3 +105,14 @@ function App() {
 }
 
 export default App;
+
+function LogoutListener({ shouldRedirect, onDone }) {
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (shouldRedirect) {
+      navigate('/login', { replace: true });
+      onDone();
+    }
+  }, [shouldRedirect, navigate, onDone]);
+  return null;
+}

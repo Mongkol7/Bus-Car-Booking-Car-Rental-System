@@ -289,7 +289,11 @@ const NAV = [
 function Sidebar({ active, setActive, onLogout }) {
   return (
     <div className="sidebar">
-      <div className="sidebar-logo">
+      <div
+        className="sidebar-logo"
+        style={{ cursor: 'pointer' }}
+        onClick={() => setActive('dashboard')}
+      >
         Admin<span>.</span>Panel
       </div>
       <div className="nav-section">

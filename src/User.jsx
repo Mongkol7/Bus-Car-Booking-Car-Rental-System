@@ -305,7 +305,16 @@ function TopNav({ active, setActive, role, onLogout }) {
   const navigate = useNavigate();
   return (
     <nav className="topnav">
-      <div className="topnav-logo">Book<span>.</span>Ride</div>
+      <div
+        className="topnav-logo"
+        style={{ cursor: 'pointer' }}
+        onClick={() => {
+          setActive('home');
+          navigate('/');
+        }}
+      >
+        Book<span>.</span>Ride
+      </div>
       <div className="topnav-links">
         {NAV.map((n) => (
           <div key={n.id} className={`topnav-link ${active === n.id ? 'active' : ''}`} onClick={() => setActive(n.id)}>{n.label}</div>
