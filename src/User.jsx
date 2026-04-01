@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { carModels } from './data/transportData';
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -419,13 +420,13 @@ function BusSearch({ role, setActive }) {
   ];
 
   const routes = [
-    { id: 1, from: "06:00", to: "11:00", vehicle: "Mekong Express", type: "VIP Sleeper", avail: 8, price: 12 },
-    { id: 2, from: "09:00", to: "14:00", vehicle: "Sorya Bus", type: "Express Coach", avail: 14, price: 12 },
-    { id: 3, from: "13:00", to: "18:00", vehicle: "Giant Ibis", type: "Luxury Coach", avail: 3, price: 15 },
-    { id: 4, from: "15:30", to: "20:30", vehicle: "Larryta Express", type: "Mini Bus", avail: 10, price: 13 },
-    { id: 5, from: "22:00", to: "04:00", vehicle: "VET Air Bus", type: "Night Sleeper", avail: 5, price: 16 },
-    { id: 6, from: "07:30", to: "12:30", vehicle: "Capitol Tours", type: "Standard Coach", avail: 18, price: 11 },
-    { id: 7, from: "17:00", to: "22:30", vehicle: "Sorya Bus", type: "Premium Coach", avail: 6, price: 14 },
+    { id: 1, from: "06:00", to: "11:00", vehicle: "Mekong Express", type: "VIP Sleeper", avail: 8, price: 12, color: "#22c55e", bg: "rgba(34,197,94,0.16)" },
+    { id: 2, from: "09:00", to: "14:00", vehicle: "Sorya Bus", type: "Express Coach", avail: 14, price: 12, color: "#f59e0b", bg: "rgba(245,158,11,0.16)" },
+    { id: 3, from: "13:00", to: "18:00", vehicle: "Giant Ibis", type: "Luxury Coach", avail: 3, price: 15, color: "#a855f7", bg: "rgba(168,85,247,0.16)" },
+    { id: 4, from: "15:30", to: "20:30", vehicle: "Larryta Express", type: "Mini Bus", avail: 10, price: 13, color: "#38bdf8", bg: "rgba(56,189,248,0.16)" },
+    { id: 5, from: "22:00", to: "04:00", vehicle: "VET Air Bus", type: "Night Sleeper", avail: 5, price: 16, color: "#f87171", bg: "rgba(248,113,113,0.16)" },
+    { id: 6, from: "07:30", to: "12:30", vehicle: "Capitol Tours", type: "Standard Coach", avail: 18, price: 11, color: "#60a5fa", bg: "rgba(96,165,250,0.16)" },
+    { id: 7, from: "17:00", to: "22:30", vehicle: "Sorya Bus", type: "Premium Coach", avail: 6, price: 14, color: "#f59e0b", bg: "rgba(245,158,11,0.16)" },
   ];
 
   const currentRoute = routes.find(r => r.id === selectedRoute);
@@ -541,9 +542,25 @@ function BusSearch({ role, setActive }) {
               <div>
                 <div className="route-time">{r.from}</div>
                 <div
-                  style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    marginTop: 2,
+                  }}
                 >
-                  {r.vehicle}
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: r.color,
+                      boxShadow: `0 0 0 3px ${r.bg}`,
+                    }}
+                  />
+                  <span style={{ fontSize: 11, color: r.color }}>
+                    {r.vehicle}
+                  </span>
                 </div>
                 <div
                   style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}
@@ -679,7 +696,26 @@ function BusSearch({ role, setActive }) {
                 </div>
                 <div className="summary-row">
                   <span className="summary-key">Vehicle</span>
-                  <span className="summary-val">{currentRoute?.vehicle}</span>
+                  <span
+                    className="summary-val"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      color: currentRoute?.color || 'var(--text)',
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        background: currentRoute?.color || 'var(--text-3)',
+                        boxShadow: `0 0 0 3px ${currentRoute?.bg || 'transparent'}`,
+                      }}
+                    />
+                    {currentRoute?.vehicle}
+                  </span>
                 </div>
                 <div className="summary-row">
                   <span className="summary-key">Bus type</span>
@@ -898,14 +934,16 @@ function CarRental({ role, setActive }) {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [shaking, setShaking] = useState(null);
 
-  const cars = [
-    { id: 1, name: 'Toyota Camry', type: 'Sedan', price: 45, emoji: '🚗', status: 'Available' },
-    { id: 2, name: 'Honda CRV', type: 'SUV', price: 65, emoji: '🚙', status: 'Rented' },
-    { id: 3, name: 'Lexus RX 350', type: 'SUV', price: 95, emoji: '🚘', status: 'Available' },
-    { id: 4, name: 'Toyota Vios', type: 'Sedan', price: 38, emoji: '🚗', status: 'Available' },
-    { id: 5, name: 'Kia Sportage', type: 'SUV', price: 58, emoji: '🚙', status: 'Available' },
-    { id: 6, name: 'Honda City', type: 'Sedan', price: 35, emoji: '🚗', status: 'Available' }
-  ];
+  const cars = carModels.map((c) => ({
+    id: c.id,
+    name: c.name,
+    type: c.type,
+    seats: c.seats,
+    trans: c.trans,
+    price: c.dailyRate,
+    emoji: c.emoji,
+    status: c.status,
+  }));
 
   const car = cars.find(c => c.id === selected);
   const days = 3; // Mocked duration
@@ -979,7 +1017,7 @@ function CarRental({ role, setActive }) {
               <div style={{ fontSize: 32 }}>{car.emoji}</div>
               <div>
                 <div style={{ fontWeight: 600, fontSize: 15 }}>{car.name}</div>
-                <div style={{ fontSize: 12, color: "var(--text-2)" }}>{car.type} · 5 seats · Auto</div>
+                <div style={{ fontSize: 12, color: "var(--text-2)" }}>{car.type} · {car.seats} seats · {car.trans}</div>
               </div>
               <div style={{ marginLeft: "auto", fontSize: 17, fontWeight: 600, color: "var(--accent)" }}>${car.price}<span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-2)" }}>/day</span></div>
             </div>
@@ -1174,10 +1212,10 @@ function Profile({ role, onLogout }) {
       >
         <div className="profile-avatar">SC</div>
         <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
-          Sophea Chan
+          Sereymongkol Thoeung
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16 }}>
-          sophea@gmail.com
+          thoeungsereymongkol@gmail.com
         </div>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 10 }}>
           <span className="badge badge-green">Verified</span>
@@ -1189,20 +1227,20 @@ function Profile({ role, onLogout }) {
         <div className="form-row">
           <div>
             <div className="label">First name</div>
-            <input defaultValue="Sophea" />
+            <input defaultValue="Sereymongkol" />
           </div>
           <div>
             <div className="label">Last name</div>
-            <input defaultValue="Chan" />
+            <input defaultValue="Thoeung" />
           </div>
         </div>
         <div className="form-group">
           <div className="label">Email</div>
-          <input defaultValue="sophea@gmail.com" />
+          <input defaultValue="thoeungsereymongkol@gmail.com" />
         </div>
         <div className="form-group">
           <div className="label">Phone</div>
-          <input defaultValue="+855 12 345 678" />
+          <input defaultValue="+855 17 420 051" />
         </div>
         <div className="form-group">
           <div className="label">National ID</div>

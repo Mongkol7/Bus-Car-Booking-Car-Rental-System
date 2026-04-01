@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import AdminApp from './Admin';
 import UserApp from './User';
@@ -13,6 +13,15 @@ function App() {
 
   const handleLogout = () => {
     setRole('guest');
+    window.location.href = '/login';
+  };
+
+  const RoleRoute = ({ targetRole }) => {
+    useEffect(() => {
+      setRole(targetRole);
+    }, [targetRole]);
+
+    return <UserApp role={targetRole} onLogout={handleLogout} />;
   };
 
   return (
@@ -23,6 +32,10 @@ function App() {
           path="/" 
           element={<UserApp role={role} onLogout={handleLogout} />} 
         />
+
+        {/* Explicit Role Routes */}
+        <Route path="/guest" element={<RoleRoute targetRole="guest" />} />
+        <Route path="/user" element={<RoleRoute targetRole="user" />} />
 
         {/* Login Route */}
         <Route 

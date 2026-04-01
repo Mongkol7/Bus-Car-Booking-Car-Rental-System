@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { busFleet, carModels } from './data/transportData';
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600&display=swap');
@@ -285,7 +286,7 @@ const NAV = [
 ];
 
 // ── SIDEBAR ────────────────────────────────────────────────────────────────────
-function Sidebar({ active, setActive }) {
+function Sidebar({ active, setActive, onLogout }) {
   return (
     <div className="sidebar">
       <div className="sidebar-logo">
@@ -322,7 +323,7 @@ function Sidebar({ active, setActive }) {
           <Icon d={icons.settings} size={15} color="currentColor" />
           Settings
         </div>
-        <div className="nav-item">
+        <div className="nav-item" onClick={onLogout}>
           <Icon d={icons.logout} size={15} color="currentColor" />
           Logout
         </div>
@@ -478,6 +479,46 @@ function Dashboard() {
           </div>
         ))}
       </div>
+      <div className="grid2" style={{ marginTop: 16 }}>
+        <div className="card">
+          <div className="sec-title">Top customers</div>
+          {[
+            { name: 'Sophea Chan', email: 'sophea@gmail.com', trips: 12 },
+            { name: 'Dara Meas', email: 'dara.meas@gmail.com', trips: 9 },
+            { name: 'Lina Keo', email: 'lina.keo@gmail.com', trips: 7 },
+            { name: 'Bopha Ros', email: 'bopha.ros@gmail.com', trips: 6 },
+          ].map((u) => (
+            <div key={u.email} className="stat-row">
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{u.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  {u.email}
+                </div>
+              </div>
+              <span className="stat-val">{u.trips} trips</span>
+            </div>
+          ))}
+        </div>
+        <div className="card">
+          <div className="sec-title">New user signups</div>
+          {[
+            { name: 'Vuthy Sok', date: 'Apr 5', route: 'PP → SR' },
+            { name: 'Channary Oum', date: 'Apr 5', route: 'PP → KP' },
+            { name: 'Rathana Em', date: 'Apr 4', route: 'SR → KT' },
+            { name: 'Makara Phy', date: 'Apr 4', route: 'PP → KP' },
+          ].map((u) => (
+            <div key={u.name} className="stat-row">
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{u.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  Joined {u.date}
+                </div>
+              </div>
+              <span className="stat-val">{u.route}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -485,86 +526,8 @@ function Dashboard() {
 // ── VEHICLES ──────────────────────────────────────────────────────────────────
 function Vehicles() {
   const [tab, setTab] = useState('buses');
-  const buses = [
-    {
-      id: 'V-01',
-      name: 'Mekong Express',
-      plate: '2A-1234',
-      seats: 40,
-      status: 'Active',
-    },
-    {
-      id: 'V-02',
-      name: 'Sorya Bus',
-      plate: '2B-5678',
-      seats: 35,
-      status: 'Active',
-    },
-    {
-      id: 'V-03',
-      name: 'Capitol Bus',
-      plate: '3C-9012',
-      seats: 45,
-      status: 'Maintenance',
-    },
-    {
-      id: 'V-04',
-      name: 'Giant Ibis',
-      plate: '4D-3456',
-      seats: 38,
-      status: 'Active',
-    },
-  ];
-  const cars = [
-    {
-      id: 'C-01',
-      name: 'Toyota Camry',
-      plate: 'PP-1122',
-      type: 'Sedan',
-      price: '$45/day',
-      status: 'Available',
-    },
-    {
-      id: 'C-02',
-      name: 'Honda CRV',
-      plate: 'PP-3344',
-      type: 'SUV',
-      price: '$65/day',
-      status: 'Rented',
-    },
-    {
-      id: 'C-03',
-      name: 'Lexus RX',
-      plate: 'PP-5566',
-      type: 'SUV',
-      price: '$95/day',
-      status: 'Available',
-    },
-    {
-      id: 'C-04',
-      name: 'Toyota Vios',
-      plate: 'PP-7788',
-      type: 'Sedan',
-      price: '$38/day',
-      status: 'Available',
-    },
-    {
-      id: 'C-05',
-      name: 'Kia Sportage',
-      plate: 'PP-9900',
-      type: 'SUV',
-      price: '$58/day',
-      status: 'Maintenance',
-    },
-    {
-      id: 'C-06',
-      name: 'Honda City',
-      plate: 'PP-2244',
-      type: 'Sedan',
-      price: '$35/day',
-      status: 'Available',
-    },
-  ];
+  const buses = busFleet;
+  const cars = carModels;
   return (
     <div>
       <div
@@ -615,8 +578,10 @@ function Vehicles() {
                 <tr>
                   <th>ID</th>
                   <th>Name</th>
+                  <th>Type</th>
                   <th>Plate</th>
                   <th>Seats</th>
+                  <th>Driver</th>
                   <th>Status</th>
                   <th>Actions</th>
                 </tr>
@@ -628,8 +593,10 @@ function Vehicles() {
                       {b.id}
                     </td>
                     <td style={{ fontWeight: 500 }}>{b.name}</td>
+                    <td className="td-muted">{b.type}</td>
                     <td className="td-muted">{b.plate}</td>
                     <td className="td-muted">{b.seats}</td>
+                    <td className="td-muted">{b.driver}</td>
                     <td>
                       <span
                         className={`badge ${b.status === 'Active' ? 'badge-green' : 'badge-amber'}`}
@@ -674,12 +641,12 @@ function Vehicles() {
                 </span>
               </div>
               <div className="car-type">
-                {c.type} · {c.plate}
+                {c.type} · {c.plate} · {c.seats} seats · {c.trans}
               </div>
               <div className="car-meta">
                 <div className="car-price">
-                  {c.price.split('/')[0]}
-                  <span>/{c.price.split('/')[1]}</span>
+                  ${c.dailyRate}
+                  <span>/day</span>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button className="btn btn-ghost btn-sm">
@@ -746,38 +713,83 @@ function Routes() {
       duration: '3h',
       price: '$10',
     },
+    {
+      id: 'R-06',
+      from: 'Phnom Penh',
+      to: 'Battambang',
+      stops: 1,
+      dist: '291 km',
+      duration: '5h',
+      price: '$11',
+    },
+    {
+      id: 'R-07',
+      from: 'Phnom Penh',
+      to: 'Sihanoukville',
+      stops: 1,
+      dist: '230 km',
+      duration: '4h',
+      price: '$12',
+    },
+    {
+      id: 'R-08',
+      from: 'Phnom Penh',
+      to: 'Kratie',
+      stops: 2,
+      dist: '315 km',
+      duration: '6h',
+      price: '$14',
+    },
   ];
   const scheds = [
     {
       id: 'S-01',
       route: 'PP → SR',
       vehicle: 'Mekong Express',
+      type: 'VIP Sleeper',
       depart: '06:00',
       seats: '40/40',
+      price: '$12',
       date: 'Apr 5',
     },
     {
       id: 'S-02',
       route: 'PP → SR',
       vehicle: 'Sorya Bus',
+      type: 'Express Coach',
       depart: '09:00',
       seats: '35/35',
+      price: '$12',
       date: 'Apr 5',
     },
     {
       id: 'S-03',
       route: 'PP → KP',
       vehicle: 'Giant Ibis',
+      type: 'Luxury Coach',
       depart: '07:30',
       seats: '38/38',
+      price: '$15',
       date: 'Apr 5',
     },
     {
       id: 'S-04',
       route: 'SR → KT',
       vehicle: 'Capitol Bus',
+      type: 'Standard Coach',
       depart: '08:00',
       seats: '45/45',
+      price: '$11',
+      date: 'Apr 6',
+    },
+    {
+      id: 'S-05',
+      route: 'PP → SHV',
+      vehicle: 'Larryta Express',
+      type: 'Mini Bus',
+      depart: '15:30',
+      seats: '20/25',
+      price: '$12',
       date: 'Apr 6',
     },
   ];
@@ -815,6 +827,7 @@ function Routes() {
                 <th>ID</th>
                 <th>From → To</th>
                 <th>Stops</th>
+                <th>Distance</th>
                 <th>Duration</th>
                 <th>Fare</th>
                 <th></th>
@@ -830,6 +843,7 @@ function Routes() {
                     {r.from} → {r.to}
                   </td>
                   <td className="td-muted">{r.stops}</td>
+                  <td className="td-muted">{r.dist}</td>
                   <td className="td-muted">{r.duration}</td>
                   <td style={{ color: 'var(--green)', fontWeight: 500 }}>
                     {r.price}
@@ -852,7 +866,9 @@ function Routes() {
                 <th>ID</th>
                 <th>Route</th>
                 <th>Vehicle</th>
+                <th>Type</th>
                 <th>Depart</th>
+                <th>Seats</th>
                 <th>Date</th>
               </tr>
             </thead>
@@ -869,6 +885,7 @@ function Routes() {
                   <td>
                     <span className="badge badge-blue">{s.depart}</span>
                   </td>
+                  <td className="td-muted">{s.seats}</td>
                   <td className="td-muted">{s.date}</td>
                 </tr>
               ))}
@@ -891,6 +908,10 @@ function Bookings() {
       seat: 'A12',
       date: 'Apr 5',
       paid: '$12',
+      payment: 'ABA',
+      email: 'sophea@gmail.com',
+      phone: '+855 12 345 678',
+      vehicle: 'Mekong Express',
       status: 'Confirmed',
     },
     {
@@ -900,6 +921,10 @@ function Bookings() {
       seat: 'B7',
       date: 'Apr 5',
       paid: '$9',
+      payment: 'KHQR',
+      email: 'dara.meas@gmail.com',
+      phone: '+855 92 301 774',
+      vehicle: 'Sorya Bus',
       status: 'Pending',
     },
     {
@@ -909,6 +934,10 @@ function Bookings() {
       seat: 'C3',
       date: 'Apr 6',
       paid: '$15',
+      payment: 'Cash',
+      email: 'lina.keo@gmail.com',
+      phone: '+855 98 112 990',
+      vehicle: 'Giant Ibis',
       status: 'Confirmed',
     },
     {
@@ -918,6 +947,10 @@ function Bookings() {
       seat: 'A1',
       date: 'Apr 4',
       paid: '$12',
+      payment: 'ABA',
+      email: 'vuthy.sok@gmail.com',
+      phone: '+855 10 553 221',
+      vehicle: 'Larryta Express',
       status: 'Cancelled',
     },
     {
@@ -927,6 +960,10 @@ function Bookings() {
       seat: 'D9',
       date: 'Apr 5',
       paid: '$8',
+      payment: 'KHQR',
+      email: 'bopha.ros@gmail.com',
+      phone: '+855 15 774 991',
+      vehicle: 'Capitol Bus',
       status: 'Confirmed',
     },
     {
@@ -936,6 +973,10 @@ function Bookings() {
       seat: 'B5',
       date: 'Apr 6',
       paid: '$12',
+      payment: 'ABA',
+      email: 'rathana.em@gmail.com',
+      phone: '+855 11 223 998',
+      vehicle: 'Sorya Bus',
       status: 'Pending',
     },
   ];
@@ -988,6 +1029,7 @@ function Bookings() {
               <tr>
                 <th>ID</th>
                 <th>User</th>
+                <th>Contact</th>
                 <th>Route</th>
                 <th>Seat</th>
                 <th>Date</th>
@@ -1003,11 +1045,21 @@ function Bookings() {
                     {b.id}
                   </td>
                   <td style={{ fontWeight: 500 }}>{b.user}</td>
-                  <td className="td-muted">{b.route}</td>
+                  <td>
+                    <div style={{ fontSize: 12 }}>{b.email}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      {b.phone}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="td-muted">{b.route}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{b.vehicle}</div>
+                  </td>
                   <td className="td-muted">{b.seat}</td>
                   <td className="td-muted">{b.date}</td>
                   <td style={{ color: 'var(--green)', fontWeight: 500 }}>
                     {b.paid}
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{b.payment}</div>
                   </td>
                   <td>
                     <span
@@ -1060,6 +1112,8 @@ function Rentals() {
       to: 'Apr 6',
       days: 3,
       total: '$195',
+      phone: '+855 12 440 909',
+      license: 'DL-384920',
       status: 'Active',
     },
     {
@@ -1070,6 +1124,8 @@ function Rentals() {
       to: 'Apr 7',
       days: 2,
       total: '$76',
+      phone: '+855 77 203 118',
+      license: 'DL-552184',
       status: 'Pending',
     },
     {
@@ -1080,6 +1136,8 @@ function Rentals() {
       to: 'Apr 9',
       days: 5,
       total: '$475',
+      phone: '+855 97 110 441',
+      license: 'DL-901332',
       status: 'Active',
     },
     {
@@ -1090,6 +1148,8 @@ function Rentals() {
       to: 'Apr 8',
       days: 2,
       total: '$116',
+      phone: '+855 31 228 994',
+      license: 'DL-441909',
       status: 'Pending',
     },
     {
@@ -1100,6 +1160,8 @@ function Rentals() {
       to: 'Apr 3',
       days: 6,
       total: '$270',
+      phone: '+855 15 800 772',
+      license: 'DL-330128',
       status: 'Returned',
     },
   ];
@@ -1158,10 +1220,10 @@ function Rentals() {
               <tr>
                 <th>ID</th>
                 <th>User</th>
+                <th>Contact</th>
                 <th>Car</th>
-                <th>From</th>
-                <th>To</th>
-                <th>Days</th>
+                <th>Period</th>
+                <th>License</th>
                 <th>Total</th>
                 <th>Actions</th>
               </tr>
@@ -1173,10 +1235,16 @@ function Rentals() {
                     {r.id}
                   </td>
                   <td style={{ fontWeight: 500 }}>{r.user}</td>
+                  <td>
+                    <div style={{ fontSize: 12 }}>{r.phone}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Driver</div>
+                  </td>
                   <td className="td-muted">{r.car}</td>
-                  <td className="td-muted">{r.from}</td>
-                  <td className="td-muted">{r.to}</td>
-                  <td className="td-muted">{r.days}</td>
+                  <td className="td-muted">
+                    {r.from} to {r.to}
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{r.days} days</div>
+                  </td>
+                  <td className="td-muted">{r.license}</td>
                   <td style={{ color: 'var(--green)', fontWeight: 500 }}>
                     {r.total}
                   </td>
@@ -1404,6 +1472,56 @@ function Reports() {
           ))}
         </div>
       </div>
+      <div className="grid2" style={{ marginTop: 16 }}>
+        <div className="card">
+          <div className="sec-title">Top customers by spend</div>
+          {[
+            { name: 'Sophea Chan', spend: '$420', trips: 12 },
+            { name: 'Dara Meas', spend: '$310', trips: 9 },
+            { name: 'Lina Keo', spend: '$255', trips: 7 },
+            { name: 'Makara Phy', spend: '$210', trips: 6 },
+          ].map((u) => (
+            <div key={u.name} className="stat-row">
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{u.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  {u.trips} trips
+                </div>
+              </div>
+              <span className="stat-val">{u.spend}</span>
+            </div>
+          ))}
+        </div>
+        <div className="card">
+          <div className="sec-title">Payment mix</div>
+          {[
+            { label: 'ABA', pct: 48, color: 'var(--accent)' },
+            { label: 'KHQR', pct: 34, color: 'var(--green)' },
+            { label: 'Cash', pct: 18, color: 'var(--amber)' },
+          ].map((p) => (
+            <div key={p.label} style={{ marginBottom: 12 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  marginBottom: 4,
+                }}
+              >
+                <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                  {p.label}
+                </span>
+                <span style={{ fontSize: 12, fontWeight: 500 }}>{p.pct}%</span>
+              </div>
+              <div className="prog-track">
+                <div
+                  className="prog-fill"
+                  style={{ width: `${p.pct}%`, background: p.color }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1418,14 +1536,17 @@ const PAGES = {
   reports: Reports,
 };
 
-export default function App() {
+export default function App({ onLogout }) {
   const [active, setActive] = useState('dashboard');
   const Page = PAGES[active];
+  const handleLogout = onLogout || (() => {
+    window.location.href = '/login';
+  });
   return (
     <>
       <style>{css}</style>
       <div className="app">
-        <Sidebar active={active} setActive={setActive} />
+        <Sidebar active={active} setActive={setActive} onLogout={handleLogout} />
         <div className="main">
           <Page />
         </div>
