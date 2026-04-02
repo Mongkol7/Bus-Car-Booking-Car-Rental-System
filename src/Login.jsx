@@ -1,5 +1,7 @@
-import { useState } from 'react';
+//Login.jsx
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import Footer from './components/Footer';
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -25,6 +27,8 @@ const css = `
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-direction: column;
+    gap: 16px;
     padding: 24px;
     background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(79,142,247,0.12) 0%, transparent 70%);
     background-color: var(--bg);
@@ -37,6 +41,8 @@ const css = `
     max-width: 400px;
     transform: translateY(0);
     transition: transform 0.3s ease;
+    display: flex;
+    flex-direction: column;
   }
 
   .auth-logo {
@@ -66,6 +72,7 @@ const css = `
     border-radius: var(--radius);
     padding: 32px;
     box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+    min-height: 360px;
   }
 
   .auth-title {
@@ -210,6 +217,23 @@ const css = `
     text-align: center;
   }
 
+  .scroll-animate {
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .scroll-animate.in-view {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .view-animate {
+    animation: viewIn 0.4s ease both;
+  }
+  @keyframes viewIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
   @keyframes logoPulse {
     0%, 100% { opacity: 0.6; transform: scale(0.96); text-shadow: 0 0 8px rgba(79,142,247,0.8), 0 0 18px rgba(79,142,247,0.7); }
     40% { opacity: 1; transform: scale(1.08); text-shadow: 0 0 16px rgba(79,142,247,1), 0 0 36px rgba(79,142,247,0.95), 0 0 54px rgba(79,142,247,0.8); }
@@ -220,13 +244,13 @@ const css = `
   @media (max-width: 700px) {
     .auth-wrap { padding: 16px; }
     .auth-logo-mark { font-size: 26px; }
-    .card { padding: 24px; }
+    .card { padding: 24px; min-height: 320px; }
     .auth-sub { font-size: 13px; }
   }
 
   @media (max-width: 520px) {
     .auth-card { max-width: 100%; }
-    .card { padding: 20px; }
+    .card { padding: 20px; min-height: 300px; }
     .btn { padding: 12px; font-size: 13px; }
     .label { font-size: 11px; }
     .back-btn { top: 16px; left: 16px; font-size: 12px; width: 34px; height: 34px; }
@@ -275,6 +299,28 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
     navigate('/');
   };
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const elements = Array.from(document.querySelectorAll('.scroll-animate'));
+    if (!('IntersectionObserver' in window)) {
+      elements.forEach((el) => el.classList.add('in-view'));
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('in-view');
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.2, rootMargin: '0px 0px -10% 0px' }
+    );
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [view]);
+
   return (
     <div className="auth-wrap">
       <style>{css}</style>
@@ -295,13 +341,13 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
       </div>
 
       <div className="auth-card">
-        <div className="auth-logo">
+        <div className="auth-logo scroll-animate">
           <div className="auth-logo-mark">Book<span className="logo-dot">.</span><span className="logo-ride">Ride</span></div>
           <div className="auth-logo-sub" style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 4 }}>Bus & Car Booking + Car Rental</div>
         </div>
         
         {view === 'login' ? (
-          <div className="card">
+          <div key="login" className="card scroll-animate view-animate">
             <div className="auth-title">Welcome back</div>
             <div className="auth-sub">Sign in to manage your travels</div>
             
@@ -341,7 +387,7 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
             </div>
           </div>
         ) : (
-          <div className="card">
+          <div key="register" className="card scroll-animate view-animate">
             <div className="auth-title">Create Account</div>
             <div className="auth-sub">Join thousands of travelers</div>
             
@@ -367,6 +413,12 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
             </div>
           </div>
         )}
+      </div>
+      <div
+        className="scroll-animate"
+        style={{ width: '100%', maxWidth: 520, marginTop: 18, padding: '0 12px' }}
+      >
+        <Footer />
       </div>
     </div>
   );

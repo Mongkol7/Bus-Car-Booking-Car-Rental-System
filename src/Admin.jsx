@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { busFleet, carModels } from './data/transportData';
+import Footer from './components/Footer';
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600&display=swap');
@@ -405,7 +406,7 @@ const css = `
   }
 
   @media (max-width: 760px) {
-    body { padding-bottom: 128px; }
+    body { padding-bottom: 40px; }
     .app { flex-direction: column; }
     .sidebar {
       display: none;
@@ -416,7 +417,7 @@ const css = `
       grid-template-columns: repeat(5, minmax(0, 1fr));
     }
     .main { padding: 20px 16px; }
-    .main { padding-bottom: 96px; }
+    .main { padding-bottom: 40px; }
     .metrics { grid-template-columns: 1fr; }
     .car-grid { grid-template-columns: 1fr; }
     table { font-size: 11px; table-layout: auto; width: 100%; white-space: nowrap; }
@@ -741,14 +742,14 @@ function Vehicles() {
   const cars = carModels;
   return (
     <div>
-      <div
-        className="page-header"
-        style={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-        }}
-      >
+        <div
+          className="page-header observe-animate"
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+          }}
+        >
         <div>
           <div className="page-title">Vehicles</div>
           <div className="page-sub">Manage fleet — buses and rental cars</div>
@@ -757,8 +758,8 @@ function Vehicles() {
           <Icon d={icons.plus} size={13} color="#fff" /> Add vehicle
         </button>
       </div>
-      <div className="pill-nav">
-        {['buses', 'cars'].map((t) => (
+        <div className="pill-nav observe-animate">
+          {['buses', 'cars'].map((t) => (
           <div
             key={t}
             className={`pill-tab ${tab === t ? 'active' : ''}`}
@@ -768,8 +769,8 @@ function Vehicles() {
           </div>
         ))}
       </div>
-      {tab === 'buses' ? (
-        <div className="card">
+        {tab === 'buses' ? (
+          <div className="card observe-animate">
           <div className="toolbar">
             <div className="input-wrap" style={{ width: 220 }}>
               <span className="search-icon">
@@ -831,10 +832,14 @@ function Vehicles() {
             </table>
           </div>
         </div>
-      ) : (
-        <div className="car-grid">
-          {cars.map((c) => (
-            <div key={c.id} className="car-card">
+        ) : (
+          <div className="car-grid">
+            {cars.map((c, i) => (
+              <div
+                key={c.id}
+                className="car-card observe-animate"
+                style={{ '--delay': `${i * 40}ms` }}
+              >
               <div className="car-img">🚗</div>
               <div
                 style={{
@@ -1007,7 +1012,7 @@ function Routes() {
   return (
     <div>
       <div
-        className="page-header"
+        className="page-header observe-animate"
         style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -1030,7 +1035,7 @@ function Routes() {
         </div>
       </div>
       <div className="grid2">
-        <div className="card">
+        <div className="card observe-animate">
           <div className="sec-title">Routes</div>
           <table>
             <thead>
@@ -1069,7 +1074,7 @@ function Routes() {
             </tbody>
           </table>
         </div>
-        <div className="card">
+        <div className="card observe-animate">
           <div className="sec-title">Upcoming schedules</div>
           <table>
             <thead>
@@ -1196,7 +1201,7 @@ function Bookings() {
   return (
     <div>
       <div
-        className="page-header"
+        className="page-header observe-animate"
         style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -1211,7 +1216,7 @@ function Bookings() {
           <Icon d={icons.download} size={13} /> Export
         </button>
       </div>
-      <div className="pill-nav">
+      <div className="pill-nav observe-animate">
         {tabs.map((t) => (
           <div
             key={t}
@@ -1222,7 +1227,7 @@ function Bookings() {
           </div>
         ))}
       </div>
-      <div className="card">
+      <div className="card observe-animate">
         <div className="toolbar">
           <div className="input-wrap" style={{ width: 240 }}>
             <span className="search-icon">
@@ -1380,11 +1385,14 @@ function Rentals() {
   const shown = all.filter((r) => r.status === tab);
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header observe-animate">
         <div className="page-title">Rentals</div>
         <div className="page-sub">Approve requests and track car returns</div>
       </div>
-      <div className="metrics" style={{ gridTemplateColumns: 'repeat(3,1fr)' }}>
+      <div
+        className="metrics observe-animate"
+        style={{ gridTemplateColumns: 'repeat(3,1fr)' }}
+      >
         {[
           {
             label: 'Pending approval',
@@ -1413,7 +1421,7 @@ function Rentals() {
           </div>
         ))}
       </div>
-      <div className="pill-nav">
+      <div className="pill-nav observe-animate">
         {tabs.map((t) => (
           <div
             key={t}
@@ -1424,7 +1432,7 @@ function Rentals() {
           </div>
         ))}
       </div>
-      <div className="card">
+      <div className="card observe-animate">
         <div className="table-wrap">
           <table>
             <thead>
@@ -1515,7 +1523,7 @@ function Reports() {
   return (
     <div>
       <div
-        className="page-header"
+        className="page-header observe-animate"
         style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -1536,7 +1544,7 @@ function Reports() {
           </button>
         </div>
       </div>
-      <div className="metrics">
+      <div className="metrics observe-animate">
         {[
           {
             label: 'Total revenue',
@@ -1573,7 +1581,7 @@ function Reports() {
         ))}
       </div>
       <div className="grid2">
-        <div className="card">
+        <div className="card observe-animate">
           <div className="sec-title">Booking revenue — daily</div>
           <div className="chart-row chart-animate observe-animate" style={{ height: 60 }}>
             {bars.map((h, i) => (
@@ -1595,7 +1603,7 @@ function Reports() {
             <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Apr 12</span>
           </div>
         </div>
-        <div className="card">
+        <div className="card observe-animate">
           <div className="sec-title">Rental revenue — daily</div>
           <div className="chart-row chart-animate observe-animate" style={{ height: 60 }}>
             {rentalBars.map((h, i) => (
@@ -1623,7 +1631,7 @@ function Reports() {
         </div>
       </div>
       <div className="grid2" style={{ marginTop: 16 }}>
-        <div className="card">
+        <div className="card observe-animate">
           <div className="sec-title">Top routes by bookings</div>
           {[
             { route: 'Phnom Penh → Siem Reap', count: 342, pct: 100 },
@@ -1650,7 +1658,7 @@ function Reports() {
             </div>
           ))}
         </div>
-        <div className="card">
+        <div className="card observe-animate">
           <div className="sec-title">Top rental cars by bookings</div>
           {[
             { car: 'Toyota Camry', count: 28, pct: 100, color: 'var(--green)' },
@@ -1684,7 +1692,7 @@ function Reports() {
         </div>
       </div>
       <div className="grid2" style={{ marginTop: 16 }}>
-        <div className="card">
+        <div className="card observe-animate">
           <div className="sec-title">Top customers by spend</div>
           {[
             { name: 'Sophea Chan', spend: '$420', trips: 12 },
@@ -1703,7 +1711,7 @@ function Reports() {
             </div>
           ))}
         </div>
-        <div className="card">
+        <div className="card observe-animate">
           <div className="sec-title">Payment mix</div>
           {[
             { label: 'ABA', pct: 48, color: 'var(--accent)' },
@@ -1853,6 +1861,7 @@ export default function App({ onLogout }) {
         <Sidebar active={active} setActive={setActive} onLogout={handleLogout} />
         <div className="main">
           <Page />
+          <Footer />
         </div>
       </div>
       {mobileMenuOpen && (

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { carModels } from './data/transportData';
+import Footer from './components/Footer';
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -126,6 +127,11 @@ const css = `
   /* ── LAYOUT ── */
   .page { max-width: 900px; margin: 0 auto; padding: 36px 24px; }
   .page-wide { max-width: 1100px; margin: 0 auto; padding: 36px 24px; }
+  
+  .app-container { display: flex; flex-direction: column; min-height: 100vh; }
+  @media (max-width: 700px) {
+    .app-container { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  }
 
   /* ── GLASS CARD ── */
   .card {
@@ -243,6 +249,17 @@ const css = `
   @keyframes heroGlow {
     0%, 100% { transform: translateY(0) scale(0.98); opacity: 0.45; }
     50% { transform: translateY(12px) scale(1.05); opacity: 0.7; }
+  }
+
+  .scroll-animate {
+    opacity: 0;
+    transform: translateY(14px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    transition-delay: var(--delay, 0ms);
+  }
+  .scroll-animate.in-view {
+    opacity: 1;
+    transform: translateY(0);
   }
 
   /* ── SHAKE ANIMATION ── */
@@ -415,7 +432,6 @@ const css = `
   }
 
   @media (max-width: 700px) {
-    body { padding-bottom: 120px; }
     .topnav { padding: 0 16px; }
     .topnav-links { display: none; }
     .topnav-right { margin-left: auto; }
@@ -469,7 +485,7 @@ const Icon = ({ d, size = 16, color = 'currentColor' }) => (
   </svg>
 );
 
-const icons = {
+  const icons = {
   home: 'M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2V9z M9 22V12h6v10',
   bus: 'M6 2h12a2 2 0 012 2v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2zM6 18h12M6 6h12',
   car: 'M5 17h14M5 17a2 2 0 11-4 0M5 17V9l2-5h10l2 5v8a2 2 0 01-2 2h-2M17 17a2 2 0 104 0',
@@ -482,8 +498,30 @@ const icons = {
   qr: 'M3 3h6v6H3zm12 0h6v6h-6zM3 15h6v6H3zm12 0h2v2h-2zm4 0h2v2h-2zm-2 2h2v2h-2zm2 2h2v2h-2z',
   x: 'M18 6L6 18M6 6l12 12',
   edit: 'M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z',
-  logout: 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9',
-  filter: 'M22 3H2l8 9.46V19l4 2v-8.54L22 3z',
+    logout: 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9',
+    filter: 'M22 3H2l8 9.46V19l4 2v-8.54L22 3z',
+  };
+
+const setupScrollReveal = () => {
+  if (typeof window === 'undefined') return () => {};
+  const elements = Array.from(document.querySelectorAll('.scroll-animate'));
+  if (!('IntersectionObserver' in window)) {
+    elements.forEach((el) => el.classList.add('in-view'));
+    return () => {};
+  }
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in-view');
+          observer.unobserve(entry.target);
+        }
+      });
+    },
+    { threshold: 0.2, rootMargin: '0px 0px -10% 0px' }
+  );
+  elements.forEach((el) => observer.observe(el));
+  return () => observer.disconnect();
 };
 
 const NAV = [
@@ -616,11 +654,11 @@ function Home({ role, setActive }) {
       </div>
       <div className="page">
         <div className="sec-title">Recent activity</div>
-        {role === 'guest' ? (
-          <div
-            className="card"
-            style={{ textAlign: 'center', padding: '32px' }}
-          >
+          {role === 'guest' ? (
+            <div
+              className="card scroll-animate"
+              style={{ textAlign: 'center', padding: '32px' }}
+            >
             <p style={{ color: 'var(--text-3)', fontSize: '13px' }}>
               No recent activity. Sign in to track your trips.
             </p>
@@ -641,8 +679,12 @@ function Home({ role, setActive }) {
               seat: '3 days',
               status: 'Returned',
             },
-          ].map((b, i) => (
-            <div key={i} className="booking-item ticket-card">
+            ].map((b, i) => (
+              <div
+                key={i}
+                className="booking-item ticket-card scroll-animate"
+                style={{ '--delay': `${i * 40}ms` }}
+              >
               <div className="booking-header">
                 <div>
                   <span
@@ -710,10 +752,18 @@ function BusSearch({ role, setActive }) {
   const [fromCity, setFromCity] = useState('Phnom Penh');
   const [toCity, setToCity] = useState('Siem Reap');
   const [travelDate, setTravelDate] = useState('2026-04-05');
+  useEffect(() => {
+    const cleanup = setupScrollReveal();
+    return cleanup;
+  }, [step]);
 
   const goBack = () => {
     setStep((prev) => Math.max(1, prev - 1));
   };
+  useEffect(() => {
+    const cleanup = setupScrollReveal();
+    return cleanup;
+  }, [step]);
 
   const destinations = [
     'Phnom Penh',
@@ -977,14 +1027,15 @@ function BusSearch({ role, setActive }) {
             <button className="btn btn-primary">Search</button>
           </div>
           <div className="sec-title">{routes.length} trips found</div>
-          {routes.map((r) => (
-            <div
-              key={r.id}
-              className={`route-card ticket-card ${selectedRoute === r.id ? 'selected' : ''}`}
-              onClick={() => {
-                if (role === 'guest') {
-                  setShowAuthModal(true);
-                } else setSelectedRoute(r.id);
+            {routes.map((r, i) => (
+              <div
+                key={r.id}
+                className={`route-card ticket-card scroll-animate ${selectedRoute === r.id ? 'selected' : ''}`}
+                style={{ '--delay': `${i * 40}ms` }}
+                onClick={() => {
+                  if (role === 'guest') {
+                    setShowAuthModal(true);
+                  } else setSelectedRoute(r.id);
               }}
             >
               <div>
@@ -1497,10 +1548,11 @@ function CarRental({ role, setActive }) {
 
       {step === 1 && (
         <div className="car-grid">
-          {cars.map((c) => (
+          {cars.map((c, i) => (
             <div
               key={c.id}
-              className={`car-card ticket-card ${shaking === c.id ? 'shake-anim' : ''}`}
+              className={`car-card ticket-card scroll-animate ${shaking === c.id ? 'shake-anim' : ''}`}
+              style={{ '--delay': `${i * 40}ms` }}
               onClick={() => {
                 if (c.status === 'Rented') {
                   setShaking(c.id);
@@ -1768,9 +1820,9 @@ function MyBookings({ role }) {
   const [qrOpen, setQrOpen] = useState(null);
   const [rentalFilter, setRentalFilter] = useState('all');
 
-  if (role === 'guest')
-    return (
-      <div className="page" style={{ textAlign: 'center' }}>
+    if (role === 'guest')
+      return (
+        <div className="page scroll-animate" style={{ textAlign: 'center' }}>
         <div
           className="confirm-icon"
           style={{
@@ -1903,8 +1955,12 @@ function MyBookings({ role }) {
         </div>
       )}
 
-      {currentBookings.map((b) => (
-        <div key={b.id} className="booking-item ticket-card">
+      {currentBookings.map((b, i) => (
+        <div
+          key={b.id}
+          className="booking-item ticket-card scroll-animate"
+          style={{ '--delay': `${i * 40}ms` }}
+        >
           <div className="booking-header">
             <div>
               <span
@@ -2006,14 +2062,14 @@ function Profile({ role, onLogout }) {
       </div>
     );
 
-  return (
-    <div className="page" style={{ maxWidth: 520 }}>
-      <div className="page-title">My profile</div>
-      <div className="page-sub">Manage your account details</div>
-      <div
-        className="card"
-        style={{ textAlign: 'center', marginBottom: 16, padding: '28px' }}
-      >
+    return (
+      <div className="page" style={{ maxWidth: 520 }}>
+        <div className="page-title scroll-animate">My profile</div>
+        <div className="page-sub scroll-animate">Manage your account details</div>
+        <div
+          className="card scroll-animate"
+          style={{ textAlign: 'center', marginBottom: 16, padding: '28px' }}
+        >
         <div className="profile-avatar">MK</div>
         <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
           Sereymongkol Thoeung
@@ -2026,8 +2082,8 @@ function Profile({ role, onLogout }) {
           <span className="badge badge-blue">Member since 2025</span>
         </div>
       </div>
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="sec-title">Personal information</div>
+        <div className="card scroll-animate" style={{ marginBottom: 16 }}>
+          <div className="sec-title">Personal information</div>
         <div className="form-row">
           <div>
             <div className="label">First name</div>
@@ -2054,8 +2110,8 @@ function Profile({ role, onLogout }) {
           <Icon d={icons.edit} size={13} color="#fff" /> Save changes
         </button>
       </div>
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="sec-title">Change password</div>
+        <div className="card scroll-animate" style={{ marginBottom: 16 }}>
+          <div className="sec-title">Change password</div>
         <div className="form-group">
           <div className="label">Current password</div>
           <input type="password" placeholder="••••••••" />
@@ -2070,7 +2126,7 @@ function Profile({ role, onLogout }) {
         </div>
         <button className="btn btn-ghost btn-sm">Update password</button>
       </div>
-      <div className="card">
+        <div className="card scroll-animate">
         <div className="sec-title" style={{ marginBottom: 8 }}>
           Trip stats
         </div>
@@ -2113,11 +2169,13 @@ const PAGES = {
 export default function App({ role, onLogout }) {
   const [page, setPage] = useState('home');
   const PageComp = PAGES[page] || Home;
+  useEffect(() => {
+    const cleanup = setupScrollReveal();
+    return cleanup;
+  }, [page]);
 
   return (
-    <div
-      style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}
-    >
+    <div className="app-container">
       <style>{css}</style>
       <TopNav
         active={page}
@@ -2128,20 +2186,7 @@ export default function App({ role, onLogout }) {
       <div style={{ flex: 1 }}>
         <PageComp role={role} setActive={setPage} onLogout={onLogout} />
       </div>
-      <div
-        style={{
-          textAlign: 'center',
-          padding: '12px 0',
-          borderTop: '0.5px solid var(--glass-border)',
-        }}
-      >
-        <span
-          style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer' }}
-          onClick={() => (window.location.href = '/login')}
-        >
-          Sign in to another account
-        </span>
-      </div>
+      <Footer />
     </div>
   );
 }
