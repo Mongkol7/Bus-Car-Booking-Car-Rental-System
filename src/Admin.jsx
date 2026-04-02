@@ -87,7 +87,14 @@ const css = `
   .sidebar-bottom { margin-top: auto; padding: 0 12px; }
 
   /* MAIN */
-  .main { flex: 1; overflow-y: auto; padding: 32px 36px; min-width: 0; }
+  .main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 32px 36px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
 
   /* PAGE HEADER */
   .page-header { margin-bottom: 28px; }
@@ -120,7 +127,7 @@ const css = `
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
 
   /* TABLE */
-  .table-wrap { overflow-x: auto; width: 100%; }
+  .table-wrap { overflow-x: auto; width: 100%; -webkit-overflow-scrolling: touch; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   thead th {
     text-align: left; padding: 10px 14px;
@@ -220,8 +227,9 @@ const css = `
     opacity: 0;
     transform: translateY(12px);
     transition: opacity 0.6s ease, transform 0.6s ease;
+    transition-delay: var(--delay, 0ms);
   }
-  .observe-animate.in-view {
+  .observe-animate[data-revealed="true"] {
     opacity: 1;
     transform: translateY(0);
   }
@@ -417,7 +425,7 @@ const css = `
       grid-template-columns: repeat(5, minmax(0, 1fr));
     }
     .main { padding: 20px 16px; }
-    .main { padding-bottom: 40px; }
+    .main { padding-bottom: 40px; overflow-x: hidden; }
     .metrics { grid-template-columns: 1fr; }
     .car-grid { grid-template-columns: 1fr; }
     table { font-size: 11px; table-layout: auto; width: 100%; white-space: nowrap; }
@@ -740,6 +748,14 @@ function Vehicles() {
   const [tab, setTab] = useState('buses');
   const buses = busFleet;
   const cars = carModels;
+  useEffect(() => {
+    const elements = Array.from(document.querySelectorAll('.observe-animate'));
+    elements.forEach((el) => {
+      if (!el.dataset.revealed) {
+        el.dataset.revealed = 'true';
+      }
+    });
+  }, [tab]);
   return (
     <div>
         <div
@@ -1037,7 +1053,8 @@ function Routes() {
       <div className="grid2">
         <div className="card observe-animate">
           <div className="sec-title">Routes</div>
-          <table>
+          <div className="table-wrap">
+            <table>
             <thead>
               <tr>
                 <th>ID</th>
@@ -1072,11 +1089,13 @@ function Routes() {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         </div>
         <div className="card observe-animate">
           <div className="sec-title">Upcoming schedules</div>
-          <table>
+          <div className="table-wrap">
+            <table>
             <thead>
               <tr>
                 <th>ID</th>
@@ -1106,7 +1125,8 @@ function Routes() {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -1799,14 +1819,16 @@ export default function App({ onLogout }) {
     if (typeof window === 'undefined') return;
     const elements = Array.from(document.querySelectorAll('.observe-animate'));
     if (!('IntersectionObserver' in window)) {
-      elements.forEach((el) => el.classList.add('in-view'));
+      elements.forEach((el) => {
+        el.dataset.revealed = 'true';
+      });
       return;
     }
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
-            entry.target.classList.add('in-view');
+            entry.target.dataset.revealed = 'true';
             observer.unobserve(entry.target);
           }
         });
@@ -1861,7 +1883,9 @@ export default function App({ onLogout }) {
         <Sidebar active={active} setActive={setActive} onLogout={handleLogout} />
         <div className="main">
           <Page />
-          <Footer />
+          <div style={{ marginTop: 'auto' }}>
+            <Footer />
+          </div>
         </div>
       </div>
       {mobileMenuOpen && (
