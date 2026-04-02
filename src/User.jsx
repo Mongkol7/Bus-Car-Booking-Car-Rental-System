@@ -587,6 +587,17 @@ const NAV = [
   { id: 'profile', label: 'Profile', icon: 'user' },
 ];
 
+const companyMeta = {
+  'Mekong Express': { color: '#22c55e', bg: 'rgba(34,197,94,0.16)' },
+  'Sorya Bus': { color: '#f59e0b', bg: 'rgba(245,158,11,0.16)' },
+  'Giant Ibis': { color: '#a855f7', bg: 'rgba(168,85,247,0.16)' },
+  'Larryta Express': { color: '#38bdf8', bg: 'rgba(56,189,248,0.16)' },
+  'VET Air Bus': { color: '#f87171', bg: 'rgba(248,113,113,0.16)' },
+  'Capitol Tours': { color: '#60a5fa', bg: 'rgba(96,165,250,0.16)' },
+};
+const getCompanyMeta = (name) =>
+  companyMeta[name] || { color: 'var(--text-2)', bg: 'rgba(255,255,255,0.06)' };
+
 function TopNav({ active, setActive, role, onLogout }) {
   const navigate = useNavigate();
   return (
@@ -723,6 +734,7 @@ function Home({ role, setActive }) {
             {
               type: 'ticket',
               route: 'Phnom Penh → Siem Reap',
+              company: 'Mekong Express',
               date: 'Apr 5, 06:00',
               seat: 'A12',
               status: 'Confirmed',
@@ -749,6 +761,30 @@ function Home({ role, setActive }) {
                     {b.type === 'ticket' ? 'BUS TICKET' : 'CAR RENTAL'}
                   </span>
                   <div className="booking-route">{b.route}</div>
+                  {b.type === 'ticket' && (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--text-2)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        marginTop: 2,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: getCompanyMeta(b.company).color,
+                        }}
+                      />
+                      <span style={{ color: getCompanyMeta(b.company).color }}>
+                        {b.company}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <span
                   className={`badge ${b.status === 'Confirmed' ? 'badge-green' : 'badge-purple'}`}
@@ -764,6 +800,14 @@ function Home({ role, setActive }) {
                   {b.type === 'ticket' ? 'Seat' : 'Duration'}
                   <span>{b.seat}</span>
                 </div>
+                {b.type === 'ticket' && (
+                  <div className="booking-meta-item">
+                    Bus
+                    <span style={{ color: getCompanyMeta(b.company).color }}>
+                      {b.company}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           ))
@@ -1998,6 +2042,7 @@ function MyBookings({ role }) {
         id: '#B-4811',
         type: 'ticket',
         route: 'Phnom Penh → Siem Reap',
+        company: 'Mekong Express',
         price: '$12.00',
         status: 'Confirmed',
         date: 'Apr 5, 2026',
@@ -2010,6 +2055,7 @@ function MyBookings({ role }) {
         id: '#B-4795',
         type: 'ticket',
         route: 'Phnom Penh → Kampot',
+        company: 'Sorya Bus',
         price: '$8.00',
         status: 'Completed',
         date: 'Mar 12, 2026',
@@ -2114,6 +2160,30 @@ function MyBookings({ role }) {
               <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
                 {b.id} · {b.date}
               </div>
+              {b.type === 'ticket' && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--text-2)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    marginTop: 4,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: '50%',
+                      background: getCompanyMeta(b.company).color,
+                    }}
+                  />
+                  <span style={{ color: getCompanyMeta(b.company).color }}>
+                    {b.company}
+                  </span>
+                </div>
+              )}
             </div>
             <span
               className={`badge ${b.status === 'Confirmed' ? 'badge-green' : b.status === 'Completed' || b.status === 'Returned' ? 'badge-purple' : 'badge-amber'}`}
@@ -2130,6 +2200,14 @@ function MyBookings({ role }) {
               {b.type === 'ticket' ? 'Seat' : 'Plate'}
               <span>{b.seat}</span>
             </div>
+            {b.type === 'ticket' && (
+              <div className="booking-meta-item">
+                Bus
+                <span style={{ color: getCompanyMeta(b.company).color }}>
+                  {b.company}
+                </span>
+              </div>
+            )}
             <div className="booking-meta-item">
               Paid<span>{b.price}</span>
             </div>

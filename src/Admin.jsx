@@ -122,6 +122,8 @@ const css = `
   .metric-sub { font-size: 11px; color: var(--text-3); margin-top: 4px; }
   .metric-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 5px; }
 
+  .chart-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
   /* GRID 2 */
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
@@ -409,6 +411,7 @@ const css = `
   @media (max-width: 1024px) {
     .metrics { grid-template-columns: repeat(2, 1fr); }
     .grid2 { grid-template-columns: 1fr; }
+    .grid2 .card { overflow-x: hidden; } 
     .grid3 { grid-template-columns: 1fr; }
     .car-grid { grid-template-columns: repeat(2, 1fr); }
   }
@@ -429,6 +432,10 @@ const css = `
     .metrics { grid-template-columns: 1fr; }
     .car-grid { grid-template-columns: 1fr; }
     table { font-size: 11px; table-layout: auto; width: 100%; white-space: nowrap; }
+    .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .table-wrap table { min-width: 700px; }   /* ← wider to fit Company column */
+    .chart-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .chart-scroll .chart-row { min-width: 480px; }
     thead th { padding: 8px 10px; white-space: nowrap; overflow: visible; text-overflow: clip; }
     td { padding: 8px 10px; white-space: nowrap; overflow: visible; text-overflow: clip; }
     td > div { display: inline; }
@@ -501,6 +508,17 @@ const NAV = [
   { id: 'reports', label: 'Reports', icon: 'chart' },
 ];
 
+const companyMeta = {
+  'Mekong Express': { color: '#22c55e', bg: 'rgba(34,197,94,0.16)' },
+  'Sorya Bus': { color: '#f59e0b', bg: 'rgba(245,158,11,0.16)' },
+  'Giant Ibis': { color: '#a855f7', bg: 'rgba(168,85,247,0.16)' },
+  'Larryta Express': { color: '#38bdf8', bg: 'rgba(56,189,248,0.16)' },
+  'VET Air Bus': { color: '#f87171', bg: 'rgba(248,113,113,0.16)' },
+  'Capitol Tours': { color: '#60a5fa', bg: 'rgba(96,165,250,0.16)' },
+};
+const getCompanyMeta = (name) =>
+  companyMeta[name] || { color: 'var(--text-2)', bg: 'rgba(255,255,255,0.06)' };
+
 // ── SIDEBAR ────────────────────────────────────────────────────────────────────
 function Sidebar({ active, setActive, onLogout }) {
   return (
@@ -527,7 +545,7 @@ function Sidebar({ active, setActive, onLogout }) {
       </div>
       <div className="nav-section">
         <div className="nav-label">Manage</div>
-        {NAV.slice(1).filter((n) => n.id !== 'reports').map((n) => (
+        {NAV.slice(1).map((n) => (
           <div
             key={n.id}
             className={`nav-item ${active === n.id ? 'active' : ''}`}
@@ -600,14 +618,16 @@ function Dashboard() {
       <div className="grid2">
           <div className="card observe-animate">
             <div className="sec-title">Booking activity — last 12 days</div>
-            <div className="chart-row chart-animate observe-animate">
-              {bars.map((h, i) => (
-                <div
-                  key={i}
-                  className={`bar ${i === bars.length - 1 ? 'lit' : ''}`}
-                  style={{ '--bar-h': `${h}%` }}
-                />
-              ))}
+            <div className="chart-scroll">
+              <div className="chart-row chart-animate observe-animate">
+                {bars.map((h, i) => (
+                  <div
+                    key={i}
+                    className={`bar ${i === bars.length - 1 ? 'lit' : ''}`}
+                    style={{ '--bar-h': `${h}%` }}
+                  />
+                ))}
+              </div>
             </div>
           <div
             style={{
@@ -622,37 +642,79 @@ function Dashboard() {
         </div>
           <div className="card observe-animate">
           <div className="sec-title">Recent bookings</div>
+          <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>ID</th>
                 <th>Route</th>
+                <th>Company</th>
                 <th>Status</th>
                 <th>Amount</th>
               </tr>
             </thead>
             <tbody>
               {[
-                ['#B-4821', 'PP → SR', 'Confirmed', '$12'],
-                ['#B-4820', 'SR → KP', 'Pending', '$9'],
-                ['#B-4819', 'PP → KP', 'Confirmed', '$15'],
-                ['#B-4818', 'KP → PP', 'Cancelled', '$12'],
-              ].map(([id, route, status, amt]) => (
-                <tr key={id}>
-                  <td style={{ color: 'var(--accent)', fontSize: 12 }}>{id}</td>
-                  <td className="td-muted">{route}</td>
+                {
+                  id: '#B-4821',
+                  route: 'PP → SR',
+                  company: 'Mekong Express',
+                  status: 'Confirmed',
+                  amt: '$12',
+                },
+                {
+                  id: '#B-4820',
+                  route: 'SR → KP',
+                  company: 'Sorya Bus',
+                  status: 'Pending',
+                  amt: '$9',
+                },
+                {
+                  id: '#B-4819',
+                  route: 'PP → KP',
+                  company: 'Giant Ibis',
+                  status: 'Confirmed',
+                  amt: '$15',
+                },
+                {
+                  id: '#B-4818',
+                  route: 'KP → PP',
+                  company: 'VET Air Bus',
+                  status: 'Cancelled',
+                  amt: '$12',
+                },
+              ].map((b) => (
+                <tr key={b.id}>
+                  <td style={{ color: 'var(--accent)', fontSize: 12 }}>{b.id}</td>
+                  <td className="td-muted">{b.route}</td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: getCompanyMeta(b.company).color,
+                        }}
+                      />
+                      <span style={{ color: getCompanyMeta(b.company).color }}>
+                        {b.company}
+                      </span>
+                    </div>
+                  </td>
                   <td>
                     <span
-                      className={`badge ${status === 'Confirmed' ? 'badge-green' : status === 'Pending' ? 'badge-amber' : 'badge-red'}`}
+                      className={`badge ${b.status === 'Confirmed' ? 'badge-green' : b.status === 'Pending' ? 'badge-amber' : 'badge-red'}`}
                     >
-                      {status}
+                      {b.status}
                     </span>
                   </td>
-                  <td style={{ fontWeight: 500 }}>{amt}</td>
+                  <td style={{ fontWeight: 500 }}>{b.amt}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
       <div className="grid3">
@@ -699,7 +761,7 @@ function Dashboard() {
           </div>
         ))}
       </div>
-      <div className="grid2" style={{ marginTop: 16 }}>
+      <div className="grid3" style={{ marginTop: 16 }}>
         <div className="card">
           <div className="sec-title">Top customers</div>
           {[
@@ -720,21 +782,53 @@ function Dashboard() {
           ))}
         </div>
         <div className="card">
-          <div className="sec-title">New user signups</div>
+          <div className="sec-title">Top booking bus companies</div>
           {[
-            { name: 'Vuthy Sok', date: 'Apr 5', route: 'PP → SR' },
-            { name: 'Channary Oum', date: 'Apr 5', route: 'PP → KP' },
-            { name: 'Rathana Em', date: 'Apr 4', route: 'SR → KT' },
-            { name: 'Makara Phy', date: 'Apr 4', route: 'PP → KP' },
-          ].map((u) => (
-            <div key={u.name} className="stat-row">
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{u.name}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                  Joined {u.date}
-                </div>
+            { name: 'Mekong Express', count: 420, pct: 100 },
+            { name: 'Sorya Bus', count: 310, pct: 74 },
+            { name: 'Giant Ibis', count: 240, pct: 57 },
+            { name: 'Larryta Express', count: 180, pct: 43 },
+          ].map((c) => (
+            <div key={c.name} style={{ marginBottom: 12 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  marginBottom: 4,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: getCompanyMeta(c.name).color,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: '50%',
+                      background: getCompanyMeta(c.name).color,
+                    }}
+                  />
+                  {c.name}
+                </span>
+                <span style={{ fontSize: 12, fontWeight: 500 }}>
+                  {c.count}
+                </span>
               </div>
-              <span className="stat-val">{u.route}</span>
+              <div className="prog-track">
+                <div
+                  className="prog-fill"
+                  style={{
+                    width: `${c.pct}%`,
+                    background: getCompanyMeta(c.name).color,
+                  }}
+                />
+              </div>
             </div>
           ))}
         </div>
@@ -904,6 +998,7 @@ function Routes() {
       id: 'R-01',
       from: 'Phnom Penh',
       to: 'Siem Reap',
+      company: 'Mekong Express',
       stops: 2,
       dist: '314 km',
       duration: '5h',
@@ -913,6 +1008,7 @@ function Routes() {
       id: 'R-02',
       from: 'Phnom Penh',
       to: 'Kampot',
+      company: 'Sorya Bus',
       stops: 1,
       dist: '148 km',
       duration: '2.5h',
@@ -922,6 +1018,7 @@ function Routes() {
       id: 'R-03',
       from: 'Siem Reap',
       to: 'Kampong Thom',
+      company: 'Giant Ibis',
       stops: 0,
       dist: '147 km',
       duration: '2h',
@@ -931,6 +1028,7 @@ function Routes() {
       id: 'R-04',
       from: 'Phnom Penh',
       to: 'Kampong Cham',
+      company: 'Capitol Tours',
       stops: 1,
       dist: '120 km',
       duration: '2h',
@@ -940,6 +1038,7 @@ function Routes() {
       id: 'R-05',
       from: 'Phnom Penh',
       to: 'Kep',
+      company: 'VET Air Bus',
       stops: 2,
       dist: '172 km',
       duration: '3h',
@@ -949,6 +1048,7 @@ function Routes() {
       id: 'R-06',
       from: 'Phnom Penh',
       to: 'Battambang',
+      company: 'Larryta Express',
       stops: 1,
       dist: '291 km',
       duration: '5h',
@@ -958,6 +1058,7 @@ function Routes() {
       id: 'R-07',
       from: 'Phnom Penh',
       to: 'Sihanoukville',
+      company: 'Sorya Bus',
       stops: 1,
       dist: '230 km',
       duration: '4h',
@@ -967,6 +1068,7 @@ function Routes() {
       id: 'R-08',
       from: 'Phnom Penh',
       to: 'Kratie',
+      company: 'Mekong Express',
       stops: 2,
       dist: '315 km',
       duration: '6h',
@@ -1007,7 +1109,7 @@ function Routes() {
     {
       id: 'S-04',
       route: 'SR → KT',
-      vehicle: 'Capitol Bus',
+      vehicle: 'Capitol Tours',
       type: 'Standard Coach',
       depart: '08:00',
       seats: '45/45',
@@ -1059,6 +1161,7 @@ function Routes() {
               <tr>
                 <th>ID</th>
                 <th>From → To</th>
+                <th>Company</th>
                 <th>Stops</th>
                 <th>Distance</th>
                 <th>Duration</th>
@@ -1074,6 +1177,21 @@ function Routes() {
                   </td>
                   <td style={{ fontWeight: 500, fontSize: 13 }}>
                     {r.from} → {r.to}
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: getCompanyMeta(r.company).color,
+                        }}
+                      />
+                      <span style={{ color: getCompanyMeta(r.company).color }}>
+                        {r.company}
+                      </span>
+                    </div>
                   </td>
                   <td className="td-muted">{r.stops}</td>
                   <td className="td-muted">{r.dist}</td>
@@ -1114,8 +1232,20 @@ function Routes() {
                     {s.id}
                   </td>
                   <td style={{ fontWeight: 500, fontSize: 13 }}>{s.route}</td>
-                  <td className="td-muted" style={{ fontSize: 12 }}>
-                    {s.vehicle}
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: getCompanyMeta(s.vehicle).color,
+                        }}
+                      />
+                      <span style={{ color: getCompanyMeta(s.vehicle).color }}>
+                        {s.vehicle}
+                      </span>
+                    </div>
                   </td>
                   <td>
                     <span className="badge badge-blue">{s.depart}</span>
@@ -1199,7 +1329,7 @@ function Bookings() {
       payment: 'KHQR',
       email: 'bopha.ros@gmail.com',
       phone: '+855 15 774 991',
-      vehicle: 'Capitol Bus',
+      vehicle: 'Capitol Tours',
       status: 'Confirmed',
     },
     {
@@ -1289,7 +1419,19 @@ function Bookings() {
                   </td>
                   <td>
                     <div className="td-muted">{b.route}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{b.vehicle}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: getCompanyMeta(b.vehicle).color,
+                        }}
+                      />
+                      <span style={{ color: getCompanyMeta(b.vehicle).color }}>
+                        {b.vehicle}
+                      </span>
+                    </div>
                   </td>
                   <td className="td-muted">{b.seat}</td>
                   <td className="td-muted">{b.date}</td>
@@ -1710,8 +1852,58 @@ function Reports() {
             </div>
           ))}
         </div>
-      </div>
-      <div className="grid2" style={{ marginTop: 16 }}>
+        <div className="card observe-animate">
+          <div className="sec-title">Top booking bus companies</div>
+          {[
+            { name: 'Mekong Express', count: 420, pct: 100 },
+            { name: 'Sorya Bus', count: 310, pct: 74 },
+            { name: 'Giant Ibis', count: 240, pct: 57 },
+            { name: 'Larryta Express', count: 180, pct: 43 },
+          ].map((c) => (
+            <div key={c.name} style={{ marginBottom: 12 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  marginBottom: 4,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: getCompanyMeta(c.name).color,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: '50%',
+                      background: getCompanyMeta(c.name).color,
+                    }}
+                  />
+                  {c.name}
+                </span>
+                <span style={{ fontSize: 12, fontWeight: 500 }}>
+                  {c.count}
+                </span>
+              </div>
+              <div className="prog-track">
+                <div
+                  className="prog-fill"
+                  style={{
+                    width: `${c.pct}%`,
+                    background: getCompanyMeta(c.name).color,
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      
         <div className="card observe-animate">
           <div className="sec-title">Top customers by spend</div>
           {[
@@ -1942,3 +2134,4 @@ export default function App({ onLogout }) {
     </>
   );
 }
+
