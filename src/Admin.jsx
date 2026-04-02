@@ -242,6 +242,9 @@ const css = `
   .chart-animate.in-view .bar {
     height: var(--bar-h);
   }
+  .chart-animate[data-revealed="true"] .bar {
+    height: var(--bar-h);
+  }
 
   /* DIVIDER */
   .divider { height: 0.5px; background: var(--glass-border); margin: 16px 0; }
@@ -1680,8 +1683,24 @@ function Rentals() {
 
 // ── REPORTS ───────────────────────────────────────────────────────────────────
 function Reports() {
-  const bars = [42, 65, 55, 80, 70, 90, 58, 95, 72, 85, 88, 100];
-  const rentalBars = [20, 35, 28, 50, 42, 60, 38, 65, 48, 55, 62, 70];
+  const days = [
+    'Apr 1',
+    'Apr 2',
+    'Apr 3',
+    'Apr 4',
+    'Apr 5',
+    'Apr 6',
+    'Apr 7',
+    'Apr 8',
+    'Apr 9',
+    'Apr 10',
+    'Apr 11',
+    'Apr 12',
+  ];
+  const bookingDaily = [420, 510, 460, 620, 580, 740, 520, 810, 590, 690, 730, 860];
+  const rentalDaily = [180, 240, 210, 310, 280, 390, 260, 430, 300, 360, 410, 470];
+  const maxBooking = Math.max(...bookingDaily);
+  const maxRental = Math.max(...rentalDaily);
   return (
     <div>
       <div
@@ -1746,11 +1765,12 @@ function Reports() {
         <div className="card observe-animate">
           <div className="sec-title">Booking revenue — daily</div>
           <div className="chart-row chart-animate observe-animate" style={{ height: 60 }}>
-            {bars.map((h, i) => (
+            {bookingDaily.map((val, i) => (
               <div
                 key={i}
-                className={`bar ${i === bars.length - 1 ? 'lit' : ''}`}
-                style={{ '--bar-h': `${h}%` }}
+                className={`bar ${i === bookingDaily.length - 1 ? 'lit' : ''}`}
+                style={{ '--bar-h': `${Math.round((val / maxBooking) * 100)}%` }}
+                title={`${days[i]} • $${val}`}
               />
             ))}
           </div>
@@ -1768,15 +1788,16 @@ function Reports() {
         <div className="card observe-animate">
           <div className="sec-title">Rental revenue — daily</div>
           <div className="chart-row chart-animate observe-animate" style={{ height: 60 }}>
-            {rentalBars.map((h, i) => (
+            {rentalDaily.map((val, i) => (
               <div
                 key={i}
-                className={`bar ${i === rentalBars.length - 1 ? 'lit' : ''}`}
+                className={`bar ${i === rentalDaily.length - 1 ? 'lit' : ''}`}
                 style={{
-                  '--bar-h': `${h}%`,
+                  '--bar-h': `${Math.round((val / maxRental) * 100)}%`,
                   background: 'var(--purple-soft)',
                   borderColor: 'rgba(167,139,250,0.35)',
                 }}
+                title={`${days[i]} • $${val}`}
               />
             ))}
           </div>

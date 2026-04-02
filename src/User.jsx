@@ -709,7 +709,7 @@ function Home({ role, setActive }) {
                 Browse sedans and SUVs for rent.
               </div>
               <button
-                className="btn btn-ghost btn-sm"
+                className="btn btn-primary btn-sm"
                 style={{ marginTop: 16 }}
               >
                 Browse cars
