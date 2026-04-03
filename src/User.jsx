@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { carModels } from './data/transportData';
 import Footer from './components/Footer';
@@ -200,28 +200,56 @@ const css = `
   .divider { height: 0.5px; background: var(--glass-border); margin: 20px 0; }
 
   /* ── HOME ── */
-  .hero {
-    position: relative;
-    text-align: center;
-    padding: 56px 0;
-    background: radial-gradient(ellipse 70% 50% at 50% 0%, rgba(79,142,247,0.12) 0%, transparent 70%);
-    overflow: hidden;
+ .hero {
+  position: relative;
+  text-align: center;
+  padding: 56px 0;
+  overflow: visible;
+  background: var(--bg);
+}
+.hero::after {
+  content: none;
+}
+  @keyframes carDrive {
+  0% { transform: translateX(-10%); }
+  100% { transform: translateX(110%); }
+}
+  /* ── EARTH SECTION RESPONSIVE ── */
+.earth-wrap {
+  position: relative;
+  width: 100%;
+  height: 140px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+@media (min-width: 1100px) {
+  .earth-wrap {
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+    margin-top: 24px;
   }
-  .hero::before,
-  .hero::after {
-    content: '';
-    position: absolute;
-    width: 420px;
-    height: 420px;
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(79,142,247,0.18) 0%, transparent 65%);
-    filter: blur(10px);
-    opacity: 0.6;
-    animation: heroGlow 6s ease-in-out infinite;
-    pointer-events: none;
-  }
-  .hero::before { top: -120px; left: -140px; }
-  .hero::after { bottom: -160px; right: -120px; animation-delay: 1.2s; }
+}
+
+@media (max-width: 1024px) {
+  .earth-wrap { height: 120px; }
+}
+
+@media (max-width: 768px) {
+  .earth-wrap { height: 100px; margin-top: 4px; }
+}
+
+@media (max-width: 520px) {
+  .earth-wrap { height: 80px; margin-top: 0px; }
+}
+
+@media (max-width: 360px) {
+  .earth-wrap { height: 65px; margin-top: 0px; }
+}
+  /* ── END HERO GLOW RESPONSIVE ── */
+
+  .hero-content { position: relative; z-index: 1; }
+
   .hero-content { position: relative; z-index: 1; }
   .hero-sub { font-size: 15px; color: var(--text-2); max-width: 420px; margin: 0 auto 36px; line-height: 1.6; }
   .service-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 620px; margin: 0 auto; }
@@ -245,10 +273,6 @@ const css = `
   @keyframes floaty {
     0%, 100% { transform: translateY(0); }
     50% { transform: translateY(-6px); }
-  }
-  @keyframes heroGlow {
-    0%, 100% { transform: translateY(0) scale(0.98); opacity: 0.45; }
-    50% { transform: translateY(12px) scale(1.05); opacity: 0.7; }
   }
 
   .scroll-animate {
@@ -294,12 +318,22 @@ const css = `
   .bus-shell {
     position: relative;
     padding: 16px 20px 22px;
-    background:
-      linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)),
-      repeating-linear-gradient(90deg, rgba(255,255,255,0.05) 0 12px, transparent 12px 22px);
+    background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
     border: 0.5px solid var(--glass-border);
     border-radius: 26px;
     box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+  }
+  .bus-pattern {
+    position: absolute;
+    inset: 0;
+    border-radius: 26px;
+    background: repeating-linear-gradient(
+      90deg,
+      rgba(255,255,255,0.05) 0 12px,
+      transparent 12px 22px
+    );
+    z-index: 0;
+    pointer-events: none;
   }
   .bus-shell::before,
   .bus-shell::after {
@@ -311,6 +345,7 @@ const css = `
     border-radius: 999px;
     background: rgba(255,255,255,0.08);
     border: 0.5px solid var(--glass-border);
+    z-index: 2;
   }
   .bus-shell::before { top: 8px; }
   .bus-shell::after { bottom: 8px; }
@@ -323,10 +358,10 @@ const css = `
     border: 0.5px solid var(--glass-border);
   }
   
-  .bus-front { text-align: center; margin-bottom: 18px; }
+  .bus-front { text-align: center; margin-bottom: 18px; position: relative; z-index: 1; }
   .steering { display: inline-block; font-size: 20px; background: var(--glass-strong); border: 0.5px solid var(--glass-border); border-radius: 50%; width: 40px; height: 40px; line-height: 40px; }
   
-  .seat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; max-width: 220px; }
+  .seat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; max-width: 220px; position: relative; z-index: 1; }
   .seat-col-gap { grid-column: span 4; height: 8px; }
   .seat { width: 44px; height: 40px; border-radius: 6px 6px 4px 4px; border: 0.5px solid; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 500; transition: all 0.12s; }
   .seat-avail { background: var(--glass-strong); border-color: var(--glass-border); color: var(--text-3); }
@@ -418,6 +453,116 @@ const css = `
   .car-name { font-size: 14px; font-weight: 600; }
   .car-price { font-size: 15px; font-weight: 600; color: var(--accent); margin-top: 8px; }
   .car-price span { font-size: 11px; color: var(--text-2); font-weight: 400; }
+  .toggle-row { display: flex; gap: 10px; margin-top: 10px; }
+  .toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 0.5px solid var(--glass-border);
+    background: rgba(255,255,255,0.04);
+    color: var(--text-2);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .toggle-btn.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: rgba(79,142,247,0.3);
+  }
+  .dropdown-panel {
+    margin-top: 0;
+    padding: 0 14px;
+    border-radius: 12px;
+    background: var(--glass);
+    border: 0.5px solid var(--glass-border);
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-4px);
+    overflow: hidden;
+    pointer-events: none;
+    transition: max-height 0.35s ease, opacity 0.25s ease, transform 0.25s ease,
+      padding 0.25s ease, margin-top 0.25s ease;
+    will-change: max-height, opacity, transform;
+  }
+  .dropdown-panel.open {
+    max-height: 420px;
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+    padding: 12px 14px;
+    margin-top: 12px;
+  }
+  .spec-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 0.5px solid rgba(255,255,255,0.06);
+  }
+  .spec-row:last-child { border-bottom: none; }
+  .spec-key { color: var(--text-2); }
+  .photo-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .photo-grid img {
+    width: 100%;
+    height: 90px;
+    object-fit: cover;
+    border-radius: 10px;
+    border: 0.5px solid var(--glass-border);
+    background: rgba(255,255,255,0.04);
+  }
+  .toggle-icon { transition: transform 0.2s ease; }
+  .toggle-btn.active .toggle-icon { transform: rotate(180deg); }
+  .toggle-btn:active { transform: translateY(1px); }
+  .user-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    min-width: 160px;
+    padding: 10px;
+    background: rgba(12,12,20,0.96);
+    border: 0.5px solid var(--glass-border);
+    border-radius: 12px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+    opacity: 0;
+    transform: translateY(-6px);
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.25s ease;
+  }
+  .user-menu.open {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+  .user-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .user-menu-item:hover { background: var(--surface-hover); color: var(--text); }
+  @media (max-width: 760px) {
+    .photo-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .photo-grid img { height: 78px; }
+    .dropdown-panel.open { padding: 10px 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dropdown-panel,
+    .toggle-icon,
+    .toggle-btn { transition: none !important; }
+  }
   .date-range { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
   .total-box { background: var(--accent-soft); border: 0.5px solid rgba(79,142,247,0.25); border-radius: var(--radius-xs); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; }
 
@@ -523,7 +668,7 @@ const css = `
   }
 `;
 
-const Icon = ({ d, size = 16, color = 'currentColor' }) => (
+const Icon = ({ d, size = 16, color = 'currentColor', className }) => (
   <svg
     width={size}
     height={size}
@@ -533,6 +678,7 @@ const Icon = ({ d, size = 16, color = 'currentColor' }) => (
     strokeWidth="2"
     strokeLinecap="round"
     strokeLinejoin="round"
+    className={className}
   >
     <path d={d} />
   </svg>
@@ -547,6 +693,7 @@ const icons = {
   user: 'M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2 M12 11a4 4 0 100-8 4 4 0 000 8z',
   back: 'M19 12H5M12 19l-7-7 7-7',
   arrow: 'M5 12h14M12 5l7 7-7 7',
+  chevron: 'M6 9l6 6 6-6',
   check: 'M20 6L9 17l-5-5',
   qr: 'M3 3h6v6H3zm12 0h6v6h-6zM3 15h6v6H3zm12 0h2v2h-2zm4 0h2v2h-2zm-2 2h2v2h-2zm2 2h2v2h-2z',
   x: 'M18 6L6 18M6 6l12 12',
@@ -600,6 +747,18 @@ const getCompanyMeta = (name) =>
 
 function TopNav({ active, setActive, role, onLogout }) {
   const navigate = useNavigate();
+  const menuRef = useRef(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
   return (
     <>
       <nav className="topnav">
@@ -628,21 +787,33 @@ function TopNav({ active, setActive, role, onLogout }) {
             </div>
           ))}
         </div>
-        <div className="topnav-right">
+        <div
+          className="topnav-right"
+          style={{ position: 'relative' }}
+          ref={menuRef}
+        >
           {role === 'guest' ? (
             <button className="login-btn" onClick={() => navigate('/login')}>
               Login
             </button>
           ) : (
-            <button
-              className="btn btn-ghost btn-sm"
-              style={{ padding: '4px 10px', height: 28 }}
-              onClick={onLogout}
-            >
-              Logout
-            </button>
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Welcome</div>
           )}
-          <div className="avatar-sm">{role === 'guest' ? '?' : 'ST'}</div>
+          <div
+            className="avatar-sm"
+            onClick={() => {
+              if (role !== 'guest') setMenuOpen((prev) => !prev);
+            }}
+          >
+            {role === 'guest' ? '?' : 'ST'}
+          </div>
+          {role !== 'guest' && (
+            <div className={`user-menu ${menuOpen ? 'open' : ''}`}>
+              <div className="user-menu-item" onClick={onLogout}>
+                <Icon d={icons.logout} size={12} /> Logout
+              </div>
+            </div>
+          )}
         </div>
       </nav>
       <div className="bottomnav">
@@ -686,6 +857,112 @@ function Home({ role, setActive }) {
           <div className="hero-sub">
             Book bus seats or rent a car — fast, simple, and on the go.
           </div>
+
+          {/* ── EARTH SURFACE + CAR ── */}
+          <div className="earth-wrap" style={{ marginTop: 36 }}>
+            {/* Earth curve + glow */}
+            <svg
+              viewBox="0 0 1440 140"
+              preserveAspectRatio="none"
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+              }}
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <defs>
+                <radialGradient id="earthGlow" cx="50%" cy="0%" r="70%">
+                  <stop offset="0%" stopColor="rgba(79,142,247,0.22)" />
+                  <stop offset="55%" stopColor="rgba(79,142,247,0.08)" />
+                  <stop offset="100%" stopColor="transparent" />
+                </radialGradient>
+                <filter id="lineGlow" x="-20%" y="-100%" width="140%" height="300%">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feMerge>
+                    <feMergeNode in="blur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              </defs>
+              {/* Earth fill */}
+              <path
+                d="M0,140 Q720,-60 1440,140 Z"
+                fill="url(#earthGlow)"
+              />
+              {/* Soft glow line */}
+              <path
+                d="M0,140 Q720,-60 1440,140"
+                fill="none"
+                stroke="rgba(79,142,247,0.3)"
+                strokeWidth="2"
+                filter="url(#lineGlow)"
+              />
+              {/* Sharp line */}
+              <path
+                d="M0,140 Q720,-60 1440,140"
+                fill="none"
+                stroke="rgba(79,142,247,0.65)"
+                strokeWidth="1"
+              />
+            </svg>
+
+            {/* Car on the arc */}
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                pointerEvents: 'none',
+              }}
+            >
+              <svg
+                viewBox="0 0 1440 140"
+                preserveAspectRatio="none"
+                style={{ width: '100%', height: '100%' }}
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <defs>
+                  <path id="carPath" d="M0,140 Q720,-60 1440,140" />
+                </defs>
+                {/* Headlight glow is now inside the car <g> below — removed standalone element */}
+                {/* Car */}
+                <g>
+                  <animateMotion dur="10s" repeatCount="indefinite" rotate="auto">
+                    <mpath href="#carPath" />
+                  </animateMotion>
+                  {/* Headlight glow — offset forward (cx=18) so it stays in front of the car */}
+                  <ellipse cx="18" cy="-3" rx="28" ry="7" fill="rgba(255,230,100,0.13)" />
+                  <ellipse cx="0" cy="10" rx="18" ry="3" fill="rgba(0,0,0,0.25)" />
+                  <rect x="-14" y="-8" width="28" height="10" rx="3"
+                    fill="#1e3a5f" stroke="rgba(79,142,247,0.6)" strokeWidth="0.8" />
+                  <rect x="-8" y="-15" width="16" height="8" rx="2"
+                    fill="#152d4a" stroke="rgba(79,142,247,0.4)" strokeWidth="0.6" />
+                  <rect x="-6" y="-14" width="6" height="6" rx="1"
+                    fill="rgba(120,180,255,0.5)" />
+                  <rect x="2" y="-14" width="5" height="6" rx="1"
+                    fill="rgba(120,180,255,0.3)" />
+                  <rect x="13" y="-5" width="3" height="2" rx="0.5"
+                    fill="rgba(255,230,100,0.95)" />
+                  <rect x="-16" y="-5" width="3" height="2" rx="0.5"
+                    fill="rgba(255,80,80,0.8)" />
+                  <circle cx="-8" cy="3" r="4" fill="#0a0a0f"
+                    stroke="rgba(255,255,255,0.2)" strokeWidth="0.8" />
+                  <circle cx="-8" cy="3" r="2" fill="#1a1a2e" />
+                  <circle cx="8" cy="3" r="4" fill="#0a0a0f"
+                    stroke="rgba(255,255,255,0.2)" strokeWidth="0.8" />
+                  <circle cx="8" cy="3" r="2" fill="#1a1a2e" />
+                  <rect x="-14" y="-3" width="28" height="1" rx="0.5"
+                    fill="rgba(79,142,247,0.5)" />
+                </g>
+              </svg>
+            </div>
+          </div>
+
           <div className="service-grid">
             <div className="service-card" onClick={() => setActive('search')}>
               <div className="hero-emoji">🚌</div>
@@ -718,6 +995,7 @@ function Home({ role, setActive }) {
           </div>
         </div>
       </div>
+
       <div className="page">
         <div className="sec-title">Recent activity</div>
         {role === 'guest' ? (
@@ -840,7 +1118,15 @@ function AuthModal({ onConfirm, onClose }) {
   );
 }
 
-function BusSearch({ role, setActive }) {
+const getTodayISO = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+function BusSearch({ role, setActive, setBookingsTab }) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [selectedRoute, setSelectedRoute] = useState(null);
@@ -850,7 +1136,7 @@ function BusSearch({ role, setActive }) {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [fromCity, setFromCity] = useState('Phnom Penh');
   const [toCity, setToCity] = useState('Siem Reap');
-  const [travelDate, setTravelDate] = useState('2026-04-05');
+  const [travelDate, setTravelDate] = useState(getTodayISO());
   useEffect(() => {
     if (typeof window === 'undefined') return () => {};
     if (step === 1) {
@@ -1311,6 +1597,7 @@ function BusSearch({ role, setActive }) {
           <div className="seat-layout">
             <div>
               <div className="bus-shell">
+                <div className="bus-pattern" />
                 <div className="bus-roof" />
                 <div className="bus-front">
                   <span className="steering">🚌</span>
@@ -1594,7 +1881,11 @@ function BusSearch({ role, setActive }) {
             </button>
             <button
               className="btn btn-primary btn-lg"
-              onClick={() => setDone(true)}
+              onClick={() => {
+                setDone(true);
+                if (setBookingsTab) setBookingsTab('trips');
+                setActive('bookings');
+              }}
             >
               Confirm & Pay <Icon d={icons.check} size={15} color="#fff" />
             </button>
@@ -1605,7 +1896,7 @@ function BusSearch({ role, setActive }) {
   );
 }
 
-function CarRental({ role, setActive }) {
+function CarRental({ role, setActive, setBookingsTab }) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [selected, setSelected] = useState(null);
@@ -1613,6 +1904,10 @@ function CarRental({ role, setActive }) {
   const [done, setDone] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [shaking, setShaking] = useState(null);
+  const [pickupDate, setPickupDate] = useState('2026-04-05');
+  const [returnDate, setReturnDate] = useState('2026-04-08');
+  const [showSpecs, setShowSpecs] = useState(false);
+  const [showPhotos, setShowPhotos] = useState(false);
 
   const goBack = () => {
     setStep((prev) => {
@@ -1649,10 +1944,21 @@ function CarRental({ role, setActive }) {
     price: c.dailyRate,
     emoji: c.emoji,
     status: c.status,
+    specs: c.specs || [],
+    specDetails: c.specDetails || [],
+    photos: c.photos || [],
   }));
 
   const car = cars.find((c) => c.id === selected);
-  const days = 3; // Mocked duration
+  const startDate = new Date(pickupDate);
+  const endDate = new Date(returnDate);
+  const diffDays = Math.floor((endDate - startDate) / 86400000);
+  const days = Number.isFinite(diffDays) ? Math.max(1, diffDays) : 1;
+
+  useEffect(() => {
+    setShowSpecs(false);
+    setShowPhotos(false);
+  }, [selected, step]);
 
   if (done)
     return (
@@ -1800,6 +2106,61 @@ function CarRental({ role, setActive }) {
                 <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
                   {car.type} · {car.seats} seats · {car.trans}
                 </div>
+                <div className="toggle-row">
+                  <button
+                    className={`toggle-btn ${showSpecs ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setShowSpecs((prev) => !prev)}
+                    aria-expanded={showSpecs}
+                  >
+                    Specs{' '}
+                    <Icon d={icons.chevron} size={12} className="toggle-icon" />
+                  </button>
+                  <button
+                    className={`toggle-btn ${showPhotos ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setShowPhotos((prev) => !prev)}
+                    aria-expanded={showPhotos}
+                  >
+                    Photos{' '}
+                    <Icon d={icons.chevron} size={12} className="toggle-icon" />
+                  </button>
+                </div>
+                <div
+                  className={`dropdown-panel ${showSpecs ? 'open' : ''}`}
+                  aria-hidden={!showSpecs}
+                >
+                  {car.specDetails.map((row) => (
+                    <div key={row.label} className="spec-row">
+                      <span className="spec-key">{row.label}</span>
+                      <span>{row.value}</span>
+                    </div>
+                  ))}
+                  {!car.specDetails.length && (
+                    <div className="spec-row">
+                      <span className="spec-key">No specs available</span>
+                    </div>
+                  )}
+                </div>
+                <div
+                  className={`dropdown-panel ${showPhotos ? 'open' : ''}`}
+                  aria-hidden={!showPhotos}
+                >
+                  <div className="photo-grid">
+                    {car.photos.map((src, idx) => (
+                      <img
+                        key={`${car.id}-${idx}`}
+                        src={src}
+                        alt={`${car.name} ${idx + 1}`}
+                      />
+                    ))}
+                  </div>
+                  {!car.photos.length && (
+                    <div className="spec-row">
+                      <span className="spec-key">No photos available</span>
+                    </div>
+                  )}
+                </div>
               </div>
               <div
                 style={{
@@ -1825,11 +2186,19 @@ function CarRental({ role, setActive }) {
             <div className="date-range">
               <div>
                 <div className="label">Pickup</div>
-                <input type="date" defaultValue="2026-04-05" />
+                <input
+                  type="date"
+                  value={pickupDate}
+                  onChange={(e) => setPickupDate(e.target.value)}
+                />
               </div>
               <div>
                 <div className="label">Return</div>
-                <input type="date" defaultValue="2026-04-08" />
+                <input
+                  type="date"
+                  value={returnDate}
+                  onChange={(e) => setReturnDate(e.target.value)}
+                />
               </div>
             </div>
             <div className="form-group">
@@ -1983,7 +2352,11 @@ function CarRental({ role, setActive }) {
               </button>
               <button
                 className="btn btn-primary btn-lg"
-                onClick={() => setDone(true)}
+                onClick={() => {
+                  setDone(true);
+                  if (setBookingsTab) setBookingsTab('rentals');
+                  setActive('bookings');
+                }}
               >
                 Confirm Rental <Icon d={icons.check} size={15} color="#fff" />
               </button>
@@ -1995,9 +2368,9 @@ function CarRental({ role, setActive }) {
   );
 }
 
-function MyBookings({ role }) {
+function MyBookings({ role, bookingsTab, setBookingsTab }) {
   const navigate = useNavigate();
-  const [tab, setTab] = useState('trips');
+  const [tab, setTab] = useState(bookingsTab || 'trips');
   const [qrOpen, setQrOpen] = useState(null);
   const [rentalFilter, setRentalFilter] = useState('all');
   const [tripFilter, setTripFilter] = useState('all');
@@ -2005,6 +2378,11 @@ function MyBookings({ role }) {
     const cleanup = setupScrollReveal();
     return cleanup;
   }, [tab, rentalFilter, tripFilter]);
+  useEffect(() => {
+    if (bookingsTab && bookingsTab !== tab) {
+      setTab(bookingsTab);
+    }
+  }, [bookingsTab, tab]);
 
   if (role === 'guest')
     return (
@@ -2121,7 +2499,10 @@ function MyBookings({ role }) {
             <div
               key={t.id}
               className={`pill-tab ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
+              onClick={() => {
+                setTab(t.id);
+                if (setBookingsTab) setBookingsTab(t.id);
+              }}
             >
               {t.label}
             </div>
@@ -2408,6 +2789,7 @@ const PAGES = {
 
 export default function App({ role, onLogout }) {
   const [page, setPage] = useState('home');
+  const [bookingsTab, setBookingsTab] = useState('trips');
   const PageComp = PAGES[page] || Home;
   useEffect(() => {
     const cleanup = setupScrollReveal();
@@ -2427,7 +2809,13 @@ export default function App({ role, onLogout }) {
         onLogout={onLogout}
       />
       <div style={{ flex: 1 }}>
-        <PageComp role={role} setActive={setPage} onLogout={onLogout} />
+        <PageComp
+          role={role}
+          setActive={setPage}
+          onLogout={onLogout}
+          bookingsTab={bookingsTab}
+          setBookingsTab={setBookingsTab}
+        />
       </div>
       <Footer />
     </div>
