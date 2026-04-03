@@ -1997,13 +1997,14 @@ function CarRental({ role, setActive }) {
 
 function MyBookings({ role }) {
   const navigate = useNavigate();
-  const [tab, setTab] = useState('upcoming');
+  const [tab, setTab] = useState('trips');
   const [qrOpen, setQrOpen] = useState(null);
   const [rentalFilter, setRentalFilter] = useState('all');
+  const [tripFilter, setTripFilter] = useState('all');
   useEffect(() => {
     const cleanup = setupScrollReveal();
     return cleanup;
-  }, [tab, rentalFilter]);
+  }, [tab, rentalFilter, tripFilter]);
 
   if (role === 'guest')
     return (
@@ -2037,7 +2038,7 @@ function MyBookings({ role }) {
     );
 
   const bookings = {
-    upcoming: [
+    trips: [
       {
         id: '#B-4811',
         type: 'ticket',
@@ -2049,8 +2050,6 @@ function MyBookings({ role }) {
         time: '06:00',
         seat: 'A2',
       },
-    ],
-    past: [
       {
         id: '#B-4795',
         type: 'ticket',
@@ -2092,8 +2091,14 @@ function MyBookings({ role }) {
     return b.status.toLowerCase() === rentalFilter;
   });
 
+  const filteredTrips = (bookings.trips || []).filter((b) => {
+    if (tripFilter === 'all') return true;
+    const isPast = (b.status || '').toLowerCase() === 'completed';
+    return tripFilter === 'past' ? isPast : !isPast;
+  });
+  const tripBookings = filteredTrips;
   const currentBookings =
-    tab === 'rentals' ? filteredRentals : bookings[tab] || [];
+    tab === 'rentals' ? filteredRentals : tab === 'trips' ? tripBookings : [];
 
   return (
     <div className="page" style={{ maxWidth: 640 }}>
@@ -2110,8 +2115,7 @@ function MyBookings({ role }) {
       >
         <div style={{ display: 'flex', gap: 8 }}>
           {[
-            { id: 'upcoming', label: 'Upcoming' },
-            { id: 'past', label: 'Past trips' },
+            { id: 'trips', label: 'Trips' },
             { id: 'rentals', label: 'Rentals' },
           ].map((t) => (
             <div
@@ -2135,6 +2139,23 @@ function MyBookings({ role }) {
               key={f.id}
               className={`pill-tab ${rentalFilter === f.id ? 'active' : ''}`}
               onClick={() => setRentalFilter(f.id)}
+            >
+              {f.label}
+            </div>
+          ))}
+        </div>
+      )}
+      {tab === 'trips' && (
+        <div className="pill-nav" style={{ marginTop: -6, marginBottom: 20 }}>
+          {[
+            { id: 'all', label: 'All' },
+            { id: 'upcoming', label: 'Upcoming' },
+            { id: 'past', label: 'Past' },
+          ].map((f) => (
+            <div
+              key={f.id}
+              className={`pill-tab ${tripFilter === f.id ? 'active' : ''}`}
+              onClick={() => setTripFilter(f.id)}
             >
               {f.label}
             </div>
