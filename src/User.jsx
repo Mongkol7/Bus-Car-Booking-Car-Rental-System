@@ -410,6 +410,10 @@ const css = `
   .modal-text { font-size: 14px; color: var(--text-2); margin-bottom: 28px; line-height: 1.5; }
   .modal-btns { display: flex; gap: 12px; }
   .modal-btns .btn { flex: 1; }
+  .success-actions { display: flex; gap: 12px; margin-top: 20px; }
+  @media (max-width: 520px) {
+    .success-actions { flex-direction: column; }
+  }
 
   /* ── BOOKING SUMMARY ── */
   .summary-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 0.5px solid rgba(255,255,255,0.05); }
@@ -1133,6 +1137,7 @@ function BusSearch({ role, setActive, setBookingsTab }) {
   const [selectedSeats, setSelectedSeats] = useState([]);
   const [payMethod, setPayMethod] = useState('aba');
   const [done, setDone] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [fromCity, setFromCity] = useState('Phnom Penh');
   const [toCity, setToCity] = useState('Siem Reap');
@@ -1160,18 +1165,57 @@ function BusSearch({ role, setActive, setBookingsTab }) {
     const cleanup = setupScrollReveal();
     return cleanup;
   }, [step]);
+  if (paymentSuccess)
+    return (
+      <div className="page" style={{ maxWidth: 480 }}>
+        <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
+          <div
+            className="confirm-icon"
+            style={{
+              background: 'var(--green-soft)',
+              color: 'var(--green)',
+              width: 60,
+              height: 60,
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 20px',
+              fontSize: 24,
+            }}
+          >
+            ✓
+          </div>
+          <div className="page-title">Payment successful!</div>
+          <div className="page-sub">Choose where to go next</div>
+          <div className="success-actions">
+            <button
+              className="btn btn-primary btn-full"
+              onClick={() => {
+                if (setBookingsTab) setBookingsTab('trips');
+                setPaymentSuccess(false);
+                setActive('bookings');
+              }}
+            >
+              My Bookings
+            </button>
+            <button
+              className="btn btn-ghost btn-full"
+              onClick={() => {
+                setPaymentSuccess(false);
+                setActive('home');
+              }}
+            >
+              Back to Home
+            </button>
+          </div>
+        </div>
+      </div>
+    );
 
   const goBack = () => {
     setStep((prev) => Math.max(1, prev - 1));
   };
-  useEffect(() => {
-    const cleanup = setupScrollReveal();
-    return cleanup;
-  }, [step]);
-  useEffect(() => {
-    const cleanup = setupScrollReveal();
-    return cleanup;
-  }, [step]);
 
   const destinations = [
     'Phnom Penh',
@@ -1882,9 +1926,7 @@ function BusSearch({ role, setActive, setBookingsTab }) {
             <button
               className="btn btn-primary btn-lg"
               onClick={() => {
-                setDone(true);
-                if (setBookingsTab) setBookingsTab('trips');
-                setActive('bookings');
+                setPaymentSuccess(true);
               }}
             >
               Confirm & Pay <Icon d={icons.check} size={15} color="#fff" />
@@ -1902,6 +1944,7 @@ function CarRental({ role, setActive, setBookingsTab }) {
   const [selected, setSelected] = useState(null);
   const [payMethod, setPayMethod] = useState('aba');
   const [done, setDone] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [shaking, setShaking] = useState(null);
   const [pickupDate, setPickupDate] = useState('2026-04-05');
@@ -1959,6 +2002,54 @@ function CarRental({ role, setActive, setBookingsTab }) {
     setShowSpecs(false);
     setShowPhotos(false);
   }, [selected, step]);
+
+  if (paymentSuccess)
+    return (
+      <div className="page" style={{ maxWidth: 480 }}>
+        <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
+          <div
+            className="confirm-icon"
+            style={{
+              background: 'var(--green-soft)',
+              color: 'var(--green)',
+              width: 60,
+              height: 60,
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 20px',
+              fontSize: 24,
+            }}
+          >
+            ✓
+          </div>
+          <div className="page-title">Payment successful!</div>
+          <div className="page-sub">Choose where to go next</div>
+          <div className="success-actions">
+            <button
+              className="btn btn-primary btn-full"
+              onClick={() => {
+                if (setBookingsTab) setBookingsTab('rentals');
+                setPaymentSuccess(false);
+                setActive('bookings');
+              }}
+            >
+              My Bookings
+            </button>
+            <button
+              className="btn btn-ghost btn-full"
+              onClick={() => {
+                setPaymentSuccess(false);
+                setActive('home');
+              }}
+            >
+              Back to Home
+            </button>
+          </div>
+        </div>
+      </div>
+    );
 
   if (done)
     return (
@@ -2353,9 +2444,7 @@ function CarRental({ role, setActive, setBookingsTab }) {
               <button
                 className="btn btn-primary btn-lg"
                 onClick={() => {
-                  setDone(true);
-                  if (setBookingsTab) setBookingsTab('rentals');
-                  setActive('bookings');
+                  setPaymentSuccess(true);
                 }}
               >
                 Confirm Rental <Icon d={icons.check} size={15} color="#fff" />
