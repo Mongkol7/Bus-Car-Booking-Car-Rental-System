@@ -38,8 +38,7 @@ INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_tim
 ((SELECT id FROM buses WHERE plate_number = '2B-5678'), 'Phnom Penh', 'Battambang', CURRENT_DATE + TIME '09:00:00', CURRENT_DATE + TIME '14:00:00', 12.00),
 ((SELECT id FROM buses WHERE plate_number = '4D-3456'), 'Phnom Penh', 'Sihanoukville', CURRENT_DATE + TIME '13:00:00', CURRENT_DATE + TIME '18:00:00', 15.00),
 ((SELECT id FROM buses WHERE plate_number = '5E-7788'), 'Phnom Penh', 'Kampot', CURRENT_DATE + TIME '15:30:00', CURRENT_DATE + TIME '20:30:00', 13.00),
-((SELECT id FROM buses WHERE plate_number = '6F-4455'), 'Siem Reap', 'Phnom Penh', CURRENT_DATE + TIME '22:00:00', CURRENT_DATE + INTERVAL '1 day' + TIME '04:00:00', 16.00)
-ON CONFLICT DO NOTHING;
+((SELECT id FROM buses WHERE plate_number = '6F-4455'), 'Siem Reap', 'Phnom Penh', CURRENT_DATE + TIME '22:00:00', CURRENT_DATE + INTERVAL '1 day' + TIME '04:00:00', 16.00);
 
 -- 5. SEED ADMIN USER
 -- Password hash would normally be bcrypt. For this mock, we just use a raw string 'admin123'
