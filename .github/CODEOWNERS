@@ -1,0 +1,29 @@
+# Team ownership template for cleaner reviews and merges.
+# Replace the placeholder handles with real GitHub usernames or team slugs,
+# then remove the leading # from the lines you want GitHub to enforce.
+#
+# /src/App.jsx @mongkol-github
+# /src/Admin.jsx @mongkol-github
+# /src/context/AuthContext.jsx @mongkol-github
+# /src/pages/admin/ @mongkol-github
+# /src/features/auth/ @mongkol-github
+# /src/features/admin/ @mongkol-github
+#
+# /src/User.jsx @heng-github
+# /src/pages/user/Home.jsx @heng-github
+# /src/pages/user/TopNav.jsx @heng-github
+# /src/pages/user/BusSearch.jsx @heng-github
+# /src/pages/user/MyBookings.jsx @heng-github
+# /src/pages/user/Profile.jsx @heng-github
+# /src/features/home/ @heng-github
+# /src/features/booking/ @heng-github
+# /src/features/profile/ @heng-github
+#
+# /src/pages/user/CarRental.jsx @sak-github
+# /src/features/rental/ @sak-github
+# /src/features/checkout/ @sak-github
+# /public/cars/ @sak-github
+#
+# /src/index.css @mongkol-github @heng-github @sak-github
+# /src/data/ @mongkol-github @heng-github @sak-github
+# /src/components/ @mongkol-github @heng-github @sak-github
