@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 const app = express();
@@ -59,10 +60,13 @@ app.get('/api/routes', async (req, res) => {
 app.post('/api/auth/register', async (req, res) => {
   const { first_name, last_name, email, phone, password, national_id } = req.body;
   try {
+    const salt = await bcrypt.genSalt(10);
+    const password_hash = await bcrypt.hash(password, salt);
+
     const result = await pool.query(
       `INSERT INTO users (first_name, last_name, email, phone, password_hash, national_id) 
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, first_name, last_name, email, role`,
-      [first_name, last_name, email, phone, password, national_id]
+      [first_name, last_name, email, phone, password_hash, national_id]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -75,13 +79,22 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   try {
     const result = await pool.query(
-      `SELECT id, first_name, last_name, email, role FROM users WHERE email = $1 AND password_hash = $2`,
-      [email, password]
+      `SELECT id, first_name, last_name, email, role, password_hash FROM users WHERE email = $1`,
+      [email]
     );
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-    res.json(result.rows[0]);
+
+    const user = result.rows[0];
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+    
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    delete user.password_hash;
+    res.json(user);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
