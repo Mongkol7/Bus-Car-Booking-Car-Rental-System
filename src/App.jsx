@@ -1,47 +1,30 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import AdminApp from './Admin';
 import UserApp from './User';
 import Login from './Login';
+import { useAuth } from './context/AuthContext';
 
 function App() {
-  const [role, setRole] = useState(() => {
-    if (typeof window === 'undefined') return 'guest';
-    return window.localStorage.getItem('role') || 'guest';
-  });
-  const [redirectToLogin, setRedirectToLogin] = useState(false);
-
-  const handleLogin = (userRole) => {
-    setRole(userRole);
-  };
-
-  const handleLogout = () => {
-    setRole('guest');
-    setRedirectToLogin(true);
-  };
+  const { role, login, logout, setGuest, redirectToLogin, finishRedirect } = useAuth();
 
   const RoleRoute = ({ targetRole }) => {
+    const { login } = useAuth();
     useEffect(() => {
-      setRole(targetRole);
-    }, [targetRole]);
+      login(targetRole);
+    }, [targetRole, login]);
 
-    return <UserApp role={targetRole} onLogout={handleLogout} />;
+    return <UserApp role={targetRole} onLogout={logout} />;
   };
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('role', role);
-    }
-  }, [role]);
 
   return (
     <BrowserRouter>
-      <LogoutListener shouldRedirect={redirectToLogin} onDone={() => setRedirectToLogin(false)} />
+      <LogoutListener shouldRedirect={redirectToLogin} onDone={finishRedirect} />
       <Routes>
         {/* User / Guest Landing Route */}
         <Route 
           path="/" 
-          element={<UserApp role={role} onLogout={handleLogout} />} 
+          element={<UserApp role={role} onLogout={logout} />} 
         />
 
         {/* Explicit Role Routes */}
@@ -54,7 +37,7 @@ function App() {
           element={
             role !== 'guest' ? 
             <Navigate to={role === 'admin' ? '/admin' : '/'} /> : 
-            <Login onLogin={handleLogin} onGuest={() => setRole('guest')} initialView="login" />
+            <Login onLogin={login} onGuest={setGuest} initialView="login" />
           } 
         />
 
@@ -62,7 +45,7 @@ function App() {
         <Route 
           path="/register" 
           element={
-            <Login onLogin={handleLogin} onGuest={() => setRole('guest')} initialView="register" />
+            <Login onLogin={login} onGuest={setGuest} initialView="register" />
           } 
         />
 
@@ -71,7 +54,7 @@ function App() {
           path="/admin" 
           element={
             role === 'admin' ? 
-            <AdminApp onLogout={handleLogout} /> : 
+            <AdminApp onLogout={logout} /> : 
             <Navigate to="/login" />
           } 
         />
@@ -79,8 +62,6 @@ function App() {
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
-
-      {/* Guest Banner removed per request */}
     </BrowserRouter>
   );
 }

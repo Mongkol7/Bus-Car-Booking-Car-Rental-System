@@ -1513,10 +1513,10 @@ function Profile() {
       >
         <div className="profile-avatar">SC</div>
         <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
-          Sophea Chan
+          Sereymonkol Thoeung
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16 }}>
-          sophea@gmail.com
+          thoeungsereymongkol@gmail.com
         </div>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 10 }}>
           <span className="badge badge-green">Verified</span>
@@ -1528,20 +1528,20 @@ function Profile() {
         <div className="form-row">
           <div>
             <div className="label">First name</div>
-            <input defaultValue="Sophea" />
+            <input defaultValue="Sereymonkol" />
           </div>
           <div>
             <div className="label">Last name</div>
-            <input defaultValue="Chan" />
+            <input defaultValue="Thoeung" />
           </div>
         </div>
         <div className="form-group">
           <div className="label">Email</div>
-          <input defaultValue="sophea@gmail.com" />
+          <input defaultValue="thoeungsereymongkol@gmail.com" />
         </div>
         <div className="form-group">
           <div className="label">Phone</div>
-          <input defaultValue="+855 12 345 678" />
+          <input defaultValue="+855 17 420 051" />
         </div>
         <div className="form-group">
           <div className="label">National ID</div>

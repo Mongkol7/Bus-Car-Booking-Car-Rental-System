@@ -275,23 +275,62 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
     navigate('/');
   };
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    if (username === 'Admin' && password === '123') {
-      onLogin('admin');
-      navigate('/admin');
-    } else if (username === 'User' && password === '123') {
-      onLogin('user');
-      navigate('/');
-    } else {
-      setError('Invalid username or password');
+    setError('');
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: username, password })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error || 'Invalid credentials');
+        return;
+      }
+      onLogin(data.role);
+      if (data.role === 'admin') {
+        navigate('/admin');
+      } else {
+        navigate('/');
+      }
+    } catch (err) {
+      setError('Server error. Please try again.');
     }
   };
 
-  const handleRegister = (e) => {
+  const handleRegister = async (e) => {
     e.preventDefault();
-    alert('Congratulations! Account created. Please login.');
-    setView('login');
+    setError('');
+    const form = e.target;
+    const nameParts = form.fullname.value.split(' ');
+    const first_name = nameParts[0];
+    const last_name = nameParts.slice(1).join(' ') || 'User';
+
+    try {
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          first_name,
+          last_name,
+          email: form.email.value,
+          phone: form.phone.value,
+          password: form.password.value,
+          national_id: ''
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error || 'Registration failed');
+        return;
+      }
+      alert('Account created! Please sign in.');
+      setView('login');
+    } catch (err) {
+      setError('Server error. Please try again.');
+    }
   };
 
   const handleGuest = () => {
@@ -353,10 +392,10 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
             
             <form onSubmit={handleLogin}>
               <div className="form-group">
-                <label className="label">Username</label>
+                <label className="label">Email Address</label>
                 <input 
-                  type="text" 
-                  placeholder="Admin or User" 
+                  type="email" 
+                  placeholder="admin@bookride.com" 
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   required
@@ -394,18 +433,24 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
             <form onSubmit={handleRegister}>
               <div className="form-group">
                 <label className="label">Full Name</label>
-                <input type="text" placeholder="John Doe" required />
+                <input type="text" name="fullname" placeholder="John Doe" required />
               </div>
               <div className="form-group">
                 <label className="label">Email</label>
-                <input type="email" placeholder="john@example.com" required />
+                <input type="email" name="email" placeholder="john@example.com" required />
+              </div>
+              <div className="form-group">
+                <label className="label">Phone Number</label>
+                <input type="tel" name="phone" placeholder="+855 12 345 678" required />
               </div>
               <div className="form-group">
                 <label className="label">Password</label>
-                <input type="password" placeholder="••••••••" required />
+                <input type="password" name="password" placeholder="••••••••" required />
               </div>
               
               <button type="submit" className="btn btn-primary">Sign up</button>
+              
+              {error && <div className="error-msg">{error}</div>}
             </form>
             
             <div className="auth-link">
