@@ -804,6 +804,11 @@ body {
 
   /* GRID 2 */
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .routes-planner-shell { padding: 16px 18px; }
+  .routes-planner-grid { grid-template-columns: minmax(0, 1.7fr) minmax(300px, 0.7fr); align-items: stretch; }
+  .routes-summary-card { height: 100%; }
+  .routes-summary-panel { height: 100%; display: flex; flex-direction: column; }
+  .routes-summary-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 4px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
 
   /* TABLE */
@@ -931,6 +936,11 @@ body {
   .pill-nav { display: flex; gap: 6px; background: var(--glass); border: 0.5px solid var(--glass-border); border-radius: 10px; padding: 4px; margin-bottom: 20px; width: fit-content; }
   .pill-tab { padding: 6px 14px; border-radius: 7px; font-size: 12px; font-weight: 500; color: var(--text-2); cursor: pointer; transition: all 0.15s; }
   .pill-tab.active { background: var(--accent); color: #fff; }
+  .routes-planner-controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
+  .routes-planner-nav { flex: 0 0 auto; width: auto; max-width: 100%; flex-wrap: wrap; margin-bottom: 0; padding: 3px; gap: 4px; margin-right: 16px;}
+  .routes-planner-pill { min-width: 72px; padding: 5px 10px; font-size: 11px; }
+  .routes-planner-date { min-width: 168px; flex: 0 1 200px; }
+  .routes-planner-date input { padding: 8px 10px; font-size: 12px; }
 
   /* STAT ROW */
   .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 0.5px solid rgba(255,255,255,0.04); }
@@ -1097,6 +1107,22 @@ body {
     .car-grid { grid-template-columns: repeat(2, 1fr); }
   }
 
+  @media (min-width: 901px) and (max-width: 1180px) {
+    .routes-planner-grid { grid-template-columns: minmax(0, 1.5fr) minmax(270px, 0.62fr); }
+  }
+
+  @media (min-width: 761px) and (max-width: 1024px) {
+    .routes-planner-grid { grid-template-columns: minmax(0, 1.4fr) minmax(250px, 0.62fr); }
+  }
+
+  @media (max-width: 900px) {
+    .routes-planner-grid { grid-template-columns: 1fr; }
+    .routes-planner-grid .card { overflow-x: hidden; }
+    .routes-summary-card { height: auto; }
+    .routes-summary-panel { height: auto; display: block; }
+    .routes-summary-scroll { max-height: none; min-height: auto; overflow-y: visible; padding-right: 0; }
+  }
+
   @media (max-width: 760px) {
     body { padding-bottom: 40px; }
     .app { flex-direction: column; }
@@ -1127,9 +1153,14 @@ body {
     .page-title { font-size: 20px; }
     .page-sub { font-size: 12px; }
     .card { padding: 16px; }
+    .routes-planner-shell { padding: 12px 14px; }
     .toolbar { flex-direction: column; align-items: stretch; }
     .toolbar-right { margin-left: 0; }
     .pill-nav { flex-wrap: wrap; }
+    .routes-planner-controls { justify-content: center; gap: 8px; }
+    .routes-planner-nav { justify-content: center; flex: 1 1 100%; width: 100%; }
+    .routes-planner-pill { min-width: 62px; padding: 4px 8px; font-size: 10px; text-align: center; align-items: center !important; }
+    .routes-planner-date { width: 100%; min-width: 0; flex: 1 1 100%; }
     table { font-size: 10px; }
     thead th { font-size: 9px; }
   }

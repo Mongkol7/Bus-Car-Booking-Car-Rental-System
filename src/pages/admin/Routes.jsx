@@ -10,6 +10,83 @@ const EMPTY_FORM = {
   price: ''
 };
 
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function getLocalDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildDateTimeForDay(dayKey, hours, minutes = 0) {
+  return `${dayKey}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function formatDayLabel(dayKey, isToday) {
+  const date = new Date(`${dayKey}T00:00:00`);
+  return isToday ? `Today (${date.getDate()})` : String(date.getDate());
+}
+
+function formatDayMeta(dayKey) {
+  return new Date(`${dayKey}T00:00:00`).toLocaleDateString([], {
+    weekday: 'short',
+    month: 'short'
+  });
+}
+
+function formatSelectedDate(dayKey) {
+  return new Date(`${dayKey}T00:00:00`).toLocaleDateString([], {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric'
+  });
+}
+
+function getTripLabel(count) {
+  return `${count} trip${count === 1 ? '' : 's'}`;
+}
+
+function getDayStatus(count) {
+  if (count >= 3) return 'green';
+  if (count >= 1) return 'yellow';
+  return 'red';
+}
+
+function getDayStatusStyles(status, active) {
+  const palette = {
+    red: {
+      background: 'var(--red-soft)',
+      color: 'var(--red)',
+      border: 'rgba(248,113,113,0.35)'
+    },
+    yellow: {
+      background: 'var(--amber-soft)',
+      color: 'var(--amber)',
+      border: 'rgba(245,158,11,0.35)'
+    },
+    green: {
+      background: 'var(--green-soft)',
+      color: 'var(--green)',
+      border: 'rgba(34,197,94,0.35)'
+    }
+  };
+
+  const chosen = palette[status] || palette.red;
+  return {
+    background: chosen.background,
+    color: chosen.color,
+    border: `1px solid ${chosen.border}`,
+    boxShadow: active ? `0 0 0 1px ${chosen.color} inset` : 'none'
+  };
+}
+
 function formatDateTime(value) {
   if (!value) return '--';
   return new Date(value).toLocaleString([], {
@@ -46,10 +123,6 @@ function formatMoney(value) {
   return `$${amount.toFixed(2)}`;
 }
 
-function getRouteKey(route) {
-  return `${route.origin} -> ${route.destination}`;
-}
-
 async function parseJsonResponse(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -76,7 +149,7 @@ function RouteFormModal({
     : '--';
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay">
       <div
         className="modal-card"
         style={{ maxWidth: 720, textAlign: 'left' }}
@@ -262,6 +335,7 @@ function DeleteModal({ route, onClose, onConfirm, deleting }) {
 }
 
 export default function Routes() {
+  const todayKey = useMemo(() => getLocalDateKey(new Date()), []);
   const [routes, setRoutes] = useState([]);
   const [buses, setBuses] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -274,43 +348,58 @@ export default function Routes() {
   const [saving, setSaving] = useState(false);
   const [deletingRoute, setDeletingRoute] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [filterMode, setFilterMode] = useState('preset-day');
+  const [selectedDayKey, setSelectedDayKey] = useState(todayKey);
+  const [customDateKey, setCustomDateKey] = useState('');
 
-  const groupedRoutes = useMemo(() => {
-    const groups = routes.reduce((map, route) => {
-      const key = getRouteKey(route);
-      if (!map.has(key)) {
-        map.set(key, {
-          key,
-          origin: route.origin,
-          destination: route.destination,
-          schedules: 0,
-          lowestPrice: Number(route.price),
-          highestPrice: Number(route.price),
-          nextDeparture: route.departure_time,
-          companies: new Set()
-        });
-      }
+  const weekDays = useMemo(() => {
+    const start = new Date(`${todayKey}T00:00:00`);
+    return Array.from({ length: 8 }, (_, index) => {
+      const day = addDays(start, index);
+      const dayKey = getLocalDateKey(day);
+      return {
+        key: dayKey,
+        label: formatDayLabel(dayKey, index === 0),
+        meta: formatDayMeta(dayKey)
+      };
+    });
+  }, [todayKey]);
 
-      const group = map.get(key);
-      group.schedules += 1;
-      group.lowestPrice = Math.min(group.lowestPrice, Number(route.price));
-      group.highestPrice = Math.max(group.highestPrice, Number(route.price));
-      if (new Date(route.departure_time) < new Date(group.nextDeparture)) {
-        group.nextDeparture = route.departure_time;
-      }
-      if (route.company_name) {
-        group.companies.add(route.company_name);
-      }
-      return map;
-    }, new Map());
-
-    return Array.from(groups.values())
-      .map(group => ({
-        ...group,
-        companies: Array.from(group.companies)
-      }))
-      .sort((a, b) => new Date(a.nextDeparture) - new Date(b.nextDeparture));
+  const routesByDayCount = useMemo(() => {
+    return routes.reduce((counts, route) => {
+      const key = getLocalDateKey(route.departure_time);
+      counts[key] = (counts[key] || 0) + 1;
+      return counts;
+    }, {});
   }, [routes]);
+
+  const activeDayKey = filterMode === 'custom-day'
+    ? (customDateKey || selectedDayKey)
+    : selectedDayKey;
+
+  const filteredRoutes = useMemo(() => {
+    if (filterMode === 'all') {
+      return routes;
+    }
+    return routes.filter(route => getLocalDateKey(route.departure_time) === activeDayKey);
+  }, [activeDayKey, filterMode, routes]);
+
+  const summarySchedules = useMemo(() => {
+    const now = new Date();
+    const isTodayView = filterMode !== 'all' && activeDayKey === todayKey;
+    return [...filteredRoutes]
+      .map(route => {
+        const departureDate = new Date(route.departure_time);
+        return {
+          ...route,
+          departureLabel: departureDate > now
+            ? 'Next departure'
+            : (isTodayView || filterMode === 'all' ? 'Departure' : 'Departure'),
+          departureValue: route.departure_time
+        };
+      })
+      .sort((a, b) => new Date(a.departureValue) - new Date(b.departureValue));
+  }, [activeDayKey, filteredRoutes, filterMode, todayKey]);
 
   const cityOptions = useMemo(() => {
     const cities = new Set();
@@ -320,6 +409,15 @@ export default function Routes() {
     });
     return Array.from(cities).sort((a, b) => a.localeCompare(b));
   }, [routes]);
+
+  const selectedDayInVisibleWeek = useMemo(
+    () => weekDays.some(day => day.key === activeDayKey),
+    [activeDayKey, weekDays]
+  );
+
+  const plannerSubLabel = filterMode === 'all'
+    ? `${getTripLabel(filteredRoutes.length)} across all dates`
+    : `${formatSelectedDate(activeDayKey)} • ${getTripLabel(filteredRoutes.length)}`;
 
   const stats = useMemo(() => {
     const activeBuses = new Set(routes.map(route => route.bus_id)).size;
@@ -334,7 +432,7 @@ export default function Routes() {
       },
       {
         label: 'Active route pairs',
-        value: groupedRoutes.length,
+        value: summarySchedules.length,
         icon: icons.clock,
         tone: 'var(--green)'
       },
@@ -351,7 +449,7 @@ export default function Routes() {
         tone: 'var(--purple)'
       }
     ];
-  }, [groupedRoutes.length, routes]);
+  }, [routes, summarySchedules.length]);
 
   useEffect(() => {
     const elements = Array.from(document.querySelectorAll('.observe-animate'));
@@ -360,7 +458,7 @@ export default function Routes() {
         el.dataset.revealed = 'true';
       }
     });
-  }, [loading, routes.length, modalOpen, deletingRoute]);
+  }, [loading, routes.length, filteredRoutes.length, modalOpen, deletingRoute, filterMode, activeDayKey]);
 
   async function loadRoutes(showSpinner = true) {
     if (showSpinner) {
@@ -387,8 +485,13 @@ export default function Routes() {
   }, []);
 
   function openCreateModal() {
+    const defaultDayKey = filterMode === 'all' ? todayKey : activeDayKey;
     setEditingId(null);
-    setForm(EMPTY_FORM);
+    setForm({
+      ...EMPTY_FORM,
+      departure_time: buildDateTimeForDay(defaultDayKey, 8),
+      arrival_time: buildDateTimeForDay(defaultDayKey, 10)
+    });
     setFormError('');
     setModalOpen(true);
   }
@@ -421,6 +524,29 @@ export default function Routes() {
       ...current,
       [name]: value
     }));
+  }
+
+  function handleSelectAll() {
+    setFilterMode('all');
+  }
+
+  function handleSelectPresetDay(dayKey) {
+    setFilterMode('preset-day');
+    setSelectedDayKey(dayKey);
+    setCustomDateKey('');
+  }
+
+  function handleCustomDateChange(event) {
+    const nextValue = event.target.value;
+    setCustomDateKey(nextValue);
+
+    if (!nextValue) {
+      setFilterMode('all');
+      return;
+    }
+
+    setFilterMode('custom-day');
+    setSelectedDayKey(nextValue);
   }
 
   function validateForm() {
@@ -477,6 +603,19 @@ export default function Routes() {
           body: JSON.stringify(payload)
         })
       );
+
+      const savedDayKey = getLocalDateKey(payload.departure_time);
+      if (filterMode !== 'all' && savedDayKey) {
+        if (weekDays.some(day => day.key === savedDayKey)) {
+          setFilterMode('preset-day');
+          setSelectedDayKey(savedDayKey);
+          setCustomDateKey('');
+        } else {
+          setFilterMode('custom-day');
+          setSelectedDayKey(savedDayKey);
+          setCustomDateKey(savedDayKey);
+        }
+      }
 
       setModalOpen(false);
       setEditingId(null);
@@ -569,12 +708,100 @@ export default function Routes() {
         ))}
       </div>
 
-      <div className="grid2">
-        <div className="card observe-animate">
-          <div className="sec-title">Scheduled trips</div>
+      <div className="card observe-animate routes-planner-shell" style={{ marginBottom: 16 }}>
+        <div className="sec-title" style={{ marginBottom: 8 }}>Week planner</div>
+        <div className="sec-sub" style={{ marginBottom: 14 }}>
+          Plan schedules for {formatSelectedDate(todayKey)} through {formatSelectedDate(weekDays[weekDays.length - 1].key)}.
+        </div>
+        <div className="routes-planner-controls">
+          <div className="pill-nav routes-planner-nav">
+            <button
+              type="button"
+              className="pill-tab routes-planner-pill"
+              onClick={handleSelectAll}
+              style={{
+                background: filterMode === 'all' ? 'var(--accent)' : 'var(--glass-strong)',
+                color: filterMode === 'all' ? '#fff' : 'var(--text)',
+                border: '1px solid var(--glass-border)',
+                fontWeight: filterMode === 'all' ? 700 : 600
+              }}
+            >
+              All
+            </button>
+            {weekDays.map(day => {
+              const count = routesByDayCount[day.key] || 0;
+              const status = getDayStatus(count);
+              const active = filterMode !== 'all' && day.key === activeDayKey;
+              const statusStyles = getDayStatusStyles(status, active);
+
+              return (
+                <button
+                  key={day.key}
+                  type="button"
+                  className="pill-tab routes-planner-pill"
+                  onClick={() => handleSelectPresetDay(day.key)}
+                  style={{
+                    ...statusStyles,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gap: 2,
+                    background: statusStyles.background,
+                    fontWeight: active ? 700 : 600
+                  }}
+                >
+                  <span style={{ color: statusStyles.color }}>{day.label}</span>
+                  <span style={{ color: 'var(--text-2)', fontSize: 11 }}>
+                    {day.meta} • {getTripLabel(count)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="routes-planner-date">
+            <div className="sec-sub" style={{ marginBottom: 8 }}>Select date</div>
+            <input
+              type="date"
+              value={customDateKey}
+              onChange={handleCustomDateChange}
+              aria-label="Select date"
+            />
+            {filterMode === 'custom-day' && !selectedDayInVisibleWeek ? (
+              <div className="sec-sub" style={{ marginTop: 8 }}>
+                Showing {formatSelectedDate(activeDayKey)}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid2 routes-planner-grid">
+        <div className="card observe-animate routes-summary-card">
+          <div
+            className="routes-summary-panel"
+            style={{
+              padding: 14,
+              borderRadius: 12,
+              background: 'var(--glass)',
+              border: '0.5px solid var(--glass-border)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 14 }}>
+              <div>
+                <div className="sec-title" style={{ marginBottom: 4 }}>Scheduled trips</div>
+                <div className="sec-sub">{plannerSubLabel}</div>
+              </div>
+              {filterMode === 'all' ? (
+                <span className="badge badge-blue">All schedules</span>
+              ) : (
+                <span className={`badge ${getDayStatus(filteredRoutes.length) === 'green' ? 'badge-green' : getDayStatus(filteredRoutes.length) === 'yellow' ? 'badge-amber' : 'badge-red'}`}>
+                  {getDayStatus(filteredRoutes.length) === 'green' ? 'Fully added' : getDayStatus(filteredRoutes.length) === 'yellow' ? 'Partially added' : 'No schedules'}
+                </span>
+              )}
+            </div>
           {loading ? (
             <div className="sec-sub">Loading schedules...</div>
-          ) : routes.length ? (
+          ) : filteredRoutes.length ? (
             <div className="table-wrap">
               <table>
                 <thead>
@@ -591,7 +818,7 @@ export default function Routes() {
                   </tr>
                 </thead>
                 <tbody>
-                  {routes.map(route => {
+                  {filteredRoutes.map(route => {
                     const companyMeta = getCompanyMeta(route.company_name);
                     return (
                       <tr key={route.id}>
@@ -647,19 +874,36 @@ export default function Routes() {
               </table>
             </div>
           ) : (
-            <div className="sec-sub">No schedules yet. Add the first trip to start assigning buses.</div>
+            <div className="sec-sub">
+              {filterMode === 'all'
+                ? 'No schedules yet. Add the first trip to start planning routes.'
+                : `No schedules for ${formatSelectedDate(activeDayKey)} yet. Add a trip to start planning this day.`}
+            </div>
           )}
+          </div>
         </div>
 
-        <div className="card observe-animate">
-          <div className="sec-title">Route summary</div>
+        <div className="card observe-animate routes-summary-card">
+          <div
+            className="routes-summary-panel"
+            style={{
+              padding: 14,
+              borderRadius: 12,
+              background: 'var(--glass)',
+              border: '0.5px solid var(--glass-border)'
+            }}
+          >
+            <div style={{ marginBottom: 14 }}>
+              <div className="sec-title" style={{ marginBottom: 4 }}>Route summary</div>
+              <div className="sec-sub">{filterMode === 'all' ? 'Summary across all schedules' : `Summary for ${formatSelectedDate(activeDayKey)}`}</div>
+            </div>
           {loading ? (
             <div className="sec-sub">Preparing route groups...</div>
-          ) : groupedRoutes.length ? (
-            <div style={{ display: 'grid', gap: 12 }}>
-              {groupedRoutes.map(group => (
+          ) : summarySchedules.length ? (
+            <div className="routes-summary-scroll" style={{ display: 'grid', gap: 12 }}>
+              {summarySchedules.map(route => (
                 <div
-                  key={group.key}
+                  key={route.id}
                   style={{
                     padding: 14,
                     borderRadius: 12,
@@ -669,25 +913,22 @@ export default function Routes() {
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
                     <div style={{ fontWeight: 600 }}>
-                      {group.origin} {'->'} {group.destination}
+                      {route.origin} {'->'} {route.destination}
                     </div>
-                    <span className="badge badge-purple">{group.schedules} trips</span>
+                    <span className="badge badge-purple">Schedule #{route.id}</span>
                   </div>
                   <div className="sec-sub" style={{ marginBottom: 10 }}>
-                    Next departure {formatDateTime(group.nextDeparture)}
+                    {route.departureLabel} {formatDateTime(route.departureValue)}
                   </div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-                    <span className="badge badge-blue">
-                      Fare {formatMoney(group.lowestPrice)}{group.lowestPrice !== group.highestPrice ? ` - ${formatMoney(group.highestPrice)}` : ''}
-                    </span>
-                    <span className="badge badge-green">{group.companies.length} operators</span>
+                    <span className="badge badge-blue">Fare {formatMoney(route.price)}</span>
+                    <span className="badge badge-green">{route.bus_name}</span>
                   </div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {group.companies.map(company => {
-                      const companyMeta = getCompanyMeta(company);
+                    {(() => {
+                      const companyMeta = getCompanyMeta(route.company_name);
                       return (
                         <span
-                          key={company}
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
@@ -707,17 +948,22 @@ export default function Routes() {
                               background: companyMeta.color
                             }}
                           />
-                          {company}
+                          {route.company_name || 'No company'}
                         </span>
                       );
-                    })}
+                    })()}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="sec-sub">Route summaries will appear after schedules are created.</div>
+            <div className="sec-sub">
+              {filterMode === 'all'
+                ? 'Route summaries will appear after schedules are created.'
+                : `Route summaries will appear after schedules are created for ${formatSelectedDate(activeDayKey)}.`}
+            </div>
           )}
+          </div>
         </div>
       </div>
 

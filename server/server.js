@@ -118,11 +118,13 @@ function normalizeRoutePayload(body) {
   const busId = Number(body.bus_id);
   const origin = String(body.origin || '').trim();
   const destination = String(body.destination || '').trim();
-  const departure = new Date(body.departure_time);
-  const arrival = new Date(body.arrival_time);
+  const departureRaw = String(body.departure_time || '').trim();
+  const arrivalRaw = String(body.arrival_time || '').trim();
+  const departure = new Date(departureRaw);
+  const arrival = new Date(arrivalRaw);
   const price = Number(body.price);
 
-  if (!busId || !origin || !destination || !body.departure_time || !body.arrival_time || Number.isNaN(price)) {
+  if (!busId || !origin || !destination || !departureRaw || !arrivalRaw || Number.isNaN(price)) {
     return { error: 'All schedule fields are required.' };
   }
 
@@ -138,13 +140,16 @@ function normalizeRoutePayload(body) {
     return { error: 'Price must be greater than zero.' };
   }
 
+  const departureLocal = departureRaw.replace('T', ' ') + (departureRaw.length === 16 ? ':00' : '');
+  const arrivalLocal = arrivalRaw.replace('T', ' ') + (arrivalRaw.length === 16 ? ':00' : '');
+
   return {
     value: {
       bus_id: busId,
       origin,
       destination,
-      departure_time: departure.toISOString(),
-      arrival_time: arrival.toISOString(),
+      departure_time: departureLocal,
+      arrival_time: arrivalLocal,
       price: price.toFixed(2)
     }
   };
@@ -287,16 +292,6 @@ app.put('/api/admin/routes/:id', async (req, res) => {
     const busExists = await ensureBusExists(payload.bus_id);
     if (!busExists) {
       return res.status(400).json({ error: 'Assigned vehicle does not exist.' });
-    }
-
-    const overlaps = await hasOverlappingSchedule(
-      payload.bus_id,
-      payload.departure_time,
-      payload.arrival_time,
-      routeId
-    );
-    if (overlaps) {
-      return res.status(409).json({ error: 'This bus already has a trip during that time.' });
     }
 
     await pool.query(
