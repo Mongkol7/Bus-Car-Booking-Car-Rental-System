@@ -73,6 +73,118 @@ async function createUserSession(userId, token) {
   );
 }
 
+const ROUTE_SELECT = `
+  SELECT
+    r.id,
+    r.bus_id,
+    r.origin,
+    r.destination,
+    r.departure_time,
+    r.arrival_time,
+    r.price,
+    r.created_at,
+    b.name AS bus_name,
+    b.type AS bus_type,
+    b.plate_number,
+    b.total_seats,
+    b.status AS bus_status,
+    c.id AS company_id,
+    c.name AS company_name,
+    c.theme_color AS color,
+    c.theme_bg AS bg
+  FROM bus_routes r
+  JOIN buses b ON r.bus_id = b.id
+  LEFT JOIN companies c ON b.company_id = c.id
+`;
+
+const BUS_SELECT = `
+  SELECT
+    b.id,
+    b.name,
+    b.type,
+    b.plate_number,
+    b.total_seats,
+    b.status,
+    c.id AS company_id,
+    c.name AS company_name,
+    c.theme_color AS color,
+    c.theme_bg AS bg
+  FROM buses b
+  LEFT JOIN companies c ON b.company_id = c.id
+  ORDER BY c.name NULLS LAST, b.name
+`;
+
+function normalizeRoutePayload(body) {
+  const busId = Number(body.bus_id);
+  const origin = String(body.origin || '').trim();
+  const destination = String(body.destination || '').trim();
+  const departure = new Date(body.departure_time);
+  const arrival = new Date(body.arrival_time);
+  const price = Number(body.price);
+
+  if (!busId || !origin || !destination || !body.departure_time || !body.arrival_time || Number.isNaN(price)) {
+    return { error: 'All schedule fields are required.' };
+  }
+
+  if (Number.isNaN(departure.getTime()) || Number.isNaN(arrival.getTime())) {
+    return { error: 'Departure and arrival time must be valid.' };
+  }
+
+  if (arrival <= departure) {
+    return { error: 'Arrival time must be after departure time.' };
+  }
+
+  if (price <= 0) {
+    return { error: 'Price must be greater than zero.' };
+  }
+
+  return {
+    value: {
+      bus_id: busId,
+      origin,
+      destination,
+      departure_time: departure.toISOString(),
+      arrival_time: arrival.toISOString(),
+      price: price.toFixed(2)
+    }
+  };
+}
+
+async function ensureBusExists(busId) {
+  const result = await pool.query(`SELECT id FROM buses WHERE id = $1`, [busId]);
+  return result.rowCount > 0;
+}
+
+async function hasOverlappingSchedule(busId, departureTime, arrivalTime, excludeId = null) {
+  const values = [busId, departureTime, arrivalTime];
+  let query = `
+    SELECT id
+    FROM bus_routes
+    WHERE bus_id = $1
+      AND $2 < arrival_time
+      AND $3 > departure_time
+  `;
+
+  if (excludeId !== null) {
+    values.push(excludeId);
+    query += ` AND id <> $4`;
+  }
+
+  const result = await pool.query(query, values);
+  return result.rowCount > 0;
+}
+
+async function fetchAdminRoutes() {
+  const routes = await pool.query(`${ROUTE_SELECT} ORDER BY r.departure_time ASC`);
+  const buses = await pool.query(BUS_SELECT);
+  return { routes: routes.rows, buses: buses.rows };
+}
+
+async function fetchAdminRouteById(routeId) {
+  const result = await pool.query(`${ROUTE_SELECT} WHERE r.id = $1`, [routeId]);
+  return result.rows[0] || null;
+}
+
 // 1. Fetch all Rental Cars
 app.get('/api/cars', async (req, res) => {
   try {
@@ -96,6 +208,137 @@ app.get('/api/routes', async (req, res) => {
       LEFT JOIN companies c ON b.company_id = c.id
     `);
     res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/routes', async (req, res) => {
+  try {
+    const data = await fetchAdminRoutes();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/routes', async (req, res) => {
+  const parsed = normalizeRoutePayload(req.body);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const payload = parsed.value;
+
+  try {
+    const busExists = await ensureBusExists(payload.bus_id);
+    if (!busExists) {
+      return res.status(400).json({ error: 'Assigned vehicle does not exist.' });
+    }
+
+    const overlaps = await hasOverlappingSchedule(
+      payload.bus_id,
+      payload.departure_time,
+      payload.arrival_time
+    );
+    if (overlaps) {
+      return res.status(409).json({ error: 'This bus already has a trip during that time.' });
+    }
+
+    const insertResult = await pool.query(
+      `INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
+      [
+        payload.bus_id,
+        payload.origin,
+        payload.destination,
+        payload.departure_time,
+        payload.arrival_time,
+        payload.price
+      ]
+    );
+
+    const route = await fetchAdminRouteById(insertResult.rows[0].id);
+    res.status(201).json(route);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/routes/:id', async (req, res) => {
+  const routeId = Number(req.params.id);
+  const parsed = normalizeRoutePayload(req.body);
+  if (!routeId) {
+    return res.status(400).json({ error: 'Invalid route id.' });
+  }
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const payload = parsed.value;
+
+  try {
+    const existing = await fetchAdminRouteById(routeId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Schedule not found.' });
+    }
+
+    const busExists = await ensureBusExists(payload.bus_id);
+    if (!busExists) {
+      return res.status(400).json({ error: 'Assigned vehicle does not exist.' });
+    }
+
+    const overlaps = await hasOverlappingSchedule(
+      payload.bus_id,
+      payload.departure_time,
+      payload.arrival_time,
+      routeId
+    );
+    if (overlaps) {
+      return res.status(409).json({ error: 'This bus already has a trip during that time.' });
+    }
+
+    await pool.query(
+      `UPDATE bus_routes
+       SET bus_id = $1,
+           origin = $2,
+           destination = $3,
+           departure_time = $4,
+           arrival_time = $5,
+           price = $6
+       WHERE id = $7`,
+      [
+        payload.bus_id,
+        payload.origin,
+        payload.destination,
+        payload.departure_time,
+        payload.arrival_time,
+        payload.price,
+        routeId
+      ]
+    );
+
+    const route = await fetchAdminRouteById(routeId);
+    res.json(route);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/routes/:id', async (req, res) => {
+  const routeId = Number(req.params.id);
+  if (!routeId) {
+    return res.status(400).json({ error: 'Invalid route id.' });
+  }
+
+  try {
+    const result = await pool.query(`DELETE FROM bus_routes WHERE id = $1 RETURNING id`, [routeId]);
+    if (!result.rowCount) {
+      return res.status(404).json({ error: 'Schedule not found.' });
+    }
+
+    res.json({ id: routeId, message: 'Schedule deleted successfully.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
