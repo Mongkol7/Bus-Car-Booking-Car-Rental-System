@@ -41,7 +41,11 @@ INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_tim
 ((SELECT id FROM buses WHERE plate_number = '6F-4455'), 'Siem Reap', 'Phnom Penh', CURRENT_DATE + TIME '22:00:00', CURRENT_DATE + INTERVAL '1 day' + TIME '04:00:00', 16.00);
 
 -- 5. SEED ADMIN USER
--- Password hash is 'admin123' hashed with bcrypt
+-- Password hash is '123' hashed with bcrypt
 INSERT INTO users (first_name, last_name, email, phone, password_hash, role) VALUES
-('System', 'Admin', 'admin@bookride.com', '+85512345678', '$2b$10$p0MNwLDUxm1esLz53xRP3OzuIk/rQ31Wg.x1m1vln5Edd4JlfZqfW', 'admin')
+('System', 'Admin', 'admin@bookride.com', '+85512345678', '$2b$10$QIQ9x2djZ2D9TaOsRoJn5.n/CZAhzjA2f0VhdMkmdzzcLSoWw3vQG', 'admin')
 ON CONFLICT (email) DO NOTHING;
+
+UPDATE users
+SET password_hash = '$2b$10$QIQ9x2djZ2D9TaOsRoJn5.n/CZAhzjA2f0VhdMkmdzzcLSoWw3vQG'
+WHERE email = 'admin@bookride.com';

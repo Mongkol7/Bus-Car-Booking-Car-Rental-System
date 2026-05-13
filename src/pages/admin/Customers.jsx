@@ -8,71 +8,73 @@ export default // ── CUSTOMERS ───────────────
 function Customers() {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const getCustomerStatus = lastBooking => {
+    const bookingDate = new Date(lastBooking);
+    if (Number.isNaN(bookingDate.getTime())) return 'Inactive';
+    const now = new Date();
+    const diffDays = Math.floor((now - bookingDate) / (1000 * 60 * 60 * 24));
+    return diffDays <= 14 ? 'Active' : 'Inactive';
+  };
   const customers = [{
     id: 'C-1024',
     name: 'Sophea Chan',
     email: 'sophea.chan@mail.com',
     phone: '+855 12 345 678',
     trips: 12,
-    last: 'Mar 30, 2026',
-    status: 'VIP'
+    last: 'May 10, 2026'
   }, {
     id: 'C-1023',
     name: 'Dara Meas',
     email: 'dara.meas@mail.com',
     phone: '+855 17 420 051',
     trips: 9,
-    last: 'Mar 28, 2026',
-    status: 'Active'
+    last: 'May 8, 2026'
   }, {
     id: 'C-1022',
     name: 'Lina Keo',
     email: 'lina.keo@mail.com',
     phone: '+855 92 118 220',
     trips: 7,
-    last: 'Mar 26, 2026',
-    status: 'Active'
+    last: 'May 2, 2026'
   }, {
     id: 'C-1021',
     name: 'Makara Phy',
     email: 'makara.phy@mail.com',
     phone: '+855 78 552 190',
     trips: 6,
-    last: 'Mar 20, 2026',
-    status: 'Inactive'
+    last: 'Apr 18, 2026'
   }, {
     id: 'C-1020',
     name: 'Chenda Sok',
     email: 'chenda.sok@mail.com',
     phone: '+855 11 904 332',
     trips: 5,
-    last: 'Mar 18, 2026',
-    status: 'Active'
+    last: 'Apr 28, 2026'
   }, {
     id: 'C-1019',
     name: 'Sokha Lim',
     email: 'sokha.lim@mail.com',
     phone: '+855 16 300 991',
     trips: 4,
-    last: 'Mar 15, 2026',
-    status: 'Inactive'
+    last: 'Apr 12, 2026'
   }, {
     id: 'C-1018',
     name: 'Vanna Chea',
     email: 'vanna.chea@mail.com',
     phone: '+855 10 771 220',
     trips: 3,
-    last: 'Mar 12, 2026',
-    status: 'Active'
+    last: 'May 1, 2026'
   }, {
     id: 'C-1017',
     name: 'Serey Roth',
     email: 'serey.roth@mail.com',
     phone: '+855 95 220 774',
     trips: 2,
-    last: 'Mar 7, 2026',
-    status: 'VIP'
-  }];
+    last: 'Apr 9, 2026'
+  }].map(customer => ({
+    ...customer,
+    status: getCustomerStatus(customer.last)
+  }));
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = customers.filter(c => {
     const matchesQuery = !normalizedQuery || c.name.toLowerCase().includes(normalizedQuery) || c.email.toLowerCase().includes(normalizedQuery) || c.phone.toLowerCase().includes(normalizedQuery);
@@ -81,7 +83,6 @@ function Customers() {
   });
   const statusBadge = status => {
     if (status === 'Active') return 'badge-green';
-    if (status === 'VIP') return 'badge-purple';
     if (status === 'Inactive') return 'badge-red';
     return 'badge-amber';
   };
@@ -108,9 +109,6 @@ function Customers() {
         }, {
           id: 'inactive',
           label: 'Inactive'
-        }, {
-          id: 'vip',
-          label: 'VIP'
         }].map(s => <div key={s.id} className={`pill-tab ${statusFilter === s.id ? 'active' : ''}`} onClick={() => setStatusFilter(s.id)}>
               {s.label}
             </div>)}
