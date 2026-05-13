@@ -24,6 +24,14 @@ export default function TopNav({
     window.addEventListener('mousedown', handler);
     return () => window.removeEventListener('mousedown', handler);
   }, [menuOpen]);
+  const handleNavChange = id => {
+    if (role === 'guest' && id === 'profile') {
+      navigate('/login');
+      return;
+    }
+    setActive(id);
+  };
+
   return <>
       <nav className="topnav">
         <div className="topnav-logo" style={{
@@ -38,7 +46,7 @@ export default function TopNav({
           <span className="logo-ride">Ride</span>
         </div>
         <div className="topnav-links">
-          {NAV.map(n => <div key={n.id} className={`topnav-link ${active === n.id ? 'active' : ''}`} onClick={() => setActive(n.id)}>
+          {NAV.map(n => <div key={n.id} className={`topnav-link ${active === n.id ? 'active' : ''}`} onClick={() => handleNavChange(n.id)}>
               <span className="topnav-icon">
                 <Icon d={icons[n.icon]} size={14} />
               </span>
@@ -75,7 +83,7 @@ export default function TopNav({
           bookings: 'My booking',
           profile: 'Profile'
         }[n.id] || n.label;
-        return <div key={`bottom-${n.id}`} className={`bottomnav-link ${active === n.id ? 'active' : ''}`} onClick={() => setActive(n.id)}>
+        return <div key={`bottom-${n.id}`} className={`bottomnav-link ${active === n.id ? 'active' : ''}`} onClick={() => handleNavChange(n.id)}>
               <span className="bottomnav-icon">
                 <Icon d={icons[n.icon]} size={12} />
               </span>

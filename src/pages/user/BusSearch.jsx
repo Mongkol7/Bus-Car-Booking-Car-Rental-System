@@ -1,6 +1,6 @@
-
+﻿
 import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { carModels } from '../../data/transportData';
 import Footer from '../../components/Footer';
 import { Icon, icons, setupScrollReveal, NAV, companyMeta, getCompanyMeta, getTodayISO } from '../../utils/sharedUser';
@@ -12,7 +12,23 @@ export default function BusSearch({
   setBookingsTab
 }) {
   const navigate = useNavigate();
-  const [step, setStep] = useState(1);
+  const location = useLocation();
+  const stepByPath = {
+    '/booking/search': 1,
+    '/booking/seats': 2,
+    '/booking/passenger': 3,
+    '/booking/payment': 4,
+    '/booking/success': 5
+  };
+  const pathByStep = {
+    1: '/booking/search',
+    2: '/booking/seats',
+    3: '/booking/passenger',
+    4: '/booking/payment',
+    5: '/booking/success'
+  };
+  const step = stepByPath[location.pathname] || 1;
+  const goStep = nextStep => navigate(pathByStep[nextStep] || pathByStep[1]);
   const [selectedRoute, setSelectedRoute] = useState(null);
   const [selectedSeats, setSelectedSeats] = useState([]);
   const [payMethod, setPayMethod] = useState('aba');
@@ -57,7 +73,16 @@ export default function BusSearch({
     const cleanup = setupScrollReveal();
     return cleanup;
   }, [step, routes]);
-  if (paymentSuccess) return <div className="page" style={{
+  useEffect(() => {
+    if (step >= 2 && !selectedRoute) {
+      navigate('/booking/search', { replace: true });
+      return;
+    }
+    if (step >= 3 && !selectedSeats.length) {
+      navigate('/booking/seats', { replace: true });
+    }
+  }, [step, selectedRoute, selectedSeats.length, navigate]);
+  if (paymentSuccess || step === 5) return <div className="page" style={{
     maxWidth: 480
   }}>
         <div className="card" style={{
@@ -76,7 +101,7 @@ export default function BusSearch({
         margin: '0 auto 20px',
         fontSize: 24
       }}>
-            ✓
+            ?
           </div>
           <div className="page-title">Payment successful!</div>
           <div className="page-sub">Choose where to go next</div>
@@ -98,7 +123,7 @@ export default function BusSearch({
         </div>
       </div>;
   const goBack = () => {
-    setStep(prev => Math.max(1, prev - 1));
+    goStep(Math.max(1, step - 1));
   };
   const destinations = ['Phnom Penh', 'Siem Reap', 'Battambang', 'Sihanoukville', 'Kampot', 'Kep', 'Kratie', 'Kampong Cham', 'Pursat', 'Banteay Meanchey'];
   const currentRoute = routes.find(r => r.id === selectedRoute);
@@ -128,7 +153,7 @@ export default function BusSearch({
         margin: '0 auto 20px',
         fontSize: 24
       }}>
-            ✓
+            ?
           </div>
           <div className="page-title">Booking confirmed!</div>
           <div className="page-sub">Seat preserved. Show QR at boarding.</div>
@@ -166,7 +191,7 @@ export default function BusSearch({
         marginTop: 8
       }} onClick={() => {
         setDone(false);
-        setStep(1);
+        goStep(1);
         setSelectedSeats([]);
         setSelectedRoute(null);
       }}>
@@ -203,7 +228,7 @@ export default function BusSearch({
         flex: i === 3 ? 'initial' : 1
       }}>
             <div className={`step ${i + 1 === step ? 'active' : i + 1 < step ? 'done' : 'idle'}`}>
-              <div className="step-num">{i + 1 < step ? '✓' : i + 1}</div>
+              <div className="step-num">{i + 1 < step ? '?' : i + 1}</div>
               <div className="step-label" style={{
             marginLeft: 6,
             fontSize: 11
@@ -298,7 +323,7 @@ export default function BusSearch({
                   <span style={{
               fontSize: 9,
               color: 'var(--text-3)'
-            }}>→</span>
+            }}>?</span>
                 </div>
               </div>
               <div>
@@ -327,7 +352,7 @@ export default function BusSearch({
         display: 'flex',
         justifyContent: 'flex-end'
       }}>
-            <button className="btn btn-primary btn-lg" disabled={!selectedRoute} onClick={() => setStep(2)}>
+            <button className="btn btn-primary btn-lg" disabled={!selectedRoute} onClick={() => goStep(2)}>
               Continue <Icon d={icons.arrow} size={15} color="#fff" />
             </button>
           </div>
@@ -354,7 +379,7 @@ export default function BusSearch({
                 <div className="bus-pattern" />
                 <div className="bus-roof" />
                 <div className="bus-front">
-                  <span className="steering">🚌</span>
+                  <span className="steering">??</span>
                 </div>
                 <div className="seat-grid">
                   {seatRows.map((row, ri) => <div key={row} style={{
@@ -383,7 +408,7 @@ export default function BusSearch({
                 <div className="summary-row">
                   <span className="summary-key">Route</span>
                   <span className="summary-val">
-                    {fromCity} → {toCity}
+                    {fromCity} ? {toCity}
                   </span>
                 </div>
                 <div className="summary-row">
@@ -457,7 +482,7 @@ export default function BusSearch({
             <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}>
               <Icon d={icons.back} size={15} />
             </button>
-            <button className="btn btn-primary" disabled={!selectedSeats.length} onClick={() => setStep(3)}>
+            <button className="btn btn-primary" disabled={!selectedSeats.length} onClick={() => goStep(3)}>
               Continue <Icon d={icons.arrow} size={15} color="#fff" />
             </button>
           </div>
@@ -495,7 +520,7 @@ export default function BusSearch({
             <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}>
               <Icon d={icons.back} size={15} />
             </button>
-            <button className="btn btn-primary btn-lg" onClick={() => setStep(4)}>
+            <button className="btn btn-primary btn-lg" onClick={() => goStep(4)}>
               Continue <Icon d={icons.arrow} size={15} color="#fff" />
             </button>
           </div>
@@ -505,17 +530,17 @@ export default function BusSearch({
           <div className="sec-title">Choose payment method</div>
           {[{
         id: 'aba',
-        icon: '🏦',
+        icon: '??',
         name: 'ABA Bank',
         sub: 'Scan QR or transfer'
       }, {
         id: 'khqr',
-        icon: '🇰🇭',
+        icon: '????',
         name: 'KHQR',
         sub: 'Cambodia QR payment standard'
       }, {
         id: 'cash',
-        icon: '💵',
+        icon: '??',
         name: 'Cash on boarding',
         sub: 'Pay when you board'
       }].map(m => <div key={m.id} className={`pay-method ${payMethod === m.id ? 'selected' : ''}`} onClick={() => setPayMethod(m.id)}>
@@ -584,6 +609,7 @@ export default function BusSearch({
             </button>
             <button className="btn btn-primary btn-lg" onClick={() => {
           setPaymentSuccess(true);
+          goStep(5);
         }}>
               Confirm & Pay <Icon d={icons.check} size={15} color="#fff" />
             </button>
@@ -591,3 +617,4 @@ export default function BusSearch({
         </div>}
     </div>;
 }
+

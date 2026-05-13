@@ -1,6 +1,6 @@
-
+﻿
 import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { carModels } from '../../data/transportData';
 import Footer from '../../components/Footer';
 import { Icon, icons, setupScrollReveal, NAV, companyMeta, getCompanyMeta } from '../../utils/sharedUser';
@@ -12,7 +12,21 @@ export default function CarRental({
   setBookingsTab
 }) {
   const navigate = useNavigate();
-  const [step, setStep] = useState(1);
+  const location = useLocation();
+  const stepByPath = {
+    '/cars': 1,
+    '/cars/details': 2,
+    '/cars/payment': 3,
+    '/cars/success': 4
+  };
+  const pathByStep = {
+    1: '/cars',
+    2: '/cars/details',
+    3: '/cars/payment',
+    4: '/cars/success'
+  };
+  const step = stepByPath[location.pathname] || 1;
+  const goStep = nextStep => navigate(pathByStep[nextStep] || pathByStep[1]);
   const [selected, setSelected] = useState(null);
   const [payMethod, setPayMethod] = useState('aba');
   const [done, setDone] = useState(false);
@@ -24,11 +38,9 @@ export default function CarRental({
   const [showSpecs, setShowSpecs] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
   const goBack = () => {
-    setStep(prev => {
-      const next = Math.max(1, prev - 1);
-      if (next === 1) setSelected(null);
-      return next;
-    });
+    const next = Math.max(1, step - 1);
+    if (next === 1) setSelected(null);
+    goStep(next);
   };
   const [cars, setCars] = useState([]);
   useEffect(() => {
@@ -60,7 +72,7 @@ export default function CarRental({
           seats: v.total_seats,
           trans: v.transmission || 'Auto',
           price: parseFloat(v.daily_rate),
-          emoji: v.type.includes('SUV') ? '🚙' : '🚗',
+          emoji: v.type.includes('SUV') ? '??' : '??',
           status: v.status.charAt(0).toUpperCase() + v.status.slice(1),
           specs: ['A/C', 'Bluetooth', 'Cruise Control'],
           specDetails: [
@@ -85,7 +97,12 @@ export default function CarRental({
     setShowSpecs(false);
     setShowPhotos(false);
   }, [selected, step]);
-  if (paymentSuccess) return <div className="page" style={{
+  useEffect(() => {
+    if (step >= 2 && !selected) {
+      navigate('/cars', { replace: true });
+    }
+  }, [step, selected, navigate]);
+  if (paymentSuccess || step === 4) return <div className="page" style={{
     maxWidth: 480
   }}>
         <div className="card" style={{
@@ -104,7 +121,7 @@ export default function CarRental({
         margin: '0 auto 20px',
         fontSize: 24
       }}>
-            ✓
+            ?
           </div>
           <div className="page-title">Payment successful!</div>
           <div className="page-sub">Choose where to go next</div>
@@ -144,7 +161,7 @@ export default function CarRental({
         margin: '0 auto 20px',
         fontSize: 24
       }}>
-            ✓
+            ?
           </div>
           <div className="page-title">Rental Request Sent!</div>
           <div className="page-sub">Your rental is being processed.</div>
@@ -169,7 +186,7 @@ export default function CarRental({
         flex: i === 1 ? 'initial' : 1
       }}>
               <div className={`step ${i + 2 === step ? 'active' : i + 2 < step ? 'done' : 'idle'}`}>
-                <div className="step-num">{i + 2 < step ? '✓' : i + 1}</div>
+                <div className="step-num">{i + 2 < step ? '?' : i + 1}</div>
                 <div className="step-label" style={{
             marginLeft: 6,
             fontSize: 11
@@ -193,7 +210,7 @@ export default function CarRental({
           setShowAuthModal(true);
         } else {
           setSelected(c.id);
-          setStep(2);
+          goStep(2);
         }
       }}>
               <div className="car-img-wrap">{c.emoji}</div>
@@ -338,7 +355,7 @@ export default function CarRental({
               <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}>
                 <Icon d={icons.back} size={15} />
               </button>
-              <button className="btn btn-primary btn-lg" onClick={() => setStep(3)}>
+              <button className="btn btn-primary btn-lg" onClick={() => goStep(3)}>
                 Continue to Payment{' '}
                 <Icon d={icons.arrow} size={15} color="#fff" />
               </button>
@@ -354,12 +371,12 @@ export default function CarRental({
             <div className="sec-title">Choose payment method</div>
             {[{
           id: 'aba',
-          icon: '🏦',
+          icon: '??',
           name: 'ABA Bank',
           sub: 'Scan QR or transfer'
         }, {
           id: 'khqr',
-          icon: '🇰🇭',
+          icon: '????',
           name: 'KHQR',
           sub: 'Cambodia QR payment standard'
         }].map(m => <div key={m.id} className={`pay-method ${payMethod === m.id ? 'selected' : ''}`} onClick={() => setPayMethod(m.id)}>
@@ -427,6 +444,7 @@ export default function CarRental({
               </button>
               <button className="btn btn-primary btn-lg" onClick={() => {
             setPaymentSuccess(true);
+            goStep(4);
           }}>
                 Confirm Rental <Icon d={icons.check} size={15} color="#fff" />
               </button>
@@ -435,3 +453,4 @@ export default function CarRental({
         </div>}
     </div>;
 }
+

@@ -1,12 +1,18 @@
 
 import React, { useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { busFleet, carModels } from '../../data/transportData';
 import Footer from '../../components/Footer';
 import { Icon, icons, NAV, companyMeta, getCompanyMeta } from '../../utils/sharedAdmin';
 
 export default // ── VEHICLES ──────────────────────────────────────────────────────────────────
 function Vehicles() {
-  const [tab, setTab] = useState('buses');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const tab = location.pathname === '/admin/vehicles/rental-cars' ? 'cars' : 'buses';
+  const setTab = nextTab => {
+    navigate(nextTab === 'cars' ? '/admin/vehicles/rental-cars' : '/admin/vehicles/buses');
+  };
   const buses = busFleet;
   const cars = carModels;
   useEffect(() => {
