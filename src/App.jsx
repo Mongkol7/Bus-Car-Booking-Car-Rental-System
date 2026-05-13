@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import AdminApp from './Admin';
 import UserApp from './User';
@@ -36,10 +36,11 @@ const ADMIN_ROUTES = {
 };
 
 function App() {
-  const { role, login, logout, setGuest } = useAuth();
+  const { role, login, logout, setGuest, redirectToLogin, finishRedirect } = useAuth();
 
   return (
     <BrowserRouter>
+      <LogoutListener shouldRedirect={redirectToLogin} onDone={finishRedirect} />
       <Routes>
         <Route path="/guest" element={<RoleRoute targetRole="guest" />} />
         <Route path="/user" element={<RoleRoute targetRole="user" />} />
@@ -77,13 +78,16 @@ function UserRoute({ role, onLogout }) {
     return <Navigate to="/" replace />;
   }
 
-  const active = useMemo(() => {
-    if (location.pathname.startsWith('/booking/')) return 'search';
-    if (location.pathname.startsWith('/cars')) return 'cars';
-    if (location.pathname === '/bookings') return 'bookings';
-    if (location.pathname === '/profile') return 'profile';
-    return 'home';
-  }, [location.pathname]);
+  const active =
+    location.pathname.startsWith('/booking/')
+      ? 'search'
+      : location.pathname.startsWith('/cars')
+        ? 'cars'
+        : location.pathname === '/bookings'
+          ? 'bookings'
+          : location.pathname === '/profile'
+            ? 'profile'
+            : 'home';
 
   const goUserPage = (id) => {
     const target = USER_ROUTES[id] || USER_ROUTES.home;
@@ -164,15 +168,20 @@ function AdminRoute({ role, onLogout }) {
     return <Navigate to="/admin/vehicles/buses" replace />;
   }
 
-  const active = useMemo(() => {
-    if (location.pathname.startsWith('/admin/vehicles')) return 'vehicles';
-    if (location.pathname === '/admin/routes') return 'routes';
-    if (location.pathname === '/admin/bookings') return 'bookings';
-    if (location.pathname === '/admin/rentals') return 'rentals';
-    if (location.pathname === '/admin/customers') return 'customers';
-    if (location.pathname === '/admin/reports') return 'reports';
-    return 'dashboard';
-  }, [location.pathname]);
+  const active =
+    location.pathname.startsWith('/admin/vehicles')
+      ? 'vehicles'
+      : location.pathname === '/admin/routes'
+        ? 'routes'
+        : location.pathname === '/admin/bookings'
+          ? 'bookings'
+          : location.pathname === '/admin/rentals'
+            ? 'rentals'
+            : location.pathname === '/admin/customers'
+              ? 'customers'
+              : location.pathname === '/admin/reports'
+                ? 'reports'
+                : 'dashboard';
 
   const goAdminPage = (id) => {
     const target = ADMIN_ROUTES[id] || ADMIN_ROUTES.dashboard;
@@ -198,3 +207,15 @@ function AdminRoute({ role, onLogout }) {
 }
 
 export default App;
+
+function LogoutListener({ shouldRedirect, onDone }) {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!shouldRedirect) return;
+    navigate('/login', { replace: true });
+    onDone();
+  }, [shouldRedirect, navigate, onDone]);
+
+  return null;
+}

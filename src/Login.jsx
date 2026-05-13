@@ -289,8 +289,8 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
         setError(data.error || 'Invalid credentials');
         return;
       }
-      onLogin(data.role);
-      if (data.role === 'admin') {
+      onLogin(data);
+      if (data.user.role === 'admin') {
         navigate('/admin');
       } else {
         navigate('/');
@@ -326,8 +326,12 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
         setError(data.error || 'Registration failed');
         return;
       }
-      alert('Account created! Please sign in.');
-      setView('login');
+      onLogin(data);
+      if (data.user.role === 'admin') {
+        navigate('/admin');
+      } else {
+        navigate('/');
+      }
     } catch (err) {
       setError('Server error. Please try again.');
     }

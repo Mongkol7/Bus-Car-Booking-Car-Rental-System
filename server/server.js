@@ -2,9 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
+const TOKEN_SECRET = process.env.TOKEN_SECRET || 'bookride-dev-secret';
 
 // Middleware
 app.use(cors()); // Allow frontend to fetch data
@@ -27,6 +29,49 @@ pool.connect()
 // ==========================================
 // API ROUTES
 // ==========================================
+
+function toBase64Url(value) {
+  return Buffer.from(value)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function createAuthToken(user) {
+  const header = toBase64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = toBase64Url(
+    JSON.stringify({
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7
+    })
+  );
+  const signature = crypto
+    .createHmac('sha256', TOKEN_SECRET)
+    .update(`${header}.${payload}`)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+
+  return `${header}.${payload}.${signature}`;
+}
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+async function createUserSession(userId, token) {
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
+  await pool.query(
+    `INSERT INTO user_sessions (user_id, token_hash, session_type, expires_at)
+     VALUES ($1, $2, $3, $4)`,
+    [userId, hashToken(token), 'access', expiresAt]
+  );
+}
 
 // 1. Fetch all Rental Cars
 app.get('/api/cars', async (req, res) => {
@@ -68,7 +113,10 @@ app.post('/api/auth/register', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, first_name, last_name, email, role`,
       [first_name, last_name, email, phone, password_hash, national_id]
     );
-    res.status(201).json(result.rows[0]);
+    const user = result.rows[0];
+    const token = createAuthToken(user);
+    await createUserSession(user.id, token);
+    res.status(201).json({ token, user });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -94,7 +142,36 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     delete user.password_hash;
-    res.json(user);
+    const token = createAuthToken(user);
+    await createUserSession(user.id, token);
+    res.json({ token, user });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+  if (!token) {
+    return res.status(400).json({ error: 'Missing token' });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE user_sessions
+       SET is_revoked = TRUE
+       WHERE token_hash = $1
+       RETURNING id`,
+      [hashToken(token)]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json({ message: 'Logged out successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

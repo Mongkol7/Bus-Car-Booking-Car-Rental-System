@@ -3,6 +3,7 @@
 -- Drop existing tables to allow clean recreation
 -- ==========================================
 DROP TABLE IF EXISTS transactions CASCADE;
+DROP TABLE IF EXISTS user_sessions CASCADE;
 DROP TABLE IF EXISTS car_rentals CASCADE;
 DROP TABLE IF EXISTS bus_bookings CASCADE;
 DROP TABLE IF EXISTS bus_seats CASCADE;
@@ -120,7 +121,18 @@ CREATE TABLE car_rentals (
     booked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 9. TRANSACTIONS / PAYMENTS (Optional but good for tracking)
+-- 10. USER SESSIONS
+CREATE TABLE user_sessions (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    token_hash VARCHAR(255) NOT NULL,
+    session_type VARCHAR(20) DEFAULT 'access',
+    expires_at TIMESTAMP NOT NULL,
+    is_revoked BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 11. TRANSACTIONS / PAYMENTS (Optional but good for tracking)
 CREATE TABLE transactions (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE CASCADE,
@@ -137,7 +149,9 @@ CREATE TABLE transactions (
     )
 );
 
--- 10. INDEXES FOR PERFORMANCE
+-- 12. INDEXES FOR PERFORMANCE
 CREATE INDEX idx_bus_routes_search ON bus_routes(origin, destination, departure_time);
 CREATE INDEX idx_car_rental_dates ON car_rentals(pickup_date, return_date);
 CREATE INDEX idx_user_bookings ON bus_bookings(user_id);
+CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
+CREATE INDEX idx_user_sessions_token_hash ON user_sessions(token_hash);
