@@ -40,16 +40,25 @@ app.get('/api/cars', async (req, res) => {
   }
 });
 
-// 2. Fetch all Bus Routes (For BusSearch.jsx)
+// 2. Fetch Bus Routes (For BusSearch.jsx)
+// No query params → all routes. With origin, destination, date (YYYY-MM-DD) → filtered in DB.
 app.get('/api/routes', async (req, res) => {
   try {
-    const result = await pool.query(`
+    const { origin, destination, date } = req.query;
+    const hasFilter = origin && destination && date;
+    let sql = `
       SELECT r.*, b.name as vehicle, b.type as vehicle_type, 
              c.name as company_name, c.theme_color as color, c.theme_bg as bg
       FROM bus_routes r
       JOIN buses b ON r.bus_id = b.id
       LEFT JOIN companies c ON b.company_id = c.id
-    `);
+    `;
+    const params = [];
+    if (hasFilter) {
+      sql += ` WHERE r.origin = $1 AND r.destination = $2 AND (r.departure_time::date) = ($3::date)`;
+      params.push(origin, destination, date);
+    }
+    const result = await pool.query(sql, params);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -1,10 +1,37 @@
-
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { carModels } from '../../data/transportData';
 import Footer from '../../components/Footer';
 import { Icon, icons, setupScrollReveal, NAV, companyMeta, getCompanyMeta, getTodayISO } from '../../utils/sharedUser';
 import AuthModal from './AuthModal';
+
+function formatApiRouteRows(data) {
+  return data.map(r => {
+    const dep = new Date(r.departure_time);
+    const arr = new Date(r.arrival_time);
+    const durationMs = Math.max(0, arr.getTime() - dep.getTime());
+    const hours = Math.floor(durationMs / 3600000);
+    const mins = Math.round((durationMs % 3600000) / 60000);
+    const durationLabel = hours > 0 ? `${hours}h ${String(mins).padStart(2, '0')}m` : `${mins}m`;
+    return {
+      id: r.id,
+      origin: r.origin,
+      destination: r.destination,
+      departure_time: r.departure_time,
+      arrival_time: r.arrival_time,
+      depTime: dep.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      arrTime: arr.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      durationLabel,
+      vehicle: r.company_name,
+      type: r.vehicle_type,
+      layout: (r.vehicle_type || '').includes('Sleeper') ? 'sleeper' : 'standard',
+      avail: 10,
+      price: parseFloat(r.price),
+      color: r.color || '#60a5fa',
+      bg: r.bg || 'rgba(96,165,250,0.16)'
+    };
+  });
+}
 
 export default function BusSearch({
   role,
@@ -22,26 +49,23 @@ export default function BusSearch({
   const [fromCity, setFromCity] = useState('Phnom Penh');
   const [toCity, setToCity] = useState('Siem Reap');
   const [travelDate, setTravelDate] = useState(getTodayISO());
-  const [routes, setRoutes] = useState([]);
+  const [allRoutes, setAllRoutes] = useState([]);
+  const [searchedRoutes, setSearchedRoutes] = useState([]);
   const [companies, setCompanies] = useState([]);
+  const [lastSearch, setLastSearch] = useState(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const searchResultsRef = useRef(null);
 
   useEffect(() => {
     fetch('/api/routes')
       .then(res => res.json())
       .then(data => {
-        const formattedRoutes = data.map(r => ({
-          id: r.id,
-          from: new Date(r.departure_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          to: new Date(r.arrival_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          vehicle: r.company_name,
-          type: r.vehicle_type,
-          layout: r.vehicle_type.includes('Sleeper') ? 'sleeper' : 'standard',
-          avail: 10,
-          price: parseFloat(r.price),
-          color: r.color || '#60a5fa',
-          bg: r.bg || 'rgba(96,165,250,0.16)'
-        }));
-        setRoutes(formattedRoutes);
+        if (!Array.isArray(data)) {
+          console.error('Error fetching routes:', data?.error || data);
+          return;
+        }
+        const formattedRoutes = formatApiRouteRows(data);
+        setAllRoutes(formattedRoutes);
 
         const uniqueCompanies = Array.from(new Map(formattedRoutes.map(r => [r.vehicle, {
           name: r.vehicle,
@@ -50,13 +74,52 @@ export default function BusSearch({
         }])).values());
         setCompanies(uniqueCompanies);
       })
-      .catch(err => console.error("Error fetching routes:", err));
+      .catch(err => console.error('Error fetching routes:', err));
   }, []);
+
+  const displayRoutes = useMemo(() => lastSearch ? searchedRoutes : allRoutes, [lastSearch, searchedRoutes, allRoutes]);
+
+  const handleSearch = async () => {
+    const next = {
+      from: fromCity,
+      to: toCity,
+      date: travelDate
+    };
+    const params = new URLSearchParams({
+      origin: next.from,
+      destination: next.to,
+      date: next.date
+    });
+    setSearchLoading(true);
+    try {
+      const res = await fetch(`/api/routes?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || res.statusText);
+      }
+      const formatted = formatApiRouteRows(Array.isArray(data) ? data : []);
+      setSearchedRoutes(formatted);
+      setLastSearch(next);
+      setSelectedRoute(prev => {
+        if (prev == null) return null;
+        return formatted.some(r => r.id === prev) ? prev : null;
+      });
+    } catch (err) {
+      console.error('Error searching routes:', err);
+      setSearchedRoutes([]);
+      setLastSearch(next);
+      setSelectedRoute(null);
+    } finally {
+      setSearchLoading(false);
+      searchResultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  };
+
   useEffect(() => {
     if (typeof window === 'undefined') return () => {};
     const cleanup = setupScrollReveal();
     return cleanup;
-  }, [step, routes]);
+  }, [step, displayRoutes]);
   if (paymentSuccess) return <div className="page" style={{
     maxWidth: 480
   }}>
@@ -101,7 +164,7 @@ export default function BusSearch({
     setStep(prev => Math.max(1, prev - 1));
   };
   const destinations = ['Phnom Penh', 'Siem Reap', 'Battambang', 'Sihanoukville', 'Kampot', 'Kep', 'Kratie', 'Kampong Cham', 'Pursat', 'Banteay Meanchey'];
-  const currentRoute = routes.find(r => r.id === selectedRoute);
+  const currentRoute = allRoutes.find(r => r.id === selectedRoute) ?? searchedRoutes.find(r => r.id === selectedRoute);
   const takenSeats = ['A1', 'A3', 'B2', 'B4', 'C1', 'D3', 'D4'];
   const seatRows = ['A', 'B', 'C', 'D', 'E'];
   const seatCols = [1, 2, 3, 4];
@@ -169,6 +232,8 @@ export default function BusSearch({
         setStep(1);
         setSelectedSeats([]);
         setSelectedRoute(null);
+        setLastSearch(null);
+        setSearchedRoutes([]);
       }}>
             Book another
           </button>
@@ -237,10 +302,19 @@ export default function BusSearch({
               <div className="label">Date</div>
               <input type="date" value={travelDate} onChange={e => setTravelDate(e.target.value)} />
             </div>
-            <button className="btn btn-primary">Search</button>
+            <button type="button" className="btn btn-primary" onClick={handleSearch} disabled={searchLoading}>
+              {searchLoading ? 'Searching…' : 'Search'}
+            </button>
           </div>
-          <div className="sec-title">{routes.length} trips found</div>
-          {routes.map((r, i) => <div key={r.id} className={`route-card ticket-card scroll-animate ${selectedRoute === r.id ? 'selected' : ''}`} style={{
+          <div ref={searchResultsRef}>
+            <div className="sec-title">
+              {displayRoutes.length} trips found
+              {!lastSearch && allRoutes.length > 0 && <span style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: 8 }}>(all routes — use Search to filter)</span>}
+            </div>
+            {lastSearch && displayRoutes.length === 0 && <div className="page-sub" style={{ marginBottom: 12 }}>
+              No trips for this route and date. Try another combination.
+            </div>}
+            {displayRoutes.map((r, i) => <div key={r.id} className={`route-card ticket-card scroll-animate ${selectedRoute === r.id ? 'selected' : ''}`} style={{
         '--delay': `${i * 40}ms`
       }} onClick={() => {
         if (role === 'guest') {
@@ -248,12 +322,19 @@ export default function BusSearch({
         } else setSelectedRoute(r.id);
       }}>
               <div>
-                <div className="route-time">{r.from}</div>
+                <div className="route-time">{r.origin}</div>
+                <div style={{
+            fontSize: 10,
+            color: 'var(--text-3)',
+            marginTop: 2
+          }}>
+                  {r.depTime}
+                </div>
                 <div style={{
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            marginTop: 2
+            marginTop: 6
           }}>
                   <span style={{
               width: 8,
@@ -283,7 +364,7 @@ export default function BusSearch({
             color: 'var(--text-3)',
             marginBottom: 2
           }}>
-                  5h 00m
+                  {r.durationLabel}
                 </div>
                 <div style={{
             display: 'flex',
@@ -302,11 +383,18 @@ export default function BusSearch({
                 </div>
               </div>
               <div>
-                <div className="route-time">{r.to}</div>
+                <div className="route-time">{r.destination}</div>
+                <div style={{
+            fontSize: 10,
+            color: 'var(--text-3)',
+            marginTop: 2
+          }}>
+                  {r.arrTime}
+                </div>
                 <div style={{
             fontSize: 11,
             color: r.avail <= 5 ? 'var(--amber)' : 'var(--text-3)',
-            marginTop: 2
+            marginTop: 6
           }}>
                   {r.avail} seats left
                 </div>
@@ -322,6 +410,7 @@ export default function BusSearch({
           flexShrink: 0
         }} />
             </div>)}
+          </div>
           <div style={{
         marginTop: 20,
         display: 'flex',
@@ -383,13 +472,13 @@ export default function BusSearch({
                 <div className="summary-row">
                   <span className="summary-key">Route</span>
                   <span className="summary-val">
-                    {fromCity} → {toCity}
+                    {currentRoute?.origin ?? fromCity} → {currentRoute?.destination ?? toCity}
                   </span>
                 </div>
                 <div className="summary-row">
                   <span className="summary-key">Date</span>
                   <span className="summary-val">
-                    {travelDate} • {currentRoute?.from}
+                    {travelDate} • {currentRoute?.depTime}
                   </span>
                 </div>
                 <div className="summary-row">
