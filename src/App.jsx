@@ -14,7 +14,7 @@ import Vehicles from './pages/admin/Vehicles';
 import AdminRoutesPage from './pages/admin/Routes';
 import Bookings from './pages/admin/Bookings';
 import Rentals from './pages/admin/Rentals';
-import Customers from './pages/admin/Customers';
+import Users from './pages/admin/Users';
 import Reports from './pages/admin/Reports';
 
 const USER_ROUTES = {
@@ -31,7 +31,8 @@ const ADMIN_ROUTES = {
   routes: '/admin/routes',
   bookings: '/admin/bookings',
   rentals: '/admin/rentals',
-  customers: '/admin/customers',
+  users: '/admin/users',
+  customers: '/admin/users',
   reports: '/admin/reports'
 };
 
@@ -161,6 +162,10 @@ function AdminRoute({ role, onLogout }) {
     return <Navigate to="/admin/vehicles/buses" replace />;
   }
 
+  if (location.pathname === '/admin/customers' || location.pathname === '/admin/customers/') {
+    return <Navigate to="/admin/users" replace />;
+  }
+
   if (
     location.pathname.startsWith('/admin/vehicles/') &&
     !['/admin/vehicles/buses', '/admin/vehicles/rental-cars'].includes(location.pathname)
@@ -177,8 +182,8 @@ function AdminRoute({ role, onLogout }) {
           ? 'bookings'
           : location.pathname === '/admin/rentals'
             ? 'rentals'
-            : location.pathname === '/admin/customers'
-              ? 'customers'
+            : location.pathname === '/admin/users'
+              ? 'users'
               : location.pathname === '/admin/reports'
                 ? 'reports'
                 : 'dashboard';
@@ -193,7 +198,7 @@ function AdminRoute({ role, onLogout }) {
   else if (active === 'routes') pageContent = <AdminRoutesPage />;
   else if (active === 'bookings') pageContent = <Bookings />;
   else if (active === 'rentals') pageContent = <Rentals />;
-  else if (active === 'customers') pageContent = <Customers />;
+  else if (active === 'users') pageContent = <Users />;
   else if (active === 'reports') pageContent = <Reports />;
 
   return (

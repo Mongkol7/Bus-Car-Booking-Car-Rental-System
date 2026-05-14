@@ -106,13 +106,14 @@ Responsibilities:
 
 Primary files:
 
-- `src/features/admin/customers/`
-- `src/pages/admin/Customers.jsx`
+- `src/features/admin/users/`
+- `src/pages/admin/Users.jsx`
 
 Responsibilities:
 
-- Customer stats.
-- Searchable customer list.
+- User stats.
+- Searchable user list.
+- User create, edit, role assignment, password reset, delete actions, and role CRUD.
 
 ### BCRS-18 Admin5
 
@@ -273,7 +274,7 @@ src/features/
     dashboard/
     vehicles/
     routes/
-    customers/
+    users/
     reports/
   home/
   booking/

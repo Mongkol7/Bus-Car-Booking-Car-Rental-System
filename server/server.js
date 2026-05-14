@@ -26,6 +26,9 @@ pool.connect()
   .then(() => console.log('✅ Connected to PostgreSQL Database:', process.env.DB_NAME))
   .catch(err => console.error('❌ Connection Error:', err.message));
 
+const userSchemaReady = runUserSchemaMigration()
+  .catch(err => console.error('User management migration failed:', err.message));
+
 // ==========================================
 // API ROUTES
 // ==========================================
@@ -71,6 +74,304 @@ async function createUserSession(userId, token) {
      VALUES ($1, $2, $3, $4)`,
     [userId, hashToken(token), 'access', expiresAt]
   );
+}
+
+async function runUserSchemaMigration() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS roles (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(50) UNIQUE NOT NULL,
+      label VARCHAR(100) NOT NULL,
+      description TEXT,
+      is_system BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    INSERT INTO roles (name, label, description, is_system)
+    VALUES
+      ('user', 'User', 'Default customer account role', TRUE),
+      ('admin', 'Admin', 'System administrator role', TRUE)
+    ON CONFLICT (name) DO UPDATE
+    SET label = EXCLUDED.label,
+        description = EXCLUDED.description,
+        is_system = EXCLUDED.is_system
+  `);
+
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'user'`);
+  await pool.query(`ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id INT REFERENCES roles(id) ON DELETE RESTRICT`);
+
+  const legacyRole = await pool.query(`
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name = 'users'
+      AND column_name = 'role'
+  `);
+
+  if (legacyRole.rowCount) {
+    await pool.query(`
+      UPDATE users u
+      SET role_id = r.id
+      FROM roles r
+      WHERE u.role_id IS NULL
+        AND r.name = u.role::TEXT
+    `);
+  }
+
+  const defaultRole = await pool.query(`SELECT id FROM roles WHERE name = 'user'`);
+  const defaultRoleId = defaultRole.rows[0]?.id;
+  if (defaultRoleId) {
+    await pool.query(`UPDATE users SET role_id = $1 WHERE role_id IS NULL`, [defaultRoleId]);
+    await pool.query(`
+      UPDATE users u
+      SET role = r.name
+      FROM roles r
+      WHERE r.id = u.role_id
+    `);
+    await pool.query(`ALTER TABLE users ALTER COLUMN role_id SET DEFAULT ${Number(defaultRoleId)}`);
+  }
+}
+
+const USER_SELECT = `
+  SELECT
+    u.id,
+    u.first_name,
+    u.last_name,
+    CONCAT(u.first_name, ' ', u.last_name) AS full_name,
+    u.email,
+    u.phone,
+    u.national_id,
+    u.role_id,
+    r.name AS role,
+    r.label AS role_label,
+    r.description AS role_description,
+    COALESCE(u.is_active, TRUE) AS is_active,
+    CASE
+      WHEN u.password_hash IS NULL OR u.password_hash = '' THEN 'No password saved'
+      ELSE 'Password saved in database'
+    END AS password_label,
+    u.created_at,
+    COALESCE(bb.bus_bookings_count, 0)::INT AS bus_bookings_count,
+    COALESCE(cr.car_rentals_count, 0)::INT AS car_rentals_count,
+    (COALESCE(bb.bus_bookings_count, 0) + COALESCE(cr.car_rentals_count, 0))::INT AS total_activity_count,
+    COALESCE(bb.bus_total, 0) + COALESCE(cr.rental_total, 0) AS total_spent,
+    GREATEST(bb.last_bus_booking_at, cr.last_car_rental_at) AS last_activity_at
+  FROM users u
+  LEFT JOIN roles r ON r.id = u.role_id
+  LEFT JOIN (
+    SELECT
+      user_id,
+      COUNT(*) AS bus_bookings_count,
+      COALESCE(SUM(total_price), 0) AS bus_total,
+      MAX(created_at) AS last_bus_booking_at
+    FROM bus_bookings
+    GROUP BY user_id
+  ) bb ON bb.user_id = u.id
+  LEFT JOIN (
+    SELECT
+      user_id,
+      COUNT(*) AS car_rentals_count,
+      COALESCE(SUM(total_price), 0) AS rental_total,
+      MAX(booked_at) AS last_car_rental_at
+    FROM car_rentals
+    GROUP BY user_id
+  ) cr ON cr.user_id = u.id
+`;
+
+function normalizeUserPayload(body, { isCreate = false } = {}) {
+  const firstName = String(body.first_name || '').trim();
+  const lastName = String(body.last_name || '').trim();
+  const email = String(body.email || '').trim().toLowerCase();
+  const phone = String(body.phone || '').trim();
+  const nationalId = String(body.national_id || '').trim();
+  const roleId = Number(body.role_id);
+  const password = String(body.password || '');
+  const isActive = body.is_active === undefined ? (isCreate ? true : null) : Boolean(body.is_active);
+
+  if (!firstName || !lastName || !email || !phone) {
+    return { error: 'First name, last name, email, and phone are required.' };
+  }
+
+  if (!roleId) {
+    return { error: 'Role is required.' };
+  }
+
+  if ((isCreate || password) && password.length < 3) {
+    return { error: 'Password must be at least 3 characters.' };
+  }
+
+  return {
+    value: {
+      first_name: firstName,
+      last_name: lastName,
+      email,
+      phone,
+      national_id: nationalId || null,
+      role_id: roleId,
+      password,
+      is_active: isActive
+    }
+  };
+}
+
+function normalizeRolePayload(body) {
+  const name = String(body.name || '').trim().toLowerCase();
+  const label = String(body.label || '').trim();
+  const description = String(body.description || '').trim();
+
+  if (!name || !label) {
+    return { error: 'Role name and label are required.' };
+  }
+
+  if (!/^[a-z][a-z0-9_-]{1,49}$/.test(name)) {
+    return { error: 'Role name must start with a letter and use lowercase letters, numbers, hyphens, or underscores.' };
+  }
+
+  return {
+    value: {
+      name,
+      label,
+      description: description || null
+    }
+  };
+}
+
+function formatRoleRow(row) {
+  return {
+    ...row,
+    user_count: Number(row.user_count || 0),
+    can_delete: !row.is_system && Number(row.user_count || 0) === 0
+  };
+}
+
+async function fetchAdminRoles() {
+  const result = await pool.query(`
+    SELECT
+      r.id,
+      r.name,
+      r.label,
+      r.description,
+      r.is_system,
+      r.created_at,
+      COUNT(u.id)::INT AS user_count
+    FROM roles r
+    LEFT JOIN users u ON u.role_id = r.id
+    GROUP BY r.id
+    ORDER BY r.is_system DESC, r.name ASC
+  `);
+  return result.rows.map(formatRoleRow);
+}
+
+async function fetchRoleById(roleId) {
+  const result = await pool.query(`SELECT * FROM roles WHERE id = $1`, [roleId]);
+  return result.rows[0] || null;
+}
+
+async function fetchDefaultRoleId(roleName = 'user') {
+  const result = await pool.query(`SELECT id FROM roles WHERE name = $1`, [roleName]);
+  return result.rows[0]?.id || null;
+}
+
+function formatUserRow(row) {
+  const lastActivity = row.last_activity_at ? new Date(row.last_activity_at) : null;
+  const isRecent =
+    lastActivity &&
+    !Number.isNaN(lastActivity.getTime()) &&
+    Date.now() - lastActivity.getTime() <= 1000 * 60 * 60 * 24 * 14;
+  const status = !row.is_active || (lastActivity && !isRecent) ? 'Inactive' : 'Active';
+
+  return {
+    ...row,
+    user_code: `U-${String(row.id).padStart(4, '0')}`,
+    status,
+    total_spent: Number(row.total_spent || 0)
+  };
+}
+
+async function fetchAdminUsers() {
+  const users = await pool.query(`${USER_SELECT} ORDER BY u.created_at DESC, u.id DESC`);
+  const rows = users.rows.map(formatUserRow);
+  const now = new Date();
+  const stats = rows.reduce(
+    (acc, user) => {
+      const createdAt = new Date(user.created_at);
+      acc.totalUsers += 1;
+      if (user.status === 'Active') acc.activeUsers += 1;
+      else acc.inactiveUsers += 1;
+      if (
+        createdAt.getFullYear() === now.getFullYear() &&
+        createdAt.getMonth() === now.getMonth()
+      ) {
+        acc.newThisMonth += 1;
+      }
+      acc.totalBusBookings += user.bus_bookings_count;
+      acc.totalCarRentals += user.car_rentals_count;
+      acc.totalActivity += user.total_activity_count;
+      return acc;
+    },
+    {
+      totalUsers: 0,
+      activeUsers: 0,
+      inactiveUsers: 0,
+      newThisMonth: 0,
+      totalBusBookings: 0,
+      totalCarRentals: 0,
+      totalActivity: 0
+    }
+  );
+
+  return { stats, users: rows };
+}
+
+async function fetchAdminUserById(userId) {
+  const result = await pool.query(`${USER_SELECT} WHERE u.id = $1`, [userId]);
+  return result.rows[0] ? formatUserRow(result.rows[0]) : null;
+}
+
+async function wouldDeactivateLastAdmin(userId, nextRoleId, nextIsActive) {
+  const current = await pool.query(`
+    SELECT r.name AS role, COALESCE(u.is_active, TRUE) AS is_active
+    FROM users u
+    LEFT JOIN roles r ON r.id = u.role_id
+    WHERE u.id = $1
+  `, [userId]);
+  if (!current.rowCount) return false;
+
+  const currentUser = current.rows[0];
+  const nextRole = await fetchRoleById(nextRoleId);
+  const removesAdminAccess =
+    currentUser.role === 'admin' &&
+    currentUser.is_active &&
+    (nextRole?.name !== 'admin' || !nextIsActive);
+
+  if (!removesAdminAccess) return false;
+
+  const admins = await pool.query(
+    `SELECT COUNT(*)::INT AS count
+     FROM users
+     JOIN roles ON roles.id = users.role_id
+     WHERE roles.name = 'admin'
+       AND COALESCE(users.is_active, TRUE) = TRUE
+       AND users.id <> $1`,
+    [userId]
+  );
+  return admins.rows[0].count === 0;
+}
+
+async function isLastActiveAdmin(userId) {
+  const result = await pool.query(
+    `SELECT COUNT(*)::INT AS count
+     FROM users
+     JOIN roles ON roles.id = users.role_id
+     WHERE roles.name = 'admin'
+       AND COALESCE(users.is_active, TRUE) = TRUE
+       AND users.id <> $1`,
+    [userId]
+  );
+  return result.rows[0].count === 0;
 }
 
 const ROUTE_SELECT = `
@@ -339,19 +640,260 @@ app.delete('/api/admin/routes/:id', async (req, res) => {
   }
 });
 
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    const data = await fetchAdminUsers();
+    const roles = await fetchAdminRoles();
+    res.json({ ...data, roles });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/roles', async (req, res) => {
+  try {
+    const roles = await fetchAdminRoles();
+    res.json({ roles });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/roles', async (req, res) => {
+  const parsed = normalizeRolePayload(req.body);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const payload = parsed.value;
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO roles (name, label, description, is_system)
+       VALUES ($1, $2, $3, FALSE)
+       RETURNING id`,
+      [payload.name, payload.label, payload.description]
+    );
+    const role = (await fetchAdminRoles()).find(item => item.id === result.rows[0].id);
+    res.status(201).json(role);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/roles/:id', async (req, res) => {
+  const roleId = Number(req.params.id);
+  const parsed = normalizeRolePayload(req.body);
+
+  if (!roleId) {
+    return res.status(400).json({ error: 'Invalid role id.' });
+  }
+
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const payload = parsed.value;
+
+  try {
+    const existing = await fetchRoleById(roleId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Role not found.' });
+    }
+
+    if (existing.is_system && existing.name !== payload.name) {
+      return res.status(400).json({ error: 'System role names cannot be changed.' });
+    }
+
+    await pool.query(
+      `UPDATE roles
+       SET name = $1,
+           label = $2,
+           description = $3
+       WHERE id = $4`,
+      [payload.name, payload.label, payload.description, roleId]
+    );
+
+    const role = (await fetchAdminRoles()).find(item => item.id === roleId);
+    res.json(role);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/roles/:id', async (req, res) => {
+  const roleId = Number(req.params.id);
+  if (!roleId) {
+    return res.status(400).json({ error: 'Invalid role id.' });
+  }
+
+  try {
+    const role = (await fetchAdminRoles()).find(item => item.id === roleId);
+    if (!role) {
+      return res.status(404).json({ error: 'Role not found.' });
+    }
+    if (role.is_system) {
+      return res.status(400).json({ error: 'System roles cannot be deleted.' });
+    }
+    if (role.user_count > 0) {
+      return res.status(400).json({ error: 'Cannot delete a role assigned to users.' });
+    }
+
+    await pool.query(`DELETE FROM roles WHERE id = $1`, [roleId]);
+    res.json({ id: roleId, message: 'Role deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/users', async (req, res) => {
+  const parsed = normalizeUserPayload(req.body, { isCreate: true });
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const payload = parsed.value;
+
+  try {
+    const role = await fetchRoleById(payload.role_id);
+    if (!role) {
+      return res.status(400).json({ error: 'Selected role does not exist.' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(payload.password, salt);
+    const result = await pool.query(
+      `INSERT INTO users (first_name, last_name, email, phone, national_id, password_hash, role, role_id, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id`,
+      [
+        payload.first_name,
+        payload.last_name,
+        payload.email,
+        payload.phone,
+        payload.national_id,
+        passwordHash,
+        role.name,
+        payload.role_id,
+        payload.is_active
+      ]
+    );
+
+    const user = await fetchAdminUserById(result.rows[0].id);
+    res.status(201).json(user);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/users/:id', async (req, res) => {
+  const userId = Number(req.params.id);
+  const parsed = normalizeUserPayload(req.body);
+
+  if (!userId) {
+    return res.status(400).json({ error: 'Invalid user id.' });
+  }
+
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const payload = parsed.value;
+
+  try {
+    const existing = await fetchAdminUserById(userId);
+    if (!existing) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const nextIsActive = payload.is_active === null ? existing.is_active : payload.is_active;
+    const role = await fetchRoleById(payload.role_id);
+    if (!role) {
+      return res.status(400).json({ error: 'Selected role does not exist.' });
+    }
+
+    if (await wouldDeactivateLastAdmin(userId, payload.role_id, nextIsActive)) {
+      return res.status(400).json({ error: 'At least one active admin account is required.' });
+    }
+
+    const passwordHash = payload.password ? await bcrypt.hash(payload.password, await bcrypt.genSalt(10)) : null;
+    await pool.query(
+      `UPDATE users
+       SET first_name = $1,
+           last_name = $2,
+           email = $3,
+           phone = $4,
+           national_id = $5,
+           role = $6,
+           role_id = $7,
+           is_active = COALESCE($8, is_active),
+           password_hash = COALESCE($9, password_hash)
+       WHERE id = $10`,
+      [
+        payload.first_name,
+        payload.last_name,
+        payload.email,
+        payload.phone,
+        payload.national_id,
+        role.name,
+        payload.role_id,
+        payload.is_active,
+        passwordHash,
+        userId
+      ]
+    );
+
+    if (payload.is_active === false) {
+      await pool.query(`UPDATE user_sessions SET is_revoked = TRUE WHERE user_id = $1`, [userId]);
+    }
+
+    const user = await fetchAdminUserById(userId);
+    res.json(user);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/users/:id', async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!userId) {
+    return res.status(400).json({ error: 'Invalid user id.' });
+  }
+
+  try {
+    const existing = await fetchAdminUserById(userId);
+    if (!existing) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    if (existing.role === 'admin' && existing.is_active && await isLastActiveAdmin(userId)) {
+      return res.status(400).json({ error: 'At least one active admin account is required.' });
+    }
+
+    await pool.query(`UPDATE user_sessions SET is_revoked = TRUE WHERE user_id = $1`, [userId]);
+    await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
+
+    res.json({ id: userId, message: 'User deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 3. Register a User
 app.post('/api/auth/register', async (req, res) => {
   const { first_name, last_name, email, phone, password, national_id } = req.body;
   try {
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
+    const roleId = await fetchDefaultRoleId('user');
 
     const result = await pool.query(
-      `INSERT INTO users (first_name, last_name, email, phone, password_hash, national_id) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, first_name, last_name, email, role`,
-      [first_name, last_name, email, phone, password_hash, national_id]
+      `INSERT INTO users (first_name, last_name, email, phone, password_hash, national_id, role, role_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, first_name, last_name, email, role_id, is_active`,
+      [first_name, last_name, email, phone, password_hash, national_id, 'user', roleId]
     );
-    const user = result.rows[0];
+    const user = { ...result.rows[0], role: 'user' };
     const token = createAuthToken(user);
     await createUserSession(user.id, token);
     res.status(201).json({ token, user });
@@ -365,7 +907,18 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   try {
     const result = await pool.query(
-      `SELECT id, first_name, last_name, email, role, password_hash FROM users WHERE email = $1`,
+      `SELECT
+         u.id,
+         u.first_name,
+         u.last_name,
+         u.email,
+         u.role_id,
+         r.name AS role,
+         COALESCE(u.is_active, TRUE) AS is_active,
+         u.password_hash
+       FROM users u
+       LEFT JOIN roles r ON r.id = u.role_id
+       WHERE u.email = $1`,
       [email]
     );
     if (result.rows.length === 0) {
@@ -373,6 +926,10 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const user = result.rows[0];
+    if (!user.is_active) {
+      return res.status(403).json({ error: 'This account is inactive' });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password_hash);
     
     if (!isMatch) {
@@ -428,6 +985,8 @@ app.post('/api/bookings/bus', async (req, res) => {
 
 // Start Server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+userSchemaReady.finally(() => {
+  app.listen(PORT, () => {
   console.log(`🚀 Backend Server running on http://localhost:${PORT}`);
+  });
 });

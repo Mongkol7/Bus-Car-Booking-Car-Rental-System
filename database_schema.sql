@@ -13,18 +13,32 @@ DROP TABLE IF EXISTS buses CASCADE;
 DROP TABLE IF EXISTS vehicles CASCADE;
 DROP TABLE IF EXISTS companies CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS roles CASCADE;
 DROP TYPE IF EXISTS user_role CASCADE;
 DROP TYPE IF EXISTS vehicle_status CASCADE;
 DROP TYPE IF EXISTS payment_method CASCADE;
 DROP TYPE IF EXISTS booking_status CASCADE;
 
 -- 1. ENUMS FOR STATUSES & ROLES
-CREATE TYPE user_role AS ENUM ('user', 'admin');
 CREATE TYPE vehicle_status AS ENUM ('available', 'rented', 'maintenance');
 CREATE TYPE payment_method AS ENUM ('aba', 'khqr', 'cash');
 CREATE TYPE booking_status AS ENUM ('pending', 'confirmed', 'completed', 'cancelled', 'returned');
 
--- 2. USERS TABLE
+-- 2. ROLES TABLE
+CREATE TABLE roles (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) UNIQUE NOT NULL,
+    label VARCHAR(100) NOT NULL,
+    description TEXT,
+    is_system BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO roles (name, label, description, is_system) VALUES
+('user', 'User', 'Default customer account role', TRUE),
+('admin', 'Admin', 'System administrator role', TRUE);
+
+-- 3. USERS TABLE
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     first_name VARCHAR(100) NOT NULL,
@@ -33,11 +47,13 @@ CREATE TABLE users (
     phone VARCHAR(20) UNIQUE NOT NULL,
     national_id VARCHAR(50),
     password_hash VARCHAR(255) NOT NULL,
-    role user_role DEFAULT 'user',
+    role VARCHAR(50) DEFAULT 'user',
+    role_id INT REFERENCES roles(id) ON DELETE RESTRICT DEFAULT 1,
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 3. COMPANIES TABLE (Mekong Express, Giant Ibis, etc.)
+-- 4. COMPANIES TABLE (Mekong Express, Giant Ibis, etc.)
 CREATE TABLE companies (
     id SERIAL PRIMARY KEY,
     name VARCHAR(150) UNIQUE NOT NULL,

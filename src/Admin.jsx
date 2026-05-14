@@ -18,7 +18,7 @@ export default function AdminApp({ onLogout, active, onNavigate, pageContent }) 
   });
 
   const extraNav = NAV.filter(
-    (n) => !PRIMARY_NAV.includes(n.id) && n.id !== 'reports' && n.id !== 'customers'
+    (n) => !PRIMARY_NAV.includes(n.id) && n.id !== 'reports' && n.id !== 'users'
   );
 
   useEffect(() => {
@@ -98,9 +98,9 @@ export default function AdminApp({ onLogout, active, onNavigate, pageContent }) 
               <span className="mac-dot green" />
             </span>
           </button>
-          <button className="admin-report-btn" onClick={() => onNavigate('customers')}>
+          <button className="admin-report-btn" onClick={() => onNavigate('users')}>
             <Icon d={icons.users} size={12} color="currentColor" />
-            Customers
+            Users
           </button>
           <button className="admin-report-btn" onClick={() => onNavigate('reports')}>
             <Icon d={icons.chart} size={12} color="currentColor" />

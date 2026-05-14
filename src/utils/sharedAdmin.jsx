@@ -57,8 +57,8 @@ const NAV = [{
   label: 'Rentals',
   icon: 'car'
 }, {
-  id: 'customers',
-  label: 'Customers',
+  id: 'users',
+  label: 'Users',
   icon: 'users'
 }, {
   id: 'reports',
@@ -99,4 +99,3 @@ export const getCompanyMeta = name => companyMeta[name] || {
 };
 
 // ── SIDEBAR ────────────────────────────────────────────────────────────────────
-
