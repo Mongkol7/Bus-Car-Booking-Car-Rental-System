@@ -275,6 +275,154 @@ async function fetchDefaultRoleId(roleName = 'user') {
   return result.rows[0]?.id || null;
 }
 
+const BOOKING_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
+const RENTAL_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled', 'returned'];
+const PAYMENT_METHODS = ['aba', 'khqr', 'cash'];
+
+function normalizeText(value) {
+  return String(value || '').trim();
+}
+
+function normalizeMoney(value) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : NaN;
+}
+
+function buildMonthRange(month) {
+  const fallback = new Date();
+  const [yearRaw, monthRaw] = String(month || '').split('-');
+  const year = Number(yearRaw);
+  const monthNumber = Number(monthRaw);
+  const valid = year >= 2000 && year <= 2100 && monthNumber >= 1 && monthNumber <= 12;
+  const start = valid ? new Date(year, monthNumber - 1, 1) : new Date(fallback.getFullYear(), fallback.getMonth(), 1);
+  const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+  const key = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}`;
+  return {
+    key,
+    start: `${key}-01`,
+    end: `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-01`,
+    days: new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate()
+  };
+}
+
+function formatDateKey(date) {
+  if (date instanceof Date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+  return String(date).slice(0, 10);
+}
+
+function buildDailySeries(monthRange, bookingRows, rentalRows) {
+  const bookingMap = new Map(bookingRows.map(row => [formatDateKey(row.day), Number(row.revenue || 0)]));
+  const rentalMap = new Map(rentalRows.map(row => [formatDateKey(row.day), Number(row.revenue || 0)]));
+  const [year, month] = monthRange.key.split('-').map(Number);
+  return Array.from({ length: monthRange.days }, (_, index) => {
+    const date = new Date(year, month - 1, index + 1);
+    const key = formatDateKey(date);
+    return {
+      date: key,
+      label: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      booking_revenue: bookingMap.get(key) || 0,
+      rental_revenue: rentalMap.get(key) || 0
+    };
+  });
+}
+
+function buildRecentDayRange(totalDays = 12) {
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (totalDays - 1));
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  return {
+    start: formatDateKey(start),
+    end: formatDateKey(end),
+    totalDays
+  };
+}
+
+function buildCountSeries(dayRange, bookingRows, rentalRows) {
+  const bookingMap = new Map(bookingRows.map(row => [formatDateKey(row.day), Number(row.count || 0)]));
+  const rentalMap = new Map(rentalRows.map(row => [formatDateKey(row.day), Number(row.count || 0)]));
+  const start = new Date(`${dayRange.start}T00:00:00`);
+
+  return Array.from({ length: dayRange.totalDays }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    const key = formatDateKey(date);
+    const bookingCount = bookingMap.get(key) || 0;
+    const rentalCount = rentalMap.get(key) || 0;
+
+    return {
+      date: key,
+      label: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      booking_count: bookingCount,
+      rental_count: rentalCount,
+      total_count: bookingCount + rentalCount
+    };
+  });
+}
+
+async function fetchAdminBookingById(bookingId) {
+  const result = await pool.query(
+    `SELECT
+       bb.id,
+       bb.user_id,
+       bb.route_id,
+       bb.seat_number,
+       bb.total_price,
+       bb.payment_method,
+       bb.status,
+       bb.created_at,
+       CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+       u.email,
+       u.phone,
+       br.origin,
+       br.destination,
+       br.departure_time,
+       br.arrival_time,
+       b.name AS bus_name,
+       b.type AS bus_type,
+       c.name AS company_name,
+       c.theme_color AS color
+     FROM bus_bookings bb
+     JOIN users u ON u.id = bb.user_id
+     JOIN bus_routes br ON br.id = bb.route_id
+     JOIN buses b ON b.id = br.bus_id
+     LEFT JOIN companies c ON c.id = b.company_id
+     WHERE bb.id = $1`,
+    [bookingId]
+  );
+  return result.rows[0] || null;
+}
+
+async function fetchAdminRentalById(rentalId) {
+  const result = await pool.query(
+    `SELECT
+       cr.id,
+       cr.user_id,
+       cr.car_id,
+       cr.pickup_date,
+       cr.return_date,
+       cr.driver_name,
+       cr.driver_license,
+       cr.total_price,
+       cr.payment_method,
+       cr.status,
+       cr.booked_at,
+       CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+       u.email,
+       u.phone,
+       rc.name AS car_name,
+       rc.type AS car_type,
+       rc.plate_number
+     FROM car_rentals cr
+     JOIN users u ON u.id = cr.user_id
+     JOIN rental_cars rc ON rc.id = cr.car_id
+     WHERE cr.id = $1`,
+    [rentalId]
+  );
+  return result.rows[0] || null;
+}
+
 function formatUserRow(row) {
   const lastActivity = row.last_activity_at ? new Date(row.last_activity_at) : null;
   const isRecent =
@@ -874,6 +1022,405 @@ app.delete('/api/admin/users/:id', async (req, res) => {
     await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
 
     res.json({ id: userId, message: 'User deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/dashboard', async (req, res) => {
+  const monthRange = buildMonthRange();
+  const monthParams = [monthRange.start, monthRange.end];
+  const recentRange = buildRecentDayRange(12);
+  const recentParams = [recentRange.start, recentRange.end];
+
+  try {
+    const [
+      bookingMonth,
+      rentalMonth,
+      activeRentals,
+      usersSummary,
+      bookingActivity,
+      rentalActivity,
+      recentBookings,
+      busFleet,
+      carFleet,
+      routeFleet,
+      topCustomers,
+      topCompanies
+    ] = await Promise.all([
+      pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2`, monthParams),
+      pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2`, monthParams),
+      pool.query(`SELECT COUNT(*)::INT AS count FROM car_rentals WHERE status = 'confirmed'`),
+      pool.query(`SELECT COUNT(*)::INT AS total, COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2)::INT AS new_this_month FROM users`, monthParams),
+      pool.query(`SELECT created_at::DATE AS day, COUNT(*)::INT AS count FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2 GROUP BY created_at::DATE ORDER BY day`, recentParams),
+      pool.query(`SELECT booked_at::DATE AS day, COUNT(*)::INT AS count FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2 GROUP BY booked_at::DATE ORDER BY day`, recentParams),
+      pool.query(
+        `SELECT
+           bb.id,
+           bb.seat_number,
+           bb.total_price,
+           bb.payment_method,
+           bb.status,
+           bb.created_at,
+           br.origin,
+           br.destination,
+           b.name AS bus_name,
+           COALESCE(c.name, 'Unknown company') AS company_name,
+           c.theme_color AS color,
+           CONCAT(u.first_name, ' ', u.last_name) AS user_name
+         FROM bus_bookings bb
+         JOIN users u ON u.id = bb.user_id
+         JOIN bus_routes br ON br.id = bb.route_id
+         JOIN buses b ON b.id = br.bus_id
+         LEFT JOIN companies c ON c.id = b.company_id
+         ORDER BY bb.created_at DESC, bb.id DESC
+         LIMIT 5`
+      ),
+      pool.query(`SELECT COUNT(*)::INT AS total, COUNT(*) FILTER (WHERE status = 'available')::INT AS available FROM buses`),
+      pool.query(`SELECT COUNT(*)::INT AS total, COUNT(*) FILTER (WHERE status = 'available')::INT AS available FROM rental_cars`),
+      pool.query(`SELECT COUNT(*)::INT AS total, COUNT(*) FILTER (WHERE departure_time >= NOW())::INT AS active FROM bus_routes`),
+      pool.query(
+        `SELECT user_id, user_name, email, COUNT(*)::INT AS trips, COALESCE(SUM(total_spent), 0) AS spend
+         FROM (
+           SELECT u.id AS user_id, CONCAT(u.first_name, ' ', u.last_name) AS user_name, u.email, bb.total_price AS total_spent
+           FROM bus_bookings bb
+           JOIN users u ON u.id = bb.user_id
+           WHERE bb.status <> 'cancelled' AND bb.created_at >= $1 AND bb.created_at < $2
+           UNION ALL
+           SELECT u.id AS user_id, CONCAT(u.first_name, ' ', u.last_name) AS user_name, u.email, cr.total_price AS total_spent
+           FROM car_rentals cr
+           JOIN users u ON u.id = cr.user_id
+           WHERE cr.status <> 'cancelled' AND cr.booked_at >= $1 AND cr.booked_at < $2
+         ) activity
+         GROUP BY user_id, user_name, email
+         ORDER BY trips DESC, spend DESC
+         LIMIT 5`,
+        monthParams
+      ),
+      pool.query(
+        `SELECT COALESCE(c.name, 'Unknown company') AS name, c.theme_color AS color, COUNT(*)::INT AS count, COALESCE(SUM(bb.total_price), 0) AS revenue
+         FROM bus_bookings bb
+         JOIN bus_routes br ON br.id = bb.route_id
+         JOIN buses b ON b.id = br.bus_id
+         LEFT JOIN companies c ON c.id = b.company_id
+         WHERE bb.status <> 'cancelled' AND bb.created_at >= $1 AND bb.created_at < $2
+         GROUP BY COALESCE(c.name, 'Unknown company'), c.theme_color
+         ORDER BY count DESC, revenue DESC
+         LIMIT 5`,
+        monthParams
+      )
+    ]);
+
+    const bookingCount = Number(bookingMonth.rows[0].count || 0);
+    const rentalCount = Number(rentalMonth.rows[0].count || 0);
+    const bookingRevenue = Number(bookingMonth.rows[0].revenue || 0);
+    const rentalRevenue = Number(rentalMonth.rows[0].revenue || 0);
+    const busTotal = Number(busFleet.rows[0].total || 0);
+    const busAvailable = Number(busFleet.rows[0].available || 0);
+    const carTotal = Number(carFleet.rows[0].total || 0);
+    const carAvailable = Number(carFleet.rows[0].available || 0);
+    const routeTotal = Number(routeFleet.rows[0].total || 0);
+    const routeActive = Number(routeFleet.rows[0].active || 0);
+    const percent = (value, total) => total > 0 ? Math.round((value / total) * 100) : 0;
+
+    res.json({
+      month: monthRange.key,
+      metrics: {
+        total_bookings: bookingCount + rentalCount,
+        booking_count: bookingCount,
+        rental_count: rentalCount,
+        active_rentals: Number(activeRentals.rows[0].count || 0),
+        total_revenue: bookingRevenue + rentalRevenue,
+        total_users: Number(usersSummary.rows[0].total || 0),
+        new_users: Number(usersSummary.rows[0].new_this_month || 0)
+      },
+      activity: buildCountSeries(recentRange, bookingActivity.rows, rentalActivity.rows),
+      recent_bookings: recentBookings.rows,
+      fleet: {
+        buses: { available: busAvailable, total: busTotal, percent: percent(busAvailable, busTotal) },
+        cars: { available: carAvailable, total: carTotal, percent: percent(carAvailable, carTotal) },
+        routes: { active: routeActive, total: routeTotal, percent: percent(routeActive, routeTotal) }
+      },
+      top_customers: topCustomers.rows,
+      top_companies: topCompanies.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/bookings', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         bb.id,
+         bb.user_id,
+         bb.route_id,
+         bb.seat_number,
+         bb.total_price,
+         bb.payment_method,
+         bb.status,
+         bb.created_at,
+         CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+         u.email,
+         u.phone,
+         br.origin,
+         br.destination,
+         br.departure_time,
+         br.arrival_time,
+         b.name AS bus_name,
+         b.type AS bus_type,
+         c.name AS company_name,
+         c.theme_color AS color
+       FROM bus_bookings bb
+       JOIN users u ON u.id = bb.user_id
+       JOIN bus_routes br ON br.id = bb.route_id
+       JOIN buses b ON b.id = br.bus_id
+       LEFT JOIN companies c ON c.id = b.company_id
+       ORDER BY bb.created_at DESC, bb.id DESC`
+    );
+    res.json({ bookings: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/bookings/:id', async (req, res) => {
+  const bookingId = Number(req.params.id);
+  const seatNumber = normalizeText(req.body.seat_number);
+  const totalPrice = normalizeMoney(req.body.total_price);
+  const paymentMethod = normalizeText(req.body.payment_method).toLowerCase();
+  const status = normalizeText(req.body.status).toLowerCase();
+
+  if (!bookingId) return res.status(400).json({ error: 'Invalid booking id.' });
+  if (!seatNumber) return res.status(400).json({ error: 'Seat number is required.' });
+  if (!Number.isFinite(totalPrice) || totalPrice <= 0) return res.status(400).json({ error: 'Total price must be greater than zero.' });
+  if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
+  if (!BOOKING_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid booking status.' });
+
+  try {
+    const existing = await fetchAdminBookingById(bookingId);
+    if (!existing) return res.status(404).json({ error: 'Booking not found.' });
+
+    await pool.query(
+      `UPDATE bus_bookings
+       SET seat_number = $1,
+           total_price = $2,
+           payment_method = $3,
+           status = $4
+       WHERE id = $5`,
+      [seatNumber, totalPrice.toFixed(2), paymentMethod, status, bookingId]
+    );
+
+    res.json(await fetchAdminBookingById(bookingId));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/bookings/:id', async (req, res) => {
+  const bookingId = Number(req.params.id);
+  if (!bookingId) return res.status(400).json({ error: 'Invalid booking id.' });
+
+  try {
+    const result = await pool.query(`DELETE FROM bus_bookings WHERE id = $1 RETURNING id`, [bookingId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Booking not found.' });
+    res.json({ id: bookingId, message: 'Booking deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/rentals', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         cr.id,
+         cr.user_id,
+         cr.car_id,
+         cr.pickup_date,
+         cr.return_date,
+         cr.driver_name,
+         cr.driver_license,
+         cr.total_price,
+         cr.payment_method,
+         cr.status,
+         cr.booked_at,
+         CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+         u.email,
+         u.phone,
+         rc.name AS car_name,
+         rc.type AS car_type,
+         rc.plate_number
+       FROM car_rentals cr
+       JOIN users u ON u.id = cr.user_id
+       JOIN rental_cars rc ON rc.id = cr.car_id
+       ORDER BY cr.booked_at DESC, cr.id DESC`
+    );
+    res.json({ rentals: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/rentals/:id', async (req, res) => {
+  const rentalId = Number(req.params.id);
+  const pickupDate = normalizeText(req.body.pickup_date);
+  const returnDate = normalizeText(req.body.return_date);
+  const driverName = normalizeText(req.body.driver_name);
+  const driverLicense = normalizeText(req.body.driver_license);
+  const totalPrice = normalizeMoney(req.body.total_price);
+  const paymentMethod = normalizeText(req.body.payment_method).toLowerCase();
+  const status = normalizeText(req.body.status).toLowerCase();
+  const pickup = new Date(`${pickupDate}T00:00:00`);
+  const dropoff = new Date(`${returnDate}T00:00:00`);
+
+  if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
+  if (Number.isNaN(pickup.getTime()) || Number.isNaN(dropoff.getTime())) return res.status(400).json({ error: 'Pickup and return dates must be valid.' });
+  if (dropoff <= pickup) return res.status(400).json({ error: 'Return date must be after pickup date.' });
+  if (!driverName || !driverLicense) return res.status(400).json({ error: 'Driver name and license are required.' });
+  if (!Number.isFinite(totalPrice) || totalPrice <= 0) return res.status(400).json({ error: 'Total price must be greater than zero.' });
+  if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
+  if (!RENTAL_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid rental status.' });
+
+  try {
+    const existing = await fetchAdminRentalById(rentalId);
+    if (!existing) return res.status(404).json({ error: 'Rental not found.' });
+
+    await pool.query(
+      `UPDATE car_rentals
+       SET pickup_date = $1,
+           return_date = $2,
+           driver_name = $3,
+           driver_license = $4,
+           total_price = $5,
+           payment_method = $6,
+           status = $7
+       WHERE id = $8`,
+      [pickupDate, returnDate, driverName, driverLicense, totalPrice.toFixed(2), paymentMethod, status, rentalId]
+    );
+
+    res.json(await fetchAdminRentalById(rentalId));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/rentals/:id', async (req, res) => {
+  const rentalId = Number(req.params.id);
+  if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
+
+  try {
+    const result = await pool.query(`DELETE FROM car_rentals WHERE id = $1 RETURNING id`, [rentalId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Rental not found.' });
+    res.json({ id: rentalId, message: 'Rental deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/reports', async (req, res) => {
+  const monthRange = buildMonthRange(req.query.month);
+  const params = [monthRange.start, monthRange.end];
+
+  try {
+    const [
+      bookingRevenue,
+      rentalRevenue,
+      bookingDaily,
+      rentalDaily,
+      topRoutes,
+      topCars,
+      topCompanies,
+      topCustomers,
+      paymentMix
+    ] = await Promise.all([
+      pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2`, params),
+      pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2`, params),
+      pool.query(`SELECT created_at::DATE AS day, COALESCE(SUM(total_price), 0) AS revenue FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2 GROUP BY created_at::DATE ORDER BY day`, params),
+      pool.query(`SELECT booked_at::DATE AS day, COALESCE(SUM(total_price), 0) AS revenue FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2 GROUP BY booked_at::DATE ORDER BY day`, params),
+      pool.query(
+        `SELECT br.origin, br.destination, COUNT(*)::INT AS count, COALESCE(SUM(bb.total_price), 0) AS revenue
+         FROM bus_bookings bb
+         JOIN bus_routes br ON br.id = bb.route_id
+         WHERE bb.status <> 'cancelled' AND bb.created_at >= $1 AND bb.created_at < $2
+         GROUP BY br.origin, br.destination
+         ORDER BY count DESC, revenue DESC
+         LIMIT 5`,
+        params
+      ),
+      pool.query(
+        `SELECT rc.name, COUNT(*)::INT AS count, COALESCE(SUM(cr.total_price), 0) AS revenue
+         FROM car_rentals cr
+         JOIN rental_cars rc ON rc.id = cr.car_id
+         WHERE cr.status <> 'cancelled' AND cr.booked_at >= $1 AND cr.booked_at < $2
+         GROUP BY rc.name
+         ORDER BY count DESC, revenue DESC
+         LIMIT 5`,
+        params
+      ),
+      pool.query(
+        `SELECT c.name, COUNT(*)::INT AS count, COALESCE(SUM(bb.total_price), 0) AS revenue, c.theme_color AS color
+         FROM bus_bookings bb
+         JOIN bus_routes br ON br.id = bb.route_id
+         JOIN buses b ON b.id = br.bus_id
+         LEFT JOIN companies c ON c.id = b.company_id
+         WHERE bb.status <> 'cancelled' AND bb.created_at >= $1 AND bb.created_at < $2
+         GROUP BY c.name, c.theme_color
+         ORDER BY count DESC, revenue DESC
+         LIMIT 5`,
+        params
+      ),
+      pool.query(
+        `SELECT user_name, COUNT(*)::INT AS count, SUM(total_spent) AS spend
+         FROM (
+           SELECT CONCAT(u.first_name, ' ', u.last_name) AS user_name, bb.total_price AS total_spent
+           FROM bus_bookings bb
+           JOIN users u ON u.id = bb.user_id
+           WHERE bb.status <> 'cancelled' AND bb.created_at >= $1 AND bb.created_at < $2
+           UNION ALL
+           SELECT CONCAT(u.first_name, ' ', u.last_name) AS user_name, cr.total_price AS total_spent
+           FROM car_rentals cr
+           JOIN users u ON u.id = cr.user_id
+           WHERE cr.status <> 'cancelled' AND cr.booked_at >= $1 AND cr.booked_at < $2
+         ) activity
+         GROUP BY user_name
+         ORDER BY spend DESC, count DESC
+         LIMIT 5`,
+        params
+      ),
+      pool.query(
+        `SELECT payment_method, COUNT(*)::INT AS count
+         FROM (
+           SELECT payment_method FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2
+           UNION ALL
+           SELECT payment_method::TEXT AS payment_method FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2
+         ) payments
+         GROUP BY payment_method
+         ORDER BY count DESC`,
+        params
+      )
+    ]);
+
+    const bookingRevenueValue = Number(bookingRevenue.rows[0].revenue || 0);
+    const rentalRevenueValue = Number(rentalRevenue.rows[0].revenue || 0);
+    const transactionCount = Number(bookingRevenue.rows[0].count || 0) + Number(rentalRevenue.rows[0].count || 0);
+
+    res.json({
+      month: monthRange.key,
+      metrics: {
+        total_revenue: bookingRevenueValue + rentalRevenueValue,
+        booking_revenue: bookingRevenueValue,
+        rental_revenue: rentalRevenueValue,
+        transactions: transactionCount
+      },
+      daily: buildDailySeries(monthRange, bookingDaily.rows, rentalDaily.rows),
+      top_routes: topRoutes.rows,
+      top_cars: topCars.rows,
+      top_companies: topCompanies.rows,
+      top_customers: topCustomers.rows,
+      payment_mix: paymentMix.rows
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

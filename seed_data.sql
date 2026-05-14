@@ -60,3 +60,17 @@ SET password_hash = '$2b$10$QIQ9x2djZ2D9TaOsRoJn5.n/CZAhzjA2f0VhdMkmdzzcLSoWw3vQ
     role = 'admin',
     role_id = (SELECT id FROM roles WHERE name = 'admin')
 WHERE email = 'admin@bookride.com';
+
+
+INSERT INTO bus_bookings (user_id, route_id, seat_number, total_price, payment_method, status)
+VALUES (1, 1, 'A1', 12.50, 'aba', 'confirmed');
+
+
+INSERT INTO car_rentals (
+  user_id, car_id, pickup_date, return_date,
+  driver_name, driver_license, total_price, payment_method, status
+)
+VALUES (
+  1, 1, CURRENT_DATE, CURRENT_DATE + INTERVAL '3 days',
+  'Test Driver', 'DL-12345', 90.00, 'khqr', 'confirmed'
+);

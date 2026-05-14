@@ -73,7 +73,7 @@ Primary files:
 
 Responsibilities:
 
-- Admin dashboard layout.
+- Admin dashboard layout and DB-backed metrics.
 - Sidebar navigation.
 - Role-based admin redirect.
 
@@ -126,8 +126,8 @@ Primary files:
 
 Responsibilities:
 
-- Admin reports, revenue charts, and metrics.
-- Booking/rental management tables.
+- DB-backed admin reports, revenue charts, and metrics.
+- Booking/rental management tables with search, filters, edit, delete, and CSV export.
 
 ## Heng Ownership
 

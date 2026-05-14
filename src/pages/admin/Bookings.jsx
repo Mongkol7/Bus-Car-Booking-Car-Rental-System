@@ -1,215 +1,330 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Icon, icons, getCompanyMeta } from '../../utils/sharedAdmin';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { busFleet, carModels } from '../../data/transportData';
-import Footer from '../../components/Footer';
-import { Icon, icons, NAV, companyMeta, getCompanyMeta } from '../../utils/sharedAdmin';
+const STATUS_TABS = ['all', 'pending', 'confirmed', 'completed', 'cancelled'];
+const PAYMENT_METHODS = ['aba', 'khqr', 'cash'];
+const EMPTY_FORM = {
+  seat_number: '',
+  total_price: '',
+  payment_method: 'aba',
+  status: 'pending'
+};
 
-export default // ── BOOKINGS ──────────────────────────────────────────────────────────────────
-function Bookings() {
-  const [filter, setFilter] = useState('All');
-  const all = [{
-    id: '#B-4821',
-    user: 'Sophea Chan',
-    route: 'PP → SR',
-    seat: 'A12',
-    date: 'Apr 5',
-    paid: '$12',
-    payment: 'ABA',
-    email: 'sophea@gmail.com',
-    phone: '+855 12 345 678',
-    vehicle: 'Mekong Express',
-    status: 'Confirmed'
-  }, {
-    id: '#B-4820',
-    user: 'Dara Meas',
-    route: 'SR → KP',
-    seat: 'B7',
-    date: 'Apr 5',
-    paid: '$9',
-    payment: 'KHQR',
-    email: 'dara.meas@gmail.com',
-    phone: '+855 92 301 774',
-    vehicle: 'Sorya Bus',
-    status: 'Pending'
-  }, {
-    id: '#B-4819',
-    user: 'Lina Keo',
-    route: 'PP → KP',
-    seat: 'C3',
-    date: 'Apr 6',
-    paid: '$15',
-    payment: 'Cash',
-    email: 'lina.keo@gmail.com',
-    phone: '+855 98 112 990',
-    vehicle: 'Giant Ibis',
-    status: 'Confirmed'
-  }, {
-    id: '#B-4818',
-    user: 'Vuthy Sok',
-    route: 'KP → PP',
-    seat: 'A1',
-    date: 'Apr 4',
-    paid: '$12',
-    payment: 'ABA',
-    email: 'vuthy.sok@gmail.com',
-    phone: '+855 10 553 221',
-    vehicle: 'Larryta Express',
-    status: 'Cancelled'
-  }, {
-    id: '#B-4817',
-    user: 'Bopha Ros',
-    route: 'PP → KC',
-    seat: 'D9',
-    date: 'Apr 5',
-    paid: '$8',
-    payment: 'KHQR',
-    email: 'bopha.ros@gmail.com',
-    phone: '+855 15 774 991',
-    vehicle: 'Capitol Tours',
-    status: 'Confirmed'
-  }, {
-    id: '#B-4816',
-    user: 'Rathana Em',
-    route: 'PP → SR',
-    seat: 'B5',
-    date: 'Apr 6',
-    paid: '$12',
-    payment: 'ABA',
-    email: 'rathana.em@gmail.com',
-    phone: '+855 11 223 998',
-    vehicle: 'Sorya Bus',
-    status: 'Pending'
-  }];
-  const tabs = ['All', 'Confirmed', 'Pending', 'Cancelled'];
-  const shown = filter === 'All' ? all : all.filter(b => b.status === filter);
-  return <div>
-      <div className="page-header observe-animate" style={{
-      display: 'flex',
-      alignItems: 'flex-start',
-      justifyContent: 'space-between'
-    }}>
+async function parseJsonResponse(response) {
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Request failed.');
+  return data;
+}
+
+function formatMoney(value) {
+  return `$${Number(value || 0).toFixed(2)}`;
+}
+
+function formatDateTime(value) {
+  if (!value) return 'Not set';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not set';
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function statusBadge(status) {
+  if (status === 'confirmed' || status === 'completed') return 'badge-green';
+  if (status === 'pending') return 'badge-amber';
+  return 'badge-red';
+}
+
+function exportCsv(rows) {
+  const headers = ['ID', 'User', 'Email', 'Phone', 'Route', 'Seat', 'Date', 'Paid', 'Payment', 'Status'];
+  const body = rows.map((booking) => [
+    booking.id,
+    booking.user_name,
+    booking.email,
+    booking.phone,
+    `${booking.origin} -> ${booking.destination}`,
+    booking.seat_number,
+    formatDateTime(booking.created_at),
+    Number(booking.total_price || 0).toFixed(2),
+    booking.payment_method,
+    booking.status
+  ]);
+  const csv = [headers, ...body]
+    .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'admin-bookings.csv';
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function BookingModal({ form, error, saving, onChange, onSubmit, onClose }) {
+  return (
+    <div className="modal-overlay">
+      <div className="modal-card" style={{ maxWidth: 560 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
+          <div>
+            <div className="modal-title">Edit booking</div>
+            <div className="modal-sub">Update seat, payment, and status</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>
+            <Icon d={icons.x} size={12} />
+          </button>
+        </div>
+        {error ? (
+          <div style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 8, color: 'var(--red)', background: 'var(--red-soft)' }}>
+            {error}
+          </div>
+        ) : null}
+        <div className="form-row">
+          <input name="seat_number" placeholder="Seat number" value={form.seat_number} onChange={onChange} />
+          <input name="total_price" type="number" min="0" step="0.01" placeholder="Total price" value={form.total_price} onChange={onChange} />
+        </div>
+        <div className="form-row">
+          <select name="payment_method" value={form.payment_method} onChange={onChange}>
+            {PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method.toUpperCase()}</option>)}
+          </select>
+          <select name="status" value={form.status} onChange={onChange}>
+            {STATUS_TABS.filter((status) => status !== 'all').map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
+        </div>
+        <div className="modal-btns" style={{ marginTop: 18 }}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-primary" onClick={onSubmit} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteModal({ booking, deleting, onCancel, onConfirm }) {
+  if (!booking) return null;
+  return (
+    <div className="modal-overlay">
+      <div className="modal-card" style={{ maxWidth: 440 }}>
+        <div className="modal-title">Delete booking?</div>
+        <div className="modal-sub" style={{ marginBottom: 18 }}>
+          Booking #{booking.id} will be removed from the database.
+        </div>
+        <div className="modal-btns">
+          <button className="btn btn-ghost" onClick={onCancel} disabled={deleting}>Cancel</button>
+          <button className="btn btn-danger" onClick={onConfirm} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function Bookings() {
+  const [bookings, setBookings] = useState([]);
+  const [filter, setFilter] = useState('all');
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [pageError, setPageError] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [formError, setFormError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [deletingBooking, setDeletingBooking] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    loadBookings();
+  }, []);
+
+  async function loadBookings(showSpinner = true) {
+    if (showSpinner) setLoading(true);
+    try {
+      setPageError('');
+      const data = await parseJsonResponse(await fetch('/api/admin/bookings'));
+      setBookings(data.bookings || []);
+    } catch (error) {
+      setPageError(error.message || 'Unable to load bookings.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const shown = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return bookings.filter((booking) => {
+      const matchesStatus = filter === 'all' || booking.status === filter;
+      const haystack = [
+        booking.id,
+        booking.user_name,
+        booking.email,
+        booking.phone,
+        booking.origin,
+        booking.destination,
+        booking.seat_number,
+        booking.company_name,
+        booking.payment_method
+      ].filter(Boolean).join(' ').toLowerCase();
+      return matchesStatus && (!normalized || haystack.includes(normalized));
+    });
+  }, [bookings, filter, query]);
+
+  function openEdit(booking) {
+    setEditing(booking);
+    setForm({
+      seat_number: booking.seat_number || '',
+      total_price: String(booking.total_price || ''),
+      payment_method: booking.payment_method || 'aba',
+      status: booking.status || 'pending'
+    });
+    setFormError('');
+  }
+
+  function closeEdit() {
+    if (saving) return;
+    setEditing(null);
+    setForm(EMPTY_FORM);
+    setFormError('');
+  }
+
+  function handleChange(event) {
+    const { name, value } = event.target;
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function saveBooking() {
+    if (!editing) return;
+    setSaving(true);
+    setFormError('');
+    try {
+      await parseJsonResponse(
+        await fetch(`/api/admin/bookings/${editing.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(form)
+        })
+      );
+      setEditing(null);
+      setForm(EMPTY_FORM);
+      setFormError('');
+      await loadBookings(false);
+    } catch (error) {
+      setFormError(error.message || 'Unable to save booking.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteBooking() {
+    if (!deletingBooking) return;
+    setDeleting(true);
+    setPageError('');
+    try {
+      await parseJsonResponse(await fetch(`/api/admin/bookings/${deletingBooking.id}`, { method: 'DELETE' }));
+      setDeletingBooking(null);
+      await loadBookings(false);
+    } catch (error) {
+      setPageError(error.message || 'Unable to delete booking.');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="page-header observe-animate" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div>
           <div className="page-title">Bookings</div>
           <div className="page-sub">View and manage all seat bookings</div>
         </div>
-        <button className="btn btn-ghost btn-sm">
-          <Icon d={icons.download} size={13} /> Export
+        <button className="btn btn-ghost btn-sm" onClick={() => exportCsv(shown)}>
+          <Icon d={icons.download} size={13} /> Export CSV
         </button>
       </div>
-      <div className="pill-nav observe-animate">
-        {tabs.map(t => <div key={t} className={`pill-tab ${filter === t ? 'active' : ''}`} onClick={() => setFilter(t)}>
-            {t}
-          </div>)}
-      </div>
-      <div className="card observe-animate">
-        <div className="toolbar">
-          <div className="input-wrap" style={{
-          width: 240
-        }}>
-            <span className="search-icon">
-              <Icon d={icons.search} size={13} />
-            </span>
-            <input className="search-input" placeholder="Search by user or booking ID…" />
-          </div>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>User</th>
-                <th>Contact</th>
-                <th>Route</th>
-                <th>Seat</th>
-                <th>Date</th>
-                <th>Paid</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map(b => <tr key={b.id}>
-                  <td style={{
-                color: 'var(--accent)',
-                fontSize: 12
-              }}>
-                    {b.id}
-                  </td>
-                  <td style={{
-                fontWeight: 500
-              }}>{b.user}</td>
-                  <td>
-                    <div style={{
-                  fontSize: 12
-                }}>{b.email}</div>
-                    <div style={{
-                  fontSize: 11,
-                  color: 'var(--text-3)'
-                }}>
-                      {b.phone}
-                    </div>
-                  </td>
-                  <td>
-                    <div className="td-muted">{b.route}</div>
-                    <div style={{
-                  fontSize: 11,
-                  color: 'var(--text-3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6
-                }}>
-                      <span style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: '50%',
-                    background: getCompanyMeta(b.vehicle).color
-                  }} />
-                      <span style={{
-                    color: getCompanyMeta(b.vehicle).color
-                  }}>
-                        {b.vehicle}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="td-muted">{b.seat}</td>
-                  <td className="td-muted">{b.date}</td>
-                  <td style={{
-                color: 'var(--green)',
-                fontWeight: 500
-              }}>
-                    {b.paid}
-                    <div style={{
-                  fontSize: 11,
-                  color: 'var(--text-3)'
-                }}>{b.payment}</div>
-                  </td>
-                  <td>
-                    <span className={`badge ${b.status === 'Confirmed' ? 'badge-green' : b.status === 'Pending' ? 'badge-amber' : 'badge-red'}`}>
-                      {b.status}
-                    </span>
-                  </td>
-                  <td>
-                    <div style={{
-                  display: 'flex',
-                  gap: 5
-                }}>
-                      {b.status === 'Pending' && <button className="btn btn-ghost btn-sm" style={{
-                    color: 'var(--green)',
-                    borderColor: 'rgba(52,211,153,0.2)'
-                  }}>
-                          <Icon d={icons.check} size={12} color="var(--green)" />
-                        </button>}
-                      <button className="btn btn-danger btn-sm">
-                        <Icon d={icons.x} size={12} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>)}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>;
-}
 
-// ── RENTALS ───────────────────────────────────────────────────────────────────
+      {pageError ? <div className="observe-animate" style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 8, color: 'var(--red)', background: 'var(--red-soft)' }}>{pageError}</div> : null}
+
+      <div className="pill-nav observe-animate" style={{ justifyContent: 'space-between', width: '100%', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {STATUS_TABS.map((status) => (
+            <div key={status} className={`pill-tab ${filter === status ? 'active' : ''}`} onClick={() => setFilter(status)}>
+              {status === 'all' ? 'All' : status}
+            </div>
+          ))}
+        </div>
+        <div className="input-wrap" style={{ minWidth: 240, width: '34%' }}>
+          <span className="search-icon"><Icon d={icons.search} size={13} /></span>
+          <input className="search-input" placeholder="Search user, route, booking ID" value={query} onChange={(event) => setQuery(event.target.value)} />
+        </div>
+      </div>
+
+      <div className="card observe-animate">
+        {loading ? (
+          <div className="sec-sub">Loading bookings...</div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>User</th>
+                  <th>Contact</th>
+                  <th>Route</th>
+                  <th>Seat</th>
+                  <th>Date</th>
+                  <th>Paid</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((booking) => {
+                  const companyColor = booking.color || getCompanyMeta(booking.company_name).color;
+                  return (
+                    <tr key={booking.id}>
+                      <td style={{ color: 'var(--accent)', fontSize: 12 }}>#{booking.id}</td>
+                      <td style={{ fontWeight: 500 }}>{booking.user_name}</td>
+                      <td>
+                        <div style={{ fontSize: 12 }}>{booking.email}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{booking.phone}</div>
+                      </td>
+                      <td>
+                        <div className="td-muted">{booking.origin} to {booking.destination}</div>
+                        <div style={{ fontSize: 11, color: companyColor, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ width: 7, height: 7, borderRadius: '50%', background: companyColor }} />
+                          {booking.company_name || booking.bus_name}
+                        </div>
+                      </td>
+                      <td className="td-muted">{booking.seat_number}</td>
+                      <td className="td-muted">{formatDateTime(booking.created_at)}</td>
+                      <td style={{ color: 'var(--green)', fontWeight: 500 }}>
+                        {formatMoney(booking.total_price)}
+                        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{String(booking.payment_method || '').toUpperCase()}</div>
+                      </td>
+                      <td><span className={`badge ${statusBadge(booking.status)}`}>{booking.status}</span></td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 5 }}>
+                          <button className="btn btn-ghost btn-sm" onClick={() => openEdit(booking)}><Icon d={icons.edit} size={12} /></button>
+                          <button className="btn btn-danger btn-sm" onClick={() => setDeletingBooking(booking)}><Icon d={icons.trash} size={12} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!shown.length && (
+                  <tr><td colSpan={9} className="td-muted" style={{ padding: 18 }}>No bookings found.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {editing ? (
+        <BookingModal form={form} error={formError} saving={saving} onChange={handleChange} onSubmit={saveBooking} onClose={closeEdit} />
+      ) : null}
+      <DeleteModal booking={deletingBooking} deleting={deleting} onCancel={() => setDeletingBooking(null)} onConfirm={deleteBooking} />
+    </div>
+  );
+}

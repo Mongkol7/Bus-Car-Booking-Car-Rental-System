@@ -1,358 +1,239 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Icon, icons, getCompanyMeta } from '../../utils/sharedAdmin';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { busFleet, carModels } from '../../data/transportData';
-import Footer from '../../components/Footer';
-import { Icon, icons, NAV, companyMeta, getCompanyMeta } from '../../utils/sharedAdmin';
+function currentMonthKey() {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
 
-export default // ── REPORTS ───────────────────────────────────────────────────────────────────
-function Reports() {
-  const days = ['Apr 1', 'Apr 2', 'Apr 3', 'Apr 4', 'Apr 5', 'Apr 6', 'Apr 7', 'Apr 8', 'Apr 9', 'Apr 10', 'Apr 11', 'Apr 12'];
-  const bookingDaily = [420, 510, 460, 620, 580, 740, 520, 810, 590, 690, 730, 860];
-  const rentalDaily = [180, 240, 210, 310, 280, 390, 260, 430, 300, 360, 410, 470];
-  const maxBooking = Math.max(...bookingDaily);
-  const maxRental = Math.max(...rentalDaily);
-  return <div>
-      <div className="page-header observe-animate" style={{
-      display: 'flex',
-      alignItems: 'flex-start',
-      justifyContent: 'space-between'
-    }}>
+function monthOptions() {
+  const now = new Date();
+  return Array.from({ length: 8 }, (_, index) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - index, 1);
+    const value = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    return {
+      value,
+      label: date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    };
+  });
+}
+
+async function parseJsonResponse(response) {
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Request failed.');
+  return data;
+}
+
+function formatMoney(value) {
+  return `$${Number(value || 0).toFixed(2)}`;
+}
+
+function percent(value, max) {
+  if (!max) return 0;
+  return Math.max(4, Math.round((Number(value || 0) / max) * 100));
+}
+
+function exportReportCsv(report) {
+  const rows = [
+    ['Metric', 'Value'],
+    ['Total revenue', report.metrics?.total_revenue || 0],
+    ['Booking revenue', report.metrics?.booking_revenue || 0],
+    ['Rental revenue', report.metrics?.rental_revenue || 0],
+    ['Transactions', report.metrics?.transactions || 0],
+    [],
+    ['Date', 'Booking revenue', 'Rental revenue'],
+    ...(report.daily || []).map((day) => [day.date, day.booking_revenue, day.rental_revenue])
+  ];
+  const csv = rows
+    .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `admin-report-${report.month || 'month'}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function ProgressList({ title, rows, getLabel, getValue, getColor }) {
+  const max = Math.max(0, ...rows.map((row) => Number(getValue(row) || 0)));
+  return (
+    <div className="card observe-animate">
+      <div className="sec-title">{title}</div>
+      {rows.length ? rows.map((row, index) => {
+        const color = getColor ? getColor(row) : 'var(--accent)';
+        return (
+          <div key={`${title}-${index}`} style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 12 }}>
+              <span style={{ fontSize: 12, color, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
+                {getLabel(row)}
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 500 }}>{getValue(row)}</span>
+            </div>
+            <div className="prog-track">
+              <div className="prog-fill" style={{ width: `${percent(getValue(row), max)}%`, background: color }} />
+            </div>
+          </div>
+        );
+      }) : <div className="td-muted">No data for this month.</div>}
+    </div>
+  );
+}
+
+export default function Reports() {
+  const [month, setMonth] = useState(currentMonthKey());
+  const [report, setReport] = useState({
+    metrics: {},
+    daily: [],
+    top_routes: [],
+    top_cars: [],
+    top_companies: [],
+    top_customers: [],
+    payment_mix: []
+  });
+  const [loading, setLoading] = useState(true);
+  const [pageError, setPageError] = useState('');
+
+  useEffect(() => {
+    loadReport();
+  }, [month]);
+
+  async function loadReport() {
+    setLoading(true);
+    try {
+      setPageError('');
+      const data = await parseJsonResponse(await fetch(`/api/admin/reports?month=${month}`));
+      setReport(data);
+    } catch (error) {
+      setPageError(error.message || 'Unable to load reports.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const maxBooking = useMemo(() => Math.max(0, ...(report.daily || []).map((day) => Number(day.booking_revenue || 0))), [report.daily]);
+  const maxRental = useMemo(() => Math.max(0, ...(report.daily || []).map((day) => Number(day.rental_revenue || 0))), [report.daily]);
+  const paymentTotal = (report.payment_mix || []).reduce((sum, item) => sum + Number(item.count || 0), 0);
+
+  return (
+    <div>
+      <div className="page-header observe-animate" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div>
           <div className="page-title">Reports</div>
           <div className="page-sub">Revenue and usage analytics</div>
         </div>
-        <div style={{
-        display: 'flex',
-        gap: 8,
-        alignItems: 'center'
-      }}>
-          <select style={{
-          width: 130,
-          fontSize: 12
-        }}>
-            <option>April 2026</option>
-            <option>March 2026</option>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <select style={{ width: 160, fontSize: 12 }} value={month} onChange={(event) => setMonth(event.target.value)}>
+            {monthOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
-          <button className="btn btn-ghost btn-sm">
+          <button className="btn btn-ghost btn-sm" onClick={() => exportReportCsv(report)}>
             <Icon d={icons.download} size={13} /> Export CSV
           </button>
         </div>
       </div>
+
+      {pageError ? <div className="observe-animate" style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 8, color: 'var(--red)', background: 'var(--red-soft)' }}>{pageError}</div> : null}
+
       <div className="metrics observe-animate">
-        {[{
-        label: 'Total revenue',
-        val: '$9,420',
-        sub: 'Apr 2026',
-        color: 'var(--accent)'
-      }, {
-        label: 'Booking revenue',
-        val: '$5,184',
-        sub: 'from bus seats',
-        color: 'var(--green)'
-      }, {
-        label: 'Rental revenue',
-        val: '$4,236',
-        sub: 'from car rentals',
-        color: 'var(--purple)'
-      }, {
-        label: 'Transactions',
-        val: '847',
-        sub: 'completed payments',
-        color: 'var(--amber)'
-      }].map(m => <div key={m.label} className="metric-card">
-            <div className="metric-label">{m.label}</div>
-            <div className="metric-val" style={{
-          color: m.color
-        }}>
-              {m.val}
-            </div>
-            <div className="metric-sub">{m.sub}</div>
-          </div>)}
+        {[
+          { label: 'Total revenue', val: formatMoney(report.metrics?.total_revenue), sub: report.month || month, color: 'var(--accent)' },
+          { label: 'Booking revenue', val: formatMoney(report.metrics?.booking_revenue), sub: 'from bus seats', color: 'var(--green)' },
+          { label: 'Rental revenue', val: formatMoney(report.metrics?.rental_revenue), sub: 'from car rentals', color: 'var(--purple)' },
+          { label: 'Transactions', val: report.metrics?.transactions || 0, sub: 'non-cancelled records', color: 'var(--amber)' }
+        ].map((metric) => (
+          <div key={metric.label} className="metric-card">
+            <div className="metric-label">{metric.label}</div>
+            <div className="metric-val" style={{ color: metric.color }}>{loading ? '...' : metric.val}</div>
+            <div className="metric-sub">{metric.sub}</div>
+          </div>
+        ))}
       </div>
+
       <div className="grid2">
         <div className="card observe-animate">
-          <div className="sec-title">Booking revenue — daily</div>
-          <div className="chart-row chart-animate observe-animate" style={{
-          height: 60
-        }}>
-            {bookingDaily.map((val, i) => <div key={i} className={`bar ${i === bookingDaily.length - 1 ? 'lit' : ''}`} style={{
-            '--bar-h': `${Math.round(val / maxBooking * 100)}%`
-          }} title={`${days[i]} • $${val}`} />)}
-          </div>
-          <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          marginTop: 8
-        }}>
-            <span style={{
-            fontSize: 11,
-            color: 'var(--text-3)'
-          }}>Apr 1</span>
-            <span style={{
-            fontSize: 11,
-            color: 'var(--text-3)'
-          }}>Apr 12</span>
-          </div>
+          <div className="sec-title">Booking revenue - daily</div>
+          {loading ? <div className="sec-sub">Loading chart...</div> : (
+            <>
+              <div className="chart-row chart-animate observe-animate" style={{ height: 60 }}>
+                {(report.daily || []).map((day, index) => (
+                  <div key={day.date} className={`bar ${index === report.daily.length - 1 ? 'lit' : ''}`} style={{ '--bar-h': `${percent(day.booking_revenue, maxBooking)}%` }} title={`${day.label} • ${formatMoney(day.booking_revenue)}`} />
+                ))}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{report.daily?.[0]?.label || 'No data'}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{report.daily?.[report.daily.length - 1]?.label || ''}</span>
+              </div>
+            </>
+          )}
         </div>
         <div className="card observe-animate">
-          <div className="sec-title">Rental revenue — daily</div>
-          <div className="chart-row chart-animate observe-animate" style={{
-          height: 60
-        }}>
-            {rentalDaily.map((val, i) => <div key={i} className={`bar ${i === rentalDaily.length - 1 ? 'lit' : ''}`} style={{
-            '--bar-h': `${Math.round(val / maxRental * 100)}%`,
-            background: 'var(--purple-soft)',
-            borderColor: 'rgba(167,139,250,0.35)'
-          }} title={`${days[i]} • $${val}`} />)}
-          </div>
-          <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          marginTop: 8
-        }}>
-            <span style={{
-            fontSize: 11,
-            color: 'var(--text-3)'
-          }}>Apr 1</span>
-            <span style={{
-            fontSize: 11,
-            color: 'var(--text-3)'
-          }}>Apr 12</span>
-          </div>
+          <div className="sec-title">Rental revenue - daily</div>
+          {loading ? <div className="sec-sub">Loading chart...</div> : (
+            <>
+              <div className="chart-row chart-animate observe-animate" style={{ height: 60 }}>
+                {(report.daily || []).map((day, index) => (
+                  <div key={day.date} className={`bar ${index === report.daily.length - 1 ? 'lit' : ''}`} style={{ '--bar-h': `${percent(day.rental_revenue, maxRental)}%`, background: 'var(--purple-soft)', borderColor: 'rgba(167,139,250,0.35)' }} title={`${day.label} • ${formatMoney(day.rental_revenue)}`} />
+                ))}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{report.daily?.[0]?.label || 'No data'}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{report.daily?.[report.daily.length - 1]?.label || ''}</span>
+              </div>
+            </>
+          )}
         </div>
       </div>
-      <div className="grid2" style={{
-      marginTop: 16
-    }}>
-        <div className="card observe-animate">
-          <div className="sec-title">Top routes by bookings</div>
-          {[{
-          route: 'Phnom Penh → Siem Reap',
-          count: 342,
-          pct: 100
-        }, {
-          route: 'Phnom Penh → Kampot',
-          count: 214,
-          pct: 63
-        }, {
-          route: 'Phnom Penh → Kampong Cham',
-          count: 178,
-          pct: 52
-        }, {
-          route: 'Siem Reap → Kampong Thom',
-          count: 113,
-          pct: 33
-        }].map(r => <div key={r.route} style={{
-          marginBottom: 12
-        }}>
-              <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            marginBottom: 4
-          }}>
-                <span style={{
-              fontSize: 12,
-              color: 'var(--text-2)'
-            }}>
-                  {r.route}
-                </span>
-                <span style={{
-              fontSize: 12,
-              fontWeight: 500
-            }}>{r.count}</span>
-              </div>
-              <div className="prog-track">
-                <div className="prog-fill" style={{
-              width: `${r.pct}%`
-            }} />
-              </div>
-            </div>)}
-        </div>
-        <div className="card observe-animate">
-          <div className="sec-title">Top rental cars by bookings</div>
-          {[{
-          car: 'Toyota Camry',
-          count: 28,
-          pct: 100,
-          color: 'var(--green)'
-        }, {
-          car: 'Honda CRV',
-          count: 22,
-          pct: 79,
-          color: 'var(--green)'
-        }, {
-          car: 'Lexus RX',
-          count: 18,
-          pct: 64,
-          color: 'var(--green)'
-        }, {
-          car: 'Kia Sportage',
-          count: 14,
-          pct: 50,
-          color: 'var(--green)'
-        }].map(r => <div key={r.car} style={{
-          marginBottom: 12
-        }}>
-              <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            marginBottom: 4
-          }}>
-                <span style={{
-              fontSize: 12,
-              color: 'var(--text-2)'
-            }}>
-                  {r.car}
-                </span>
-                <span style={{
-              fontSize: 12,
-              fontWeight: 500
-            }}>
-                  {r.count} rentals
-                </span>
-              </div>
-              <div className="prog-track">
-                <div className="prog-fill" style={{
-              width: `${r.pct}%`,
-              background: r.color
-            }} />
-              </div>
-            </div>)}
-        </div>
-        <div className="card observe-animate">
-          <div className="sec-title">Top booking bus companies</div>
-          {[{
-          name: 'Mekong Express',
-          count: 420,
-          pct: 100
-        }, {
-          name: 'Sorya Bus',
-          count: 310,
-          pct: 74
-        }, {
-          name: 'Giant Ibis',
-          count: 240,
-          pct: 57
-        }, {
-          name: 'Larryta Express',
-          count: 180,
-          pct: 43
-        }].map(c => <div key={c.name} style={{
-          marginBottom: 12
-        }}>
-              <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            marginBottom: 4
-          }}>
-                <span style={{
-              fontSize: 12,
-              color: getCompanyMeta(c.name).color,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6
-            }}>
-                  <span style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                background: getCompanyMeta(c.name).color
-              }} />
-                  {c.name}
-                </span>
-                <span style={{
-              fontSize: 12,
-              fontWeight: 500
-            }}>
-                  {c.count}
-                </span>
-              </div>
-              <div className="prog-track">
-                <div className="prog-fill" style={{
-              width: `${c.pct}%`,
-              background: getCompanyMeta(c.name).color
-            }} />
-              </div>
-            </div>)}
-        </div>
-      
-        <div className="card observe-animate">
-          <div className="sec-title">Top customers by spend</div>
-          {[{
-          name: 'Sophea Chan',
-          spend: '$420',
-          trips: 12
-        }, {
-          name: 'Dara Meas',
-          spend: '$310',
-          trips: 9
-        }, {
-          name: 'Lina Keo',
-          spend: '$255',
-          trips: 7
-        }, {
-          name: 'Makara Phy',
-          spend: '$210',
-          trips: 6
-        }].map(u => <div key={u.name} className="stat-row">
-              <div>
-                <div style={{
-              fontSize: 13,
-              fontWeight: 500
-            }}>{u.name}</div>
-                <div style={{
-              fontSize: 11,
-              color: 'var(--text-3)'
-            }}>
-                  {u.trips} trips
-                </div>
-              </div>
-              <span className="stat-val">{u.spend}</span>
-            </div>)}
-        </div>
+
+      <div className="grid2" style={{ marginTop: 16 }}>
+        <ProgressList
+          title="Top routes by bookings"
+          rows={report.top_routes || []}
+          getLabel={(row) => `${row.origin} -> ${row.destination}`}
+          getValue={(row) => Number(row.count || 0)}
+          getColor={() => 'var(--accent)'}
+        />
+        <ProgressList
+          title="Top rental cars by bookings"
+          rows={report.top_cars || []}
+          getLabel={(row) => row.name}
+          getValue={(row) => Number(row.count || 0)}
+          getColor={() => 'var(--green)'}
+        />
+        <ProgressList
+          title="Top booking bus companies"
+          rows={report.top_companies || []}
+          getLabel={(row) => row.name || 'Unassigned company'}
+          getValue={(row) => Number(row.count || 0)}
+          getColor={(row) => row.color || getCompanyMeta(row.name).color}
+        />
+        <ProgressList
+          title="Top customers by spend"
+          rows={report.top_customers || []}
+          getLabel={(row) => row.user_name}
+          getValue={(row) => Number(row.spend || 0)}
+          getColor={() => 'var(--purple)'}
+        />
         <div className="card observe-animate">
           <div className="sec-title">Payment mix</div>
-          {[{
-          label: 'ABA',
-          pct: 48,
-          color: 'var(--accent)'
-        }, {
-          label: 'KHQR',
-          pct: 34,
-          color: 'var(--green)'
-        }, {
-          label: 'Cash',
-          pct: 18,
-          color: 'var(--amber)'
-        }].map(p => <div key={p.label} style={{
-          marginBottom: 12
-        }}>
-              <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            marginBottom: 4
-          }}>
-                <span style={{
-              fontSize: 12,
-              color: 'var(--text-2)'
-            }}>
-                  {p.label}
-                </span>
-                <span style={{
-              fontSize: 12,
-              fontWeight: 500
-            }}>{p.pct}%</span>
+          {(report.payment_mix || []).length ? report.payment_mix.map((payment) => {
+            const pct = paymentTotal ? Math.round((Number(payment.count || 0) / paymentTotal) * 100) : 0;
+            const color = payment.payment_method === 'aba' ? 'var(--accent)' : payment.payment_method === 'khqr' ? 'var(--green)' : 'var(--amber)';
+            return (
+              <div key={payment.payment_method || 'unknown'} style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{String(payment.payment_method || 'unknown').toUpperCase()}</span>
+                  <span style={{ fontSize: 12, fontWeight: 500 }}>{pct}%</span>
+                </div>
+                <div className="prog-track">
+                  <div className="prog-fill" style={{ width: `${pct}%`, background: color }} />
+                </div>
               </div>
-              <div className="prog-track">
-                <div className="prog-fill" style={{
-              width: `${p.pct}%`,
-              background: p.color
-            }} />
-              </div>
-            </div>)}
+            );
+          }) : <div className="td-muted">No payments for this month.</div>}
         </div>
       </div>
-    </div>;
+    </div>
+  );
 }
-
-// ── CUSTOMERS ────────────────────────────────────────────────────────────────
