@@ -1,16 +1,9 @@
+import React from "react";
 
-import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { carModels } from '../../data/transportData';
-import Footer from '../../components/Footer';
-import { Icon, icons, setupScrollReveal, NAV, companyMeta, getCompanyMeta } from '../../utils/sharedUser';
-
-export default function AuthModal({
-  onConfirm,
-  onClose
-}) {
-  return <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={e => e.stopPropagation()}>
+export default function AuthModal({ onConfirm, onClose }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-icon">🔐</div>
         <div className="modal-title">Sign in required</div>
         <div className="modal-text">
@@ -26,5 +19,6 @@ export default function AuthModal({
           </button>
         </div>
       </div>
-    </div>;
+    </div>
+  );
 }

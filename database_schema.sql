@@ -64,6 +64,7 @@ CREATE TABLE rental_cars (
     owner_id INT REFERENCES users(id) ON DELETE SET NULL, -- Allow peer-to-peer rental
     name VARCHAR(150) NOT NULL,
     type VARCHAR(50) NOT NULL, -- 'SUV', 'Sedan'
+    location VARCHAR(150) NOT NULL DEFAULT 'Phnom Penh, Cambodia',
     plate_number VARCHAR(20) UNIQUE,
     total_seats INT NOT NULL,
     transmission VARCHAR(20), -- 'Auto', 'Manual'

@@ -23,12 +23,12 @@ INSERT INTO buses (company_id, name, type, plate_number, total_seats, status) VA
 ON CONFLICT (plate_number) DO NOTHING;
 
 -- 3. SEED CAR RENTALS
-INSERT INTO rental_cars (name, type, plate_number, total_seats, transmission, daily_rate, status, photos) VALUES
-('Toyota Camry', 'Sedan', 'PP-1122', 5, 'Auto', 45.00, 'available', ARRAY['https://images.unsplash.com/photo-1621007947382-bb3c3994e3fd?auto=format&fit=crop&w=800&q=80', 'https://images.unsplash.com/photo-1550130983-4a11ccf2bbbb?auto=format&fit=crop&w=800&q=80']),
-('Honda CRV', 'SUV', 'PP-3344', 7, 'Auto', 65.00, 'rented', ARRAY['https://images.unsplash.com/photo-1568844293986-8d0400ba4715?auto=format&fit=crop&w=800&q=80']),
-('Ford Ranger', 'Pickup', 'PP-5566', 5, 'Manual', 55.00, 'available', ARRAY['https://images.unsplash.com/photo-1559416523-140ddc3d238c?auto=format&fit=crop&w=800&q=80']),
-('Lexus RX330', 'Luxury SUV', 'PP-7788', 5, 'Auto', 85.00, 'maintenance', ARRAY['https://images.unsplash.com/photo-1553440569-bcc63803a83d?auto=format&fit=crop&w=800&q=80']),
-('Toyota Prius', 'Hybrid Sedan', 'PP-9900', 5, 'Auto', 40.00, 'available', ARRAY['https://images.unsplash.com/photo-1550130983-4a11ccf2bbbb?auto=format&fit=crop&w=800&q=80'])
+INSERT INTO rental_cars (name, type, location, plate_number, total_seats, transmission, daily_rate, status, photos) VALUES
+('Toyota Camry', 'Sedan', 'Phnom Penh, Cambodia', 'PP-1122', 5, 'Auto', 45.00, 'available', ARRAY['https://images.unsplash.com/photo-1621007947382-bb3c3994e3fd?auto=format&fit=crop&w=800&q=80', 'https://images.unsplash.com/photo-1550130983-4a11ccf2bbbb?auto=format&fit=crop&w=800&q=80']),
+('Honda CRV', 'SUV', 'Phnom Penh, Cambodia', 'PP-3344', 7, 'Auto', 65.00, 'rented', ARRAY['https://automobiles.honda.com/-/media/Honda-Automobiles/Vehicles/2026/CR-V/Hybrid/OP-Promo-Banner/2026-honda-crv-trailsport-hybrid-radiant-red-metallic-S.jpg?sc_lang=en']),
+('Ford Ranger', 'Pickup', 'Kbal Kaôh, Cambodia', 'PP-5566', 5, 'Manual', 55.00, 'available', ARRAY['https://images.unsplash.com/photo-1559416523-140ddc3d238c?auto=format&fit=crop&w=800&q=80']),
+('Lexus RX330', 'Luxury SUV', 'Siem Reap, Cambodia', 'PP-7788', 5, 'Auto', 85.00, 'maintenance', ARRAY['https://images.unsplash.com/photo-1553440569-bcc63803a83d?auto=format&fit=crop&w=800&q=80']),
+('Toyota Prius', 'Hybrid Sedan', 'Phnom Penh, Cambodia', 'PP-9900', 5, 'Auto', 40.00, 'available', ARRAY['https://images.unsplash.com/photo-1550130983-4a11ccf2bbbb?auto=format&fit=crop&w=800&q=80'])
 ON CONFLICT (plate_number) DO NOTHING;
 
 -- 4. SEED BUS ROUTES

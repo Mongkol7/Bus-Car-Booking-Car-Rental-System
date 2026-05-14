@@ -1,30 +1,24 @@
-const express = require('express');
-const cors = require('cors');
-const { Pool } = require('pg');
-const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
-require('dotenv').config();
+const express = require("express");
+const cors = require("cors");
+const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
+require("dotenv").config();
+const pool = require("./db"); // Import the shared PostgreSQL pool
 
 const app = express();
-const TOKEN_SECRET = process.env.TOKEN_SECRET || 'bookride-dev-secret';
+const TOKEN_SECRET = process.env.TOKEN_SECRET || "bookride-dev-secret";
 
 // Middleware
 app.use(cors()); // Allow frontend to fetch data
 app.use(express.json()); // Allow parsing JSON requests
 
-// PostgreSQL Connection Pool
-const pool = new Pool({
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-});
-
 // Test the connection
-pool.connect()
-  .then(() => console.log('✅ Connected to PostgreSQL Database:', process.env.DB_NAME))
-  .catch(err => console.error('❌ Connection Error:', err.message));
+pool
+  .connect()
+  .then(() =>
+    console.log("✅ Connected to PostgreSQL Database:", process.env.DB_NAME),
+  )
+  .catch((err) => console.error("❌ Connection Error:", err.message));
 
 // ==========================================
 // API ROUTES
@@ -32,36 +26,36 @@ pool.connect()
 
 function toBase64Url(value) {
   return Buffer.from(value)
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '');
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function createAuthToken(user) {
-  const header = toBase64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const header = toBase64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const payload = toBase64Url(
     JSON.stringify({
       sub: user.id,
       email: user.email,
       role: user.role,
       iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7
-    })
+      exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
+    }),
   );
   const signature = crypto
-    .createHmac('sha256', TOKEN_SECRET)
+    .createHmac("sha256", TOKEN_SECRET)
     .update(`${header}.${payload}`)
-    .digest('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '');
+    .digest("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 
   return `${header}.${payload}.${signature}`;
 }
 
 function hashToken(token) {
-  return crypto.createHash('sha256').update(token).digest('hex');
+  return crypto.createHash("sha256").update(token).digest("hex");
 }
 
 async function createUserSession(userId, token) {
@@ -69,16 +63,61 @@ async function createUserSession(userId, token) {
   await pool.query(
     `INSERT INTO user_sessions (user_id, token_hash, session_type, expires_at)
      VALUES ($1, $2, $3, $4)`,
-    [userId, hashToken(token), 'access', expiresAt]
+    [userId, hashToken(token), "access", expiresAt],
   );
 }
 
 // 1. Fetch all Rental Cars
-app.get('/api/cars', async (req, res) => {
+app.get("/api/cars", async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT * FROM rental_cars
-    `);
+    const { type, location, pickupDate, returnDate, status, name } = req.query;
+    const conditions = [];
+    const params = [];
+
+    if (type && type !== "All") {
+      params.push(type);
+      conditions.push(`type = $${params.length}`);
+    }
+
+    if (location && location !== "All") {
+      params.push(location);
+      conditions.push(`location = $${params.length}`);
+    }
+
+    if (status && status !== "All") {
+      params.push(status.toLowerCase());
+      conditions.push(`status = $${params.length}`);
+    }
+
+    if (name && name !== "All") {
+      params.push(name);
+      conditions.push(`name = $${params.length}`);
+    }
+
+    if (pickupDate && returnDate) {
+      params.push(pickupDate, returnDate);
+      conditions.push(`
+        NOT EXISTS (
+          SELECT 1
+          FROM car_rentals cr
+          WHERE cr.car_id = rental_cars.id
+            AND cr.status NOT IN ('cancelled', 'returned')
+            AND cr.pickup_date <= $${params.length}
+            AND cr.return_date >= $${params.length - 1}
+        )
+      `);
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM rental_cars
+      ${whereClause}
+      ORDER BY id
+      `,
+      params,
+    );
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -86,7 +125,7 @@ app.get('/api/cars', async (req, res) => {
 });
 
 // 2. Fetch all Bus Routes (For BusSearch.jsx)
-app.get('/api/routes', async (req, res) => {
+app.get("/api/routes", async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT r.*, b.name as vehicle, b.type as vehicle_type, 
@@ -102,8 +141,9 @@ app.get('/api/routes', async (req, res) => {
 });
 
 // 3. Register a User
-app.post('/api/auth/register', async (req, res) => {
-  const { first_name, last_name, email, phone, password, national_id } = req.body;
+app.post("/api/auth/register", async (req, res) => {
+  const { first_name, last_name, email, phone, password, national_id } =
+    req.body;
   try {
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
@@ -111,7 +151,7 @@ app.post('/api/auth/register', async (req, res) => {
     const result = await pool.query(
       `INSERT INTO users (first_name, last_name, email, phone, password_hash, national_id) 
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, first_name, last_name, email, role`,
-      [first_name, last_name, email, phone, password_hash, national_id]
+      [first_name, last_name, email, phone, password_hash, national_id],
     );
     const user = result.rows[0];
     const token = createAuthToken(user);
@@ -123,22 +163,22 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // 4. Login User
-app.post('/api/auth/login', async (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
   try {
     const result = await pool.query(
       `SELECT id, first_name, last_name, email, role, password_hash FROM users WHERE email = $1`,
-      [email]
+      [email],
     );
     if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: "Invalid credentials" });
     }
 
     const user = result.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
-    
+
     if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: "Invalid credentials" });
     }
 
     delete user.password_hash;
@@ -150,12 +190,12 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.post('/api/auth/logout', async (req, res) => {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+app.post("/api/auth/logout", async (req, res) => {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
 
   if (!token) {
-    return res.status(400).json({ error: 'Missing token' });
+    return res.status(400).json({ error: "Missing token" });
   }
 
   try {
@@ -164,25 +204,28 @@ app.post('/api/auth/logout', async (req, res) => {
        SET is_revoked = TRUE
        WHERE token_hash = $1
        RETURNING id`,
-      [hashToken(token)]
+      [hashToken(token)],
     );
 
     if (!result.rowCount) {
-      return res.status(404).json({ error: 'Session not found' });
+      return res.status(404).json({ error: "Session not found" });
     }
 
-    res.json({ message: 'Logged out successfully' });
+    res.json({ message: "Logged out successfully" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // 5. Create a Bus Booking
-app.post('/api/bookings/bus', async (req, res) => {
-  const { user_id, route_id, seat_number, total_price, payment_method } = req.body;
+app.post("/api/bookings/bus", async (req, res) => {
+  const { user_id, route_id, seat_number, total_price, payment_method } =
+    req.body;
   try {
     // Note: This requires inserting into bus_seats and bus_bookings
-    res.status(201).json({ message: 'Booking created successfully', route_id, seat_number });
+    res
+      .status(201)
+      .json({ message: "Booking created successfully", route_id, seat_number });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
