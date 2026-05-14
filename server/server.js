@@ -278,6 +278,7 @@ async function fetchDefaultRoleId(roleName = 'user') {
 const BOOKING_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
 const RENTAL_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled', 'returned'];
 const PAYMENT_METHODS = ['aba', 'khqr', 'cash'];
+const VEHICLE_STATUSES = ['available', 'rented', 'maintenance'];
 
 function normalizeText(value) {
   return String(value || '').trim();
@@ -639,6 +640,217 @@ async function fetchAdminRouteById(routeId) {
   return result.rows[0] || null;
 }
 
+async function fetchAdminVehicles() {
+  const [buses, cars, companies] = await Promise.all([
+    pool.query(
+      `SELECT
+         b.id,
+         b.company_id,
+         b.name,
+         b.type,
+         b.plate_number,
+         b.total_seats,
+         b.status,
+         b.created_at,
+         c.name AS company_name,
+         c.theme_color AS color,
+         c.theme_bg AS bg,
+         COUNT(br.id)::INT AS route_count
+       FROM buses b
+       LEFT JOIN companies c ON c.id = b.company_id
+       LEFT JOIN bus_routes br ON br.bus_id = b.id
+       GROUP BY b.id, c.id
+       ORDER BY c.name NULLS LAST, b.name`
+    ),
+    pool.query(
+      `SELECT
+         rc.id,
+         rc.name,
+         rc.type,
+         rc.plate_number,
+         rc.total_seats,
+         rc.transmission,
+         rc.daily_rate,
+         rc.status,
+         COALESCE(rc.photos, ARRAY[]::TEXT[]) AS photos,
+         rc.created_at,
+         COUNT(cr.id)::INT AS rental_count
+       FROM rental_cars rc
+       LEFT JOIN car_rentals cr ON cr.car_id = rc.id
+       GROUP BY rc.id
+       ORDER BY rc.name`
+    ),
+    pool.query(
+      `SELECT
+         c.id,
+         c.name,
+         c.theme_color,
+         c.theme_bg,
+         c.created_at,
+         COUNT(b.id)::INT AS bus_count
+       FROM companies c
+       LEFT JOIN buses b ON b.company_id = c.id
+       GROUP BY c.id
+       ORDER BY c.name`
+    )
+  ]);
+
+  return { buses: buses.rows, cars: cars.rows, companies: companies.rows };
+}
+
+async function fetchAdminBusById(busId) {
+  const result = await pool.query(
+    `SELECT
+       b.id,
+       b.company_id,
+       b.name,
+       b.type,
+       b.plate_number,
+       b.total_seats,
+       b.status,
+       b.created_at,
+       c.name AS company_name,
+       c.theme_color AS color,
+       c.theme_bg AS bg,
+       COUNT(br.id)::INT AS route_count
+     FROM buses b
+     LEFT JOIN companies c ON c.id = b.company_id
+     LEFT JOIN bus_routes br ON br.bus_id = b.id
+     WHERE b.id = $1
+     GROUP BY b.id, c.id`,
+    [busId]
+  );
+  return result.rows[0] || null;
+}
+
+async function fetchAdminRentalCarById(carId) {
+  const result = await pool.query(
+    `SELECT
+       rc.id,
+       rc.name,
+       rc.type,
+       rc.plate_number,
+       rc.total_seats,
+       rc.transmission,
+       rc.daily_rate,
+       rc.status,
+       COALESCE(rc.photos, ARRAY[]::TEXT[]) AS photos,
+       rc.created_at,
+       COUNT(cr.id)::INT AS rental_count
+     FROM rental_cars rc
+     LEFT JOIN car_rentals cr ON cr.car_id = rc.id
+     WHERE rc.id = $1
+     GROUP BY rc.id`,
+    [carId]
+  );
+  return result.rows[0] || null;
+}
+
+async function fetchAdminCompanyById(companyId) {
+  const result = await pool.query(
+    `SELECT
+       c.id,
+       c.name,
+       c.theme_color,
+       c.theme_bg,
+       c.created_at,
+       COUNT(b.id)::INT AS bus_count
+     FROM companies c
+     LEFT JOIN buses b ON b.company_id = c.id
+     WHERE c.id = $1
+     GROUP BY c.id`,
+    [companyId]
+  );
+  return result.rows[0] || null;
+}
+
+function normalizeBusPayload(body) {
+  const companyId = Number(body.company_id);
+  const name = normalizeText(body.name);
+  const type = normalizeText(body.type);
+  const plateNumber = normalizeText(body.plate_number).toUpperCase();
+  const totalSeats = Number(body.total_seats);
+  const status = normalizeText(body.status).toLowerCase();
+
+  if (!companyId || !name || !type || !plateNumber || !status) {
+    return { error: 'Company, name, type, plate number, seats, and status are required.' };
+  }
+  if (!Number.isInteger(totalSeats) || totalSeats <= 0) {
+    return { error: 'Total seats must be a positive whole number.' };
+  }
+  if (!VEHICLE_STATUSES.includes(status)) {
+    return { error: 'Invalid vehicle status.' };
+  }
+
+  return {
+    value: {
+      company_id: companyId,
+      name,
+      type,
+      plate_number: plateNumber,
+      total_seats: totalSeats,
+      status
+    }
+  };
+}
+
+function normalizeRentalCarPayload(body) {
+  const name = normalizeText(body.name);
+  const type = normalizeText(body.type);
+  const plateNumber = normalizeText(body.plate_number).toUpperCase();
+  const totalSeats = Number(body.total_seats);
+  const transmission = normalizeText(body.transmission);
+  const dailyRate = normalizeMoney(body.daily_rate);
+  const status = normalizeText(body.status).toLowerCase();
+  const photos = Array.isArray(body.photos)
+    ? body.photos.map(normalizeText).filter(Boolean)
+    : String(body.photos || '').split(/\r?\n/).map(normalizeText).filter(Boolean);
+
+  if (!name || !type || !plateNumber || !transmission || !status) {
+    return { error: 'Name, type, plate number, seats, transmission, daily rate, and status are required.' };
+  }
+  if (!Number.isInteger(totalSeats) || totalSeats <= 0) {
+    return { error: 'Total seats must be a positive whole number.' };
+  }
+  if (!Number.isFinite(dailyRate) || dailyRate <= 0) {
+    return { error: 'Daily rate must be greater than zero.' };
+  }
+  if (!VEHICLE_STATUSES.includes(status)) {
+    return { error: 'Invalid vehicle status.' };
+  }
+
+  return {
+    value: {
+      name,
+      type,
+      plate_number: plateNumber,
+      total_seats: totalSeats,
+      transmission,
+      daily_rate: dailyRate.toFixed(2),
+      status,
+      photos
+    }
+  };
+}
+
+function normalizeCompanyPayload(body) {
+  const name = normalizeText(body.name);
+  const themeColor = normalizeText(body.theme_color) || '#60a5fa';
+  const themeBg = normalizeText(body.theme_bg) || 'rgba(96,165,250,0.16)';
+
+  if (!name) {
+    return { error: 'Company name is required.' };
+  }
+
+  return {
+    value: {
+      name,
+      theme_color: themeColor,
+      theme_bg: themeBg
+    }
+  };
+}
+
 // 1. Fetch all Rental Cars
 app.get('/api/cars', async (req, res) => {
   try {
@@ -655,11 +867,25 @@ app.get('/api/cars', async (req, res) => {
 app.get('/api/routes', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT r.*, b.name as vehicle, b.type as vehicle_type, 
-             c.name as company_name, c.theme_color as color, c.theme_bg as bg
+      SELECT
+        r.*,
+        b.name AS vehicle,
+        b.type AS vehicle_type,
+        b.total_seats,
+        c.name AS company_name,
+        c.theme_color AS color,
+        c.theme_bg AS bg,
+        COUNT(bb.id)::INT AS booked_count,
+        COALESCE(
+          ARRAY_AGG(bb.seat_number ORDER BY bb.seat_number) FILTER (WHERE bb.id IS NOT NULL),
+          ARRAY[]::TEXT[]
+        ) AS booked_seats
       FROM bus_routes r
       JOIN buses b ON r.bus_id = b.id
       LEFT JOIN companies c ON b.company_id = c.id
+      LEFT JOIN bus_bookings bb ON bb.route_id = r.id AND bb.status <> 'cancelled'
+      GROUP BY r.id, b.id, c.id
+      ORDER BY r.departure_time ASC
     `);
     res.json(result.rows);
   } catch (err) {
@@ -671,6 +897,224 @@ app.get('/api/admin/routes', async (req, res) => {
   try {
     const data = await fetchAdminRoutes();
     res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/vehicles', async (req, res) => {
+  try {
+    const data = await fetchAdminVehicles();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/buses', async (req, res) => {
+  const parsed = normalizeBusPayload(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const payload = parsed.value;
+
+  try {
+    const company = await fetchAdminCompanyById(payload.company_id);
+    if (!company) return res.status(400).json({ error: 'Selected company does not exist.' });
+
+    const result = await pool.query(
+      `INSERT INTO buses (company_id, name, type, plate_number, total_seats, status)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
+      [payload.company_id, payload.name, payload.type, payload.plate_number, payload.total_seats, payload.status]
+    );
+
+    res.status(201).json(await fetchAdminBusById(result.rows[0].id));
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Plate number already exists.' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/buses/:id', async (req, res) => {
+  const busId = Number(req.params.id);
+  const parsed = normalizeBusPayload(req.body);
+  if (!busId) return res.status(400).json({ error: 'Invalid bus id.' });
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const payload = parsed.value;
+
+  try {
+    const existing = await fetchAdminBusById(busId);
+    if (!existing) return res.status(404).json({ error: 'Bus not found.' });
+
+    const company = await fetchAdminCompanyById(payload.company_id);
+    if (!company) return res.status(400).json({ error: 'Selected company does not exist.' });
+
+    await pool.query(
+      `UPDATE buses
+       SET company_id = $1,
+           name = $2,
+           type = $3,
+           plate_number = $4,
+           total_seats = $5,
+           status = $6
+       WHERE id = $7`,
+      [payload.company_id, payload.name, payload.type, payload.plate_number, payload.total_seats, payload.status, busId]
+    );
+
+    res.json(await fetchAdminBusById(busId));
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Plate number already exists.' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/buses/:id', async (req, res) => {
+  const busId = Number(req.params.id);
+  if (!busId) return res.status(400).json({ error: 'Invalid bus id.' });
+
+  try {
+    const routeCount = await pool.query(`SELECT COUNT(*)::INT AS count FROM bus_routes WHERE bus_id = $1`, [busId]);
+    if (Number(routeCount.rows[0].count || 0) > 0) {
+      return res.status(400).json({ error: 'Cannot delete a bus assigned to routes.' });
+    }
+
+    const result = await pool.query(`DELETE FROM buses WHERE id = $1 RETURNING id`, [busId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Bus not found.' });
+    res.json({ id: busId, message: 'Bus deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/rental-cars', async (req, res) => {
+  const parsed = normalizeRentalCarPayload(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const payload = parsed.value;
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO rental_cars (name, type, plate_number, total_seats, transmission, daily_rate, status, photos)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id`,
+      [payload.name, payload.type, payload.plate_number, payload.total_seats, payload.transmission, payload.daily_rate, payload.status, payload.photos]
+    );
+
+    res.status(201).json(await fetchAdminRentalCarById(result.rows[0].id));
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Plate number already exists.' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/rental-cars/:id', async (req, res) => {
+  const carId = Number(req.params.id);
+  const parsed = normalizeRentalCarPayload(req.body);
+  if (!carId) return res.status(400).json({ error: 'Invalid rental car id.' });
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const payload = parsed.value;
+
+  try {
+    const existing = await fetchAdminRentalCarById(carId);
+    if (!existing) return res.status(404).json({ error: 'Rental car not found.' });
+
+    await pool.query(
+      `UPDATE rental_cars
+       SET name = $1,
+           type = $2,
+           plate_number = $3,
+           total_seats = $4,
+           transmission = $5,
+           daily_rate = $6,
+           status = $7,
+           photos = $8
+       WHERE id = $9`,
+      [payload.name, payload.type, payload.plate_number, payload.total_seats, payload.transmission, payload.daily_rate, payload.status, payload.photos, carId]
+    );
+
+    res.json(await fetchAdminRentalCarById(carId));
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Plate number already exists.' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/rental-cars/:id', async (req, res) => {
+  const carId = Number(req.params.id);
+  if (!carId) return res.status(400).json({ error: 'Invalid rental car id.' });
+
+  try {
+    const rentalCount = await pool.query(`SELECT COUNT(*)::INT AS count FROM car_rentals WHERE car_id = $1`, [carId]);
+    if (Number(rentalCount.rows[0].count || 0) > 0) {
+      return res.status(400).json({ error: 'Cannot delete a rental car with rental records.' });
+    }
+
+    const result = await pool.query(`DELETE FROM rental_cars WHERE id = $1 RETURNING id`, [carId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Rental car not found.' });
+    res.json({ id: carId, message: 'Rental car deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/companies', async (req, res) => {
+  const parsed = normalizeCompanyPayload(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const payload = parsed.value;
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO companies (name, theme_color, theme_bg)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [payload.name, payload.theme_color, payload.theme_bg]
+    );
+
+    res.status(201).json(await fetchAdminCompanyById(result.rows[0].id));
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Company name already exists.' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/companies/:id', async (req, res) => {
+  const companyId = Number(req.params.id);
+  const parsed = normalizeCompanyPayload(req.body);
+  if (!companyId) return res.status(400).json({ error: 'Invalid company id.' });
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const payload = parsed.value;
+
+  try {
+    const existing = await fetchAdminCompanyById(companyId);
+    if (!existing) return res.status(404).json({ error: 'Company not found.' });
+
+    await pool.query(
+      `UPDATE companies
+       SET name = $1,
+           theme_color = $2,
+           theme_bg = $3
+       WHERE id = $4`,
+      [payload.name, payload.theme_color, payload.theme_bg, companyId]
+    );
+
+    res.json(await fetchAdminCompanyById(companyId));
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Company name already exists.' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/companies/:id', async (req, res) => {
+  const companyId = Number(req.params.id);
+  if (!companyId) return res.status(400).json({ error: 'Invalid company id.' });
+
+  try {
+    const busCount = await pool.query(`SELECT COUNT(*)::INT AS count FROM buses WHERE company_id = $1`, [companyId]);
+    if (Number(busCount.rows[0].count || 0) > 0) {
+      return res.status(400).json({ error: 'Cannot delete a company assigned to buses.' });
+    }
+
+    const result = await pool.query(`DELETE FROM companies WHERE id = $1 RETURNING id`, [companyId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Company not found.' });
+    res.json({ id: companyId, message: 'Company deleted successfully.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -74,3 +74,42 @@ VALUES (
   1, 1, CURRENT_DATE, CURRENT_DATE + INTERVAL '3 days',
   'Test Driver', 'DL-12345', 90.00, 'khqr', 'confirmed'
 );
+
+INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price) VALUES
+((SELECT id FROM buses WHERE plate_number = '2A-1234'), 'Phnom Penh', 'Siem Reap', CURRENT_DATE + TIME '06:00:00', CURRENT_DATE + TIME '11:00:00', 12.00),
+((SELECT id FROM buses WHERE plate_number = '2A-1234'), 'Siem Reap', 'Phnom Penh', CURRENT_DATE + TIME '13:00:00', CURRENT_DATE + TIME '18:00:00', 12.00),
+
+((SELECT id FROM buses WHERE plate_number = '2B-5678'), 'Phnom Penh', 'Battambang', CURRENT_DATE + TIME '08:30:00', CURRENT_DATE + TIME '14:00:00', 13.50),
+((SELECT id FROM buses WHERE plate_number = '2B-5678'), 'Battambang', 'Phnom Penh', CURRENT_DATE + TIME '15:30:00', CURRENT_DATE + TIME '21:00:00', 13.50),
+
+((SELECT id FROM buses WHERE plate_number = '4D-3456'), 'Phnom Penh', 'Kampot', CURRENT_DATE + TIME '07:00:00', CURRENT_DATE + TIME '10:30:00', 9.00),
+((SELECT id FROM buses WHERE plate_number = '4D-3456'), 'Kampot', 'Phnom Penh', CURRENT_DATE + TIME '12:00:00', CURRENT_DATE + TIME '15:30:00', 9.00),
+
+((SELECT id FROM buses WHERE plate_number = '5E-7788'), 'Phnom Penh', 'Sihanoukville', CURRENT_DATE + TIME '09:00:00', CURRENT_DATE + TIME '14:00:00', 14.00),
+((SELECT id FROM buses WHERE plate_number = '5E-7788'), 'Sihanoukville', 'Phnom Penh', CURRENT_DATE + TIME '16:00:00', CURRENT_DATE + TIME '21:00:00', 14.00),
+
+((SELECT id FROM buses WHERE plate_number = '6F-4455'), 'Phnom Penh', 'Kep', CURRENT_DATE + TIME '06:30:00', CURRENT_DATE + TIME '10:00:00', 8.50),
+((SELECT id FROM buses WHERE plate_number = '6F-4455'), 'Kep', 'Phnom Penh', CURRENT_DATE + TIME '13:00:00', CURRENT_DATE + TIME '16:30:00', 8.50),
+
+((SELECT id FROM buses WHERE plate_number = '2A-1234'), 'Phnom Penh', 'Siem Reap', CURRENT_DATE + INTERVAL '1 day' + TIME '06:00:00', CURRENT_DATE + INTERVAL '1 day' + TIME '11:00:00', 12.00),
+((SELECT id FROM buses WHERE plate_number = '2B-5678'), 'Phnom Penh', 'Battambang', CURRENT_DATE + INTERVAL '1 day' + TIME '08:30:00', CURRENT_DATE + INTERVAL '1 day' + TIME '14:00:00', 13.50),
+((SELECT id FROM buses WHERE plate_number = '4D-3456'), 'Phnom Penh', 'Kampot', CURRENT_DATE + INTERVAL '1 day' + TIME '07:00:00', CURRENT_DATE + INTERVAL '1 day' + TIME '10:30:00', 9.00),
+((SELECT id FROM buses WHERE plate_number = '5E-7788'), 'Phnom Penh', 'Sihanoukville', CURRENT_DATE + INTERVAL '1 day' + TIME '09:00:00', CURRENT_DATE + INTERVAL '1 day' + TIME '14:00:00', 14.00);
+
+
+
+WITH duplicates AS (
+  SELECT
+    id,
+    ROW_NUMBER() OVER (
+      PARTITION BY bus_id, origin, destination, departure_time, arrival_time
+      ORDER BY id
+    ) AS rn
+  FROM bus_routes
+)
+DELETE FROM bus_routes
+WHERE id IN (
+  SELECT id
+  FROM duplicates
+  WHERE rn > 1
+);

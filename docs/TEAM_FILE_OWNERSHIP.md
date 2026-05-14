@@ -86,9 +86,9 @@ Primary files:
 
 Responsibilities:
 
-- Vehicle Management page.
-- Buses/Cars tabs.
-- Static UI state for vehicle lists and modals.
+- DB-backed Vehicle Management page.
+- Buses/Rental Cars tabs.
+- Bus, rental car, and company CRUD with safe delete rules.
 
 ### BCRS-5 Admin3
 

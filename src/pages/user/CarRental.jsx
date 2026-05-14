@@ -1,10 +1,52 @@
 ﻿
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { carModels } from '../../data/transportData';
-import Footer from '../../components/Footer';
-import { Icon, icons, setupScrollReveal, NAV, companyMeta, getCompanyMeta } from '../../utils/sharedUser';
+import { Icon, icons, setupScrollReveal, getTodayISO } from '../../utils/sharedUser';
 import AuthModal from './AuthModal';
+
+function addDaysISO(dateKey, days) {
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatStatus(status) {
+  return String(status || 'available')
+    .split(' ')
+    .map((part) => part ? part[0].toUpperCase() + part.slice(1) : '')
+    .join(' ');
+}
+
+function formatDbCar(vehicle) {
+  const type = vehicle.type || 'Rental car';
+  const transmission = vehicle.transmission || 'Auto';
+  const seats = Number(vehicle.total_seats || 0);
+  const photos = Array.isArray(vehicle.photos) ? vehicle.photos.filter(Boolean) : [];
+
+  return {
+    id: vehicle.id,
+    name: vehicle.name,
+    type,
+    plate: vehicle.plate_number || '',
+    seats,
+    trans: transmission,
+    price: Number(vehicle.daily_rate || 0),
+    status: formatStatus(vehicle.status),
+    specs: ['A/C', 'Bluetooth', 'Cruise Control'],
+    specDetails: [
+      { label: 'Type', value: type },
+      { label: 'Transmission', value: transmission },
+      { label: 'Seats', value: seats || 'Not set' },
+      { label: 'Plate', value: vehicle.plate_number || 'Not set' },
+      { label: 'Fuel', value: type.toLowerCase().includes('hybrid') ? 'Hybrid' : 'Petrol' },
+      { label: 'Luggage', value: type.toLowerCase().includes('suv') ? '4 large bags' : '2 large bags' }
+    ],
+    photos
+  };
+}
 
 export default function CarRental({
   role,
@@ -33,16 +75,20 @@ export default function CarRental({
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [shaking, setShaking] = useState(null);
-  const [pickupDate, setPickupDate] = useState('2026-04-05');
-  const [returnDate, setReturnDate] = useState('2026-04-08');
+  const todayKey = getTodayISO();
+  const [pickupDate, setPickupDate] = useState(todayKey);
+  const [returnDate, setReturnDate] = useState(addDaysISO(todayKey, 3));
   const [showSpecs, setShowSpecs] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
+  const [cars, setCars] = useState([]);
+  const [loadingCars, setLoadingCars] = useState(true);
+  const [carsError, setCarsError] = useState('');
   const goBack = () => {
     const next = Math.max(1, step - 1);
     if (next === 1) setSelected(null);
     goStep(next);
   };
-  const [cars, setCars] = useState([]);
+
   useEffect(() => {
     if (step === 1) {
       document.querySelectorAll('.car-grid .scroll-animate').forEach(el => {
@@ -62,32 +108,34 @@ export default function CarRental({
   }, [step, cars]);
 
   useEffect(() => {
-    fetch('/api/cars')
-      .then(res => res.json())
-      .then(data => {
-        const formatted = data.map(v => ({
-          id: v.id,
-          name: v.name,
-          type: v.type,
-          seats: v.total_seats,
-          trans: v.transmission || 'Auto',
-          price: parseFloat(v.daily_rate),
-          emoji: v.type.includes('SUV') ? '??' : '??',
-          status: v.status.charAt(0).toUpperCase() + v.status.slice(1),
-          specs: ['A/C', 'Bluetooth', 'Cruise Control'],
-          specDetails: [
-            { label: 'Engine', value: v.type.includes('SUV') ? '2.5L Turbo' : '1.8L Hybrid' },
-            { label: 'Transmission', value: v.transmission || 'Auto' },
-            { label: 'Seats', value: v.total_seats },
-            { label: 'Fuel', value: 'Petrol' },
-            { label: 'Luggage', value: v.type.includes('SUV') ? '4 large bags' : '2 large bags' }
-          ],
-          photos: v.photos || []
-        }));
-        setCars(formatted);
-      })
-      .catch(err => console.error("Error fetching vehicles:", err));
+    const controller = new AbortController();
+
+    async function loadCars() {
+      setLoadingCars(true);
+      setCarsError('');
+      try {
+        const response = await fetch('/api/cars', { signal: controller.signal });
+        const data = await response.json().catch(() => []);
+        if (!response.ok) {
+          throw new Error(data.error || 'Unable to load rental cars.');
+        }
+        setCars(Array.isArray(data) ? data.map(formatDbCar) : []);
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          setCarsError(error.message || 'Unable to load rental cars.');
+          setCars([]);
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingCars(false);
+        }
+      }
+    }
+
+    loadCars();
+    return () => controller.abort();
   }, []);
+
   const car = cars.find(c => c.id === selected);
   const startDate = new Date(pickupDate);
   const endDate = new Date(returnDate);
@@ -102,6 +150,12 @@ export default function CarRental({
       navigate('/cars', { replace: true });
     }
   }, [step, selected, navigate]);
+  useEffect(() => {
+    if (selected && cars.length && !cars.some(c => c.id === selected)) {
+      setSelected(null);
+      navigate('/cars', { replace: true });
+    }
+  }, [cars, selected, navigate]);
   if (paymentSuccess || step === 4) return <div className="page" style={{
     maxWidth: 480
   }}>
@@ -198,7 +252,24 @@ export default function CarRental({
             </div>)}
         </div>}
 
-      {step === 1 && <div className="car-grid">
+      {step === 1 && loadingCars && <div className="card">
+          <div className="page-sub">Loading rental cars...</div>
+        </div>}
+
+      {step === 1 && carsError && <div className="card" style={{
+      borderColor: 'rgba(248,113,113,0.35)'
+    }}>
+          <div className="page-sub" style={{ color: 'var(--red)' }}>{carsError}</div>
+          <button className="btn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => window.location.reload()}>
+            Try again
+          </button>
+        </div>}
+
+      {step === 1 && !loadingCars && !carsError && !cars.length && <div className="card">
+          <div className="page-sub">No rental cars are available yet.</div>
+        </div>}
+
+      {step === 1 && !loadingCars && !carsError && cars.length > 0 && <div className="car-grid">
           {cars.map((c, i) => <div key={c.id} className={`car-card ticket-card scroll-animate ${shaking === c.id ? 'shake-anim' : ''}`} style={{
         '--delay': `${i * 40}ms`
       }} onClick={() => {
@@ -213,7 +284,16 @@ export default function CarRental({
           goStep(2);
         }
       }}>
-              <div className="car-img-wrap">{c.emoji}</div>
+              <div
+                className="car-img-wrap"
+                style={c.photos[0] ? {
+                  backgroundImage: `url(${c.photos[0]})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center'
+                } : undefined}
+              >
+                {!c.photos[0] ? <Icon d={icons.car} size={38} color="var(--text-2)" /> : null}
+              </div>
               <div className="car-body">
                 <div style={{
             display: 'flex',
@@ -249,9 +329,28 @@ export default function CarRental({
           gap: 14,
           marginBottom: 16
         }}>
-              <div style={{
-            fontSize: 32
-          }}>{car.emoji}</div>
+              <div
+                style={car.photos[0] ? {
+                  width: 54,
+                  height: 42,
+                  borderRadius: 10,
+                  backgroundImage: `url(${car.photos[0]})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  flex: '0 0 auto'
+                } : {
+                  width: 54,
+                  height: 42,
+                  borderRadius: 10,
+                  background: 'var(--surface)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flex: '0 0 auto'
+                }}
+              >
+                {!car.photos[0] ? <Icon d={icons.car} size={24} color="var(--text-2)" /> : null}
+              </div>
               <div>
                 <div style={{
               fontWeight: 600,

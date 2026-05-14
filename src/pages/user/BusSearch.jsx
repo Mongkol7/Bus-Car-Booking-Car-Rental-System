@@ -1,10 +1,62 @@
 ﻿
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { carModels } from '../../data/transportData';
-import Footer from '../../components/Footer';
-import { Icon, icons, setupScrollReveal, NAV, companyMeta, getCompanyMeta, getTodayISO } from '../../utils/sharedUser';
+import { Icon, icons, setupScrollReveal, getTodayISO } from '../../utils/sharedUser';
 import AuthModal from './AuthModal';
+
+const FALLBACK_CITIES = ['Phnom Penh', 'Siem Reap', 'Battambang', 'Sihanoukville', 'Kampot', 'Kep', 'Kratie', 'Kampong Cham', 'Pursat', 'Banteay Meanchey'];
+
+function getLocalDateKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--:--';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDuration(startValue, endValue) {
+  const start = new Date(startValue);
+  const end = new Date(endValue);
+  const minutes = Math.max(0, Math.round((end - start) / 60000));
+  if (!Number.isFinite(minutes) || minutes <= 0) return 'Direct';
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours ? `${hours}h` : ''}${hours && mins ? ' ' : ''}${mins ? `${mins}m` : ''}`;
+}
+
+function formatDbRoute(route) {
+  const totalSeats = Number(route.total_seats || 0);
+  const bookedCount = Number(route.booked_count || 0);
+  const companyName = route.company_name || route.vehicle || 'Unknown company';
+
+  return {
+    id: route.id,
+    origin: route.origin,
+    destination: route.destination,
+    dateKey: getLocalDateKey(route.departure_time),
+    from: formatTime(route.departure_time),
+    to: formatTime(route.arrival_time),
+    duration: formatDuration(route.departure_time, route.arrival_time),
+    vehicle: companyName,
+    busName: route.vehicle,
+    type: route.vehicle_type || 'Bus',
+    layout: String(route.vehicle_type || '').toLowerCase().includes('sleeper') ? 'sleeper' : 'standard',
+    totalSeats,
+    bookedCount,
+    takenSeats: Array.isArray(route.booked_seats) ? route.booked_seats : [],
+    avail: Math.max(0, totalSeats - bookedCount),
+    price: Number(route.price || 0),
+    color: route.color || '#60a5fa',
+    bg: route.bg || 'rgba(96,165,250,0.16)'
+  };
+}
 
 export default function BusSearch({
   role,
@@ -35,44 +87,41 @@ export default function BusSearch({
   const [done, setDone] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [fromCity, setFromCity] = useState('Phnom Penh');
-  const [toCity, setToCity] = useState('Siem Reap');
-  const [travelDate, setTravelDate] = useState(getTodayISO());
+  const [fromCity, setFromCity] = useState('');
+  const [toCity, setToCity] = useState('');
+  const [travelDate, setTravelDate] = useState('');
   const [routes, setRoutes] = useState([]);
-  const [companies, setCompanies] = useState([]);
+  const [loadingRoutes, setLoadingRoutes] = useState(true);
+  const [routesError, setRoutesError] = useState('');
 
   useEffect(() => {
-    fetch('/api/routes')
-      .then(res => res.json())
-      .then(data => {
-        const formattedRoutes = data.map(r => ({
-          id: r.id,
-          from: new Date(r.departure_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          to: new Date(r.arrival_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          vehicle: r.company_name,
-          type: r.vehicle_type,
-          layout: r.vehicle_type.includes('Sleeper') ? 'sleeper' : 'standard',
-          avail: 10,
-          price: parseFloat(r.price),
-          color: r.color || '#60a5fa',
-          bg: r.bg || 'rgba(96,165,250,0.16)'
-        }));
-        setRoutes(formattedRoutes);
+    const controller = new AbortController();
 
-        const uniqueCompanies = Array.from(new Map(formattedRoutes.map(r => [r.vehicle, {
-          name: r.vehicle,
-          color: r.color,
-          bg: r.bg
-        }])).values());
-        setCompanies(uniqueCompanies);
-      })
-      .catch(err => console.error("Error fetching routes:", err));
+    async function loadRoutes() {
+      setLoadingRoutes(true);
+      setRoutesError('');
+      try {
+        const response = await fetch('/api/routes', { signal: controller.signal });
+        const data = await response.json().catch(() => []);
+        if (!response.ok) {
+          throw new Error(data.error || 'Unable to load bus routes.');
+        }
+        setRoutes(Array.isArray(data) ? data.map(formatDbRoute) : []);
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          setRoutesError(error.message || 'Unable to load bus routes.');
+          setRoutes([]);
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingRoutes(false);
+        }
+      }
+    }
+
+    loadRoutes();
+    return () => controller.abort();
   }, []);
-  useEffect(() => {
-    if (typeof window === 'undefined') return () => {};
-    const cleanup = setupScrollReveal();
-    return cleanup;
-  }, [step, routes]);
   useEffect(() => {
     if (step >= 2 && !selectedRoute) {
       navigate('/booking/search', { replace: true });
@@ -82,6 +131,42 @@ export default function BusSearch({
       navigate('/booking/seats', { replace: true });
     }
   }, [step, selectedRoute, selectedSeats.length, navigate]);
+  const cityOptions = useMemo(() => {
+    const cities = new Set(FALLBACK_CITIES);
+    routes.forEach(route => {
+      if (route.origin) cities.add(route.origin);
+      if (route.destination) cities.add(route.destination);
+    });
+    return Array.from(cities).sort((a, b) => a.localeCompare(b));
+  }, [routes]);
+  const filteredRoutes = useMemo(() => {
+    return routes.filter(route =>
+      (!fromCity || route.origin === fromCity) &&
+      (!toCity || route.destination === toCity) &&
+      (!travelDate || route.dateKey === travelDate)
+    );
+  }, [fromCity, routes, toCity, travelDate]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return () => {};
+    document.querySelectorAll('.route-card.scroll-animate').forEach(el => {
+      delete el.dataset.revealed;
+    });
+    const cleanup = setupScrollReveal();
+    const timer = setTimeout(() => {
+      document.querySelectorAll('.route-card.scroll-animate').forEach(el => {
+        el.dataset.revealed = 'true';
+      });
+    }, 120);
+    return () => {
+      cleanup();
+      clearTimeout(timer);
+    };
+  }, [step, routes.length, filteredRoutes.length, fromCity, toCity, travelDate]);
+  const currentRoute = routes.find(r => r.id === selectedRoute);
+  const takenSeats = currentRoute?.takenSeats || [];
+  const goBack = () => {
+    goStep(Math.max(1, step - 1));
+  };
   if (paymentSuccess || step === 5) return <div className="page" style={{
     maxWidth: 480
   }}>
@@ -122,12 +207,6 @@ export default function BusSearch({
           </div>
         </div>
       </div>;
-  const goBack = () => {
-    goStep(Math.max(1, step - 1));
-  };
-  const destinations = ['Phnom Penh', 'Siem Reap', 'Battambang', 'Sihanoukville', 'Kampot', 'Kep', 'Kratie', 'Kampong Cham', 'Pursat', 'Banteay Meanchey'];
-  const currentRoute = routes.find(r => r.id === selectedRoute);
-  const takenSeats = ['A1', 'A3', 'B2', 'B4', 'C1', 'D3', 'D4'];
   const seatRows = ['A', 'B', 'C', 'D', 'E'];
   const seatCols = [1, 2, 3, 4];
   const toggleSeat = sid => {
@@ -244,30 +323,70 @@ export default function BusSearch({
           <div className="search-bar">
             <div>
               <div className="label">From</div>
-              <select value={fromCity} onChange={e => setFromCity(e.target.value)}>
-                {destinations.map(city => <option key={`from-${city}`} value={city}>
+              <select value={fromCity} onChange={e => {
+                setFromCity(e.target.value);
+                setSelectedRoute(null);
+                setSelectedSeats([]);
+              }}>
+                <option value="">All origins</option>
+                {cityOptions.map(city => <option key={`from-${city}`} value={city}>
                     {city}
                   </option>)}
               </select>
             </div>
             <div>
               <div className="label">To</div>
-              <select value={toCity} onChange={e => setToCity(e.target.value)}>
-                {destinations.map(city => <option key={`to-${city}`} value={city}>
+              <select value={toCity} onChange={e => {
+                setToCity(e.target.value);
+                setSelectedRoute(null);
+                setSelectedSeats([]);
+              }}>
+                <option value="">All destinations</option>
+                {cityOptions.map(city => <option key={`to-${city}`} value={city}>
                     {city}
                   </option>)}
               </select>
             </div>
             <div>
               <div className="label">Date</div>
-              <input type="date" value={travelDate} onChange={e => setTravelDate(e.target.value)} />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input type="date" value={travelDate} onChange={e => {
+                  setTravelDate(e.target.value);
+                  setSelectedRoute(null);
+                  setSelectedSeats([]);
+                }} />
+                {travelDate ? <button className="btn btn-ghost btn-sm" type="button" onClick={() => {
+                  setTravelDate('');
+                  setSelectedRoute(null);
+                  setSelectedSeats([]);
+                }}>
+                  All
+                </button> : null}
+              </div>
             </div>
-            <button className="btn btn-primary">Search</button>
+            <button className="btn btn-primary" type="button" onClick={() => {
+              setFromCity('');
+              setToCity('');
+              setTravelDate('');
+              setSelectedRoute(null);
+              setSelectedSeats([]);
+            }}>
+              Show all
+            </button>
           </div>
-          <div className="sec-title">{routes.length} trips found</div>
-          {routes.map((r, i) => <div key={r.id} className={`route-card ticket-card scroll-animate ${selectedRoute === r.id ? 'selected' : ''}`} style={{
+          {loadingRoutes ? <div className="card"><div className="page-sub">Loading bus routes...</div></div> : null}
+          {routesError ? <div className="card" style={{ borderColor: 'rgba(248,113,113,0.35)' }}>
+              <div className="page-sub" style={{ color: 'var(--red)' }}>{routesError}</div>
+              <button className="btn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => window.location.reload()}>
+                Try again
+              </button>
+            </div> : null}
+          {!loadingRoutes && !routesError ? <div className="sec-title">{filteredRoutes.length} trips found</div> : null}
+          {!loadingRoutes && !routesError && !filteredRoutes.length ? <div className="card"><div className="page-sub">No trips found for this route and date.</div></div> : null}
+          {!loadingRoutes && !routesError && filteredRoutes.map((r, i) => <div key={r.id} className={`route-card ticket-card scroll-animate ${selectedRoute === r.id ? 'selected' : ''}`} style={{
         '--delay': `${i * 40}ms`
       }} onClick={() => {
+        if (r.avail <= 0) return;
         if (role === 'guest') {
           setShowAuthModal(true);
         } else setSelectedRoute(r.id);
@@ -300,6 +419,7 @@ export default function BusSearch({
             marginTop: 2
           }}>
                   {r.type}
+                  {r.busName ? ` - ${r.busName}` : ''}
                 </div>
               </div>
               <div className="route-arrow">
@@ -308,7 +428,7 @@ export default function BusSearch({
             color: 'var(--text-3)',
             marginBottom: 2
           }}>
-                  5h 00m
+                  {r.duration}
                 </div>
                 <div style={{
             display: 'flex',
@@ -333,7 +453,7 @@ export default function BusSearch({
             color: r.avail <= 5 ? 'var(--amber)' : 'var(--text-3)',
             marginTop: 2
           }}>
-                  {r.avail} seats left
+                  {r.avail > 0 ? `${r.avail} seats left` : 'Sold out'}
                 </div>
               </div>
               <div className="route-price">${r.price}</div>
