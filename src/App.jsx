@@ -1,30 +1,47 @@
-import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import AdminApp from './Admin';
-import UserApp from './User';
-import Login from './Login';
-import { useAuth } from './context/AuthContext';
+import { useEffect } from "react";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  useNavigate,
+} from "react-router-dom";
+import AdminApp from "./Admin";
+import UserApp from "./User";
+import Login from "./Login";
+import { useAuth } from "./context/AuthContext";
 
 function App() {
-  const { role, login, logout, setGuest, redirectToLogin, finishRedirect } = useAuth();
+  const {
+    role,
+    userId,
+    login,
+    logout,
+    setGuest,
+    redirectToLogin,
+    finishRedirect,
+  } = useAuth();
 
   const RoleRoute = ({ targetRole }) => {
     const { login } = useAuth();
     useEffect(() => {
-      login(targetRole);
+      login({ role: targetRole, userId: null });
     }, [targetRole, login]);
 
-    return <UserApp role={targetRole} onLogout={logout} />;
+    return <UserApp role={targetRole} userId={null} onLogout={logout} />;
   };
 
   return (
     <BrowserRouter>
-      <LogoutListener shouldRedirect={redirectToLogin} onDone={finishRedirect} />
+      <LogoutListener
+        shouldRedirect={redirectToLogin}
+        onDone={finishRedirect}
+      />
       <Routes>
         {/* User / Guest Landing Route */}
-        <Route 
-          path="/" 
-          element={<UserApp role={role} onLogout={logout} />} 
+        <Route
+          path="/"
+          element={<UserApp role={role} userId={userId} onLogout={logout} />}
         />
 
         {/* Explicit Role Routes */}
@@ -32,31 +49,35 @@ function App() {
         <Route path="/user" element={<RoleRoute targetRole="user" />} />
 
         {/* Login Route */}
-        <Route 
-          path="/login" 
+        <Route
+          path="/login"
           element={
-            role !== 'guest' ? 
-            <Navigate to={role === 'admin' ? '/admin' : '/'} /> : 
-            <Login onLogin={login} onGuest={setGuest} initialView="login" />
-          } 
+            role !== "guest" ? (
+              <Navigate to={role === "admin" ? "/admin" : "/"} />
+            ) : (
+              <Login onLogin={login} onGuest={setGuest} initialView="login" />
+            )
+          }
         />
 
         {/* Register Route */}
-        <Route 
-          path="/register" 
+        <Route
+          path="/register"
           element={
             <Login onLogin={login} onGuest={setGuest} initialView="register" />
-          } 
+          }
         />
 
         {/* Admin Route Protection */}
-        <Route 
-          path="/admin" 
+        <Route
+          path="/admin"
           element={
-            role === 'admin' ? 
-            <AdminApp onLogout={logout} /> : 
-            <Navigate to="/login" />
-          } 
+            role === "admin" ? (
+              <AdminApp onLogout={logout} />
+            ) : (
+              <Navigate to="/login" />
+            )
+          }
         />
 
         {/* Fallback */}
@@ -72,7 +93,7 @@ function LogoutListener({ shouldRedirect, onDone }) {
   const navigate = useNavigate();
   useEffect(() => {
     if (shouldRedirect) {
-      navigate('/login', { replace: true });
+      navigate("/login", { replace: true });
       onDone();
     }
   }, [shouldRedirect, navigate, onDone]);

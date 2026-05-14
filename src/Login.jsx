@@ -1,7 +1,7 @@
 //Login.jsx
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import Footer from './components/Footer';
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import Footer from "./components/Footer";
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -257,104 +257,104 @@ const css = `
   }
 `;
 
-export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
+export default function AuthPage({ onLogin, onGuest, initialView = "login" }) {
   const navigate = useNavigate();
-  const [view, setView] = useState(initialView); 
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [view, setView] = useState(initialView);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
 
   const handleBack = () => {
-    if (typeof window !== 'undefined') {
-      const storedRole = window.localStorage.getItem('role');
-      if (storedRole === 'admin') {
-        navigate('/admin');
+    if (typeof window !== "undefined") {
+      const storedRole = window.localStorage.getItem("role");
+      if (storedRole === "admin") {
+        navigate("/admin");
         return;
       }
     }
-    navigate('/');
+    navigate("/");
   };
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    setError('');
+    setError("");
     try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: username, password })
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: username, password }),
       });
       const data = await response.json();
       if (!response.ok) {
-        setError(data.error || 'Invalid credentials');
+        setError(data.error || "Invalid credentials");
         return;
       }
-      onLogin(data.role);
-      if (data.role === 'admin') {
-        navigate('/admin');
+      onLogin({ role: data.role, userId: data.id });
+      if (data.role === "admin") {
+        navigate("/admin");
       } else {
-        navigate('/');
+        navigate("/");
       }
     } catch (err) {
-      setError('Server error. Please try again.');
+      setError("Server error. Please try again.");
     }
   };
 
   const handleRegister = async (e) => {
     e.preventDefault();
-    setError('');
+    setError("");
     const form = e.target;
-    const nameParts = form.fullname.value.split(' ');
+    const nameParts = form.fullname.value.split(" ");
     const first_name = nameParts[0];
-    const last_name = nameParts.slice(1).join(' ') || 'User';
+    const last_name = nameParts.slice(1).join(" ") || "User";
 
     try {
-      const response = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           first_name,
           last_name,
           email: form.email.value,
           phone: form.phone.value,
           password: form.password.value,
-          national_id: ''
-        })
+          national_id: "",
+        }),
       });
       const data = await response.json();
       if (!response.ok) {
-        setError(data.error || 'Registration failed');
+        setError(data.error || "Registration failed");
         return;
       }
-      alert('Account created! Please sign in.');
-      setView('login');
+      alert("Account created! Please sign in.");
+      setView("login");
     } catch (err) {
-      setError('Server error. Please try again.');
+      setError("Server error. Please try again.");
     }
   };
 
   const handleGuest = () => {
     onGuest();
-    navigate('/');
+    navigate("/");
   };
 
   useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const elements = Array.from(document.querySelectorAll('.scroll-animate'));
-    if (!('IntersectionObserver' in window)) {
-      elements.forEach((el) => el.classList.add('in-view'));
+    if (typeof window === "undefined") return undefined;
+    const elements = Array.from(document.querySelectorAll(".scroll-animate"));
+    if (!("IntersectionObserver" in window)) {
+      elements.forEach((el) => el.classList.add("in-view"));
       return undefined;
     }
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
-            entry.target.classList.add('in-view');
+            entry.target.classList.add("in-view");
             observer.unobserve(entry.target);
           }
         });
       },
-      { threshold: 0.2, rootMargin: '0px 0px -10% 0px' }
+      { threshold: 0.2, rootMargin: "0px 0px -10% 0px" },
     );
     elements.forEach((el) => observer.observe(el));
     return () => observer.disconnect();
@@ -363,8 +363,13 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
   return (
     <div className="auth-wrap">
       <style>{css}</style>
-      
-      <div className="back-btn" onClick={handleBack} aria-label="Back" title="Back">
+
+      <div
+        className="back-btn"
+        onClick={handleBack}
+        aria-label="Back"
+        title="Back"
+      >
         <svg
           width="16"
           height="16"
@@ -381,87 +386,130 @@ export default function AuthPage({ onLogin, onGuest, initialView = 'login' }) {
 
       <div className="auth-card">
         <div className="auth-logo scroll-animate">
-          <div className="auth-logo-mark">Book<span className="logo-dot">.</span><span className="logo-ride">Ride</span></div>
-          <div className="auth-logo-sub" style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 4 }}>Bus & Car Booking + Car Rental</div>
+          <div className="auth-logo-mark">
+            Book<span className="logo-dot">.</span>
+            <span className="logo-ride">Ride</span>
+          </div>
+          <div
+            className="auth-logo-sub"
+            style={{ fontSize: 13, color: "var(--text-2)", marginTop: 4 }}
+          >
+            Bus & Car Booking + Car Rental
+          </div>
         </div>
-        
-        {view === 'login' ? (
+
+        {view === "login" ? (
           <div key="login" className="card scroll-animate view-animate">
             <div className="auth-title">Welcome back</div>
             <div className="auth-sub">Sign in to manage your travels</div>
-            
+
             <form onSubmit={handleLogin}>
               <div className="form-group">
                 <label className="label">Email Address</label>
-                <input 
-                  type="email" 
-                  placeholder="admin@bookride.com" 
+                <input
+                  type="email"
+                  placeholder="admin@bookride.com"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   required
                 />
               </div>
-              
+
               <div className="form-group">
                 <label className="label">Password</label>
-                <input 
-                  type="password" 
-                  placeholder="••••••••" 
+                <input
+                  type="password"
+                  placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
                 />
               </div>
-              
-              <button type="submit" className="btn btn-primary">Sign in</button>
-              
+
+              <button type="submit" className="btn btn-primary">
+                Sign in
+              </button>
+
               {error && <div className="error-msg">{error}</div>}
             </form>
-            
-            <div className="divider-or"><span>or</span></div>
-            <button className="btn btn-ghost" onClick={handleGuest}>Continue as Guest</button>
-            
+
+            <div className="divider-or">
+              <span>or</span>
+            </div>
+            <button className="btn btn-ghost" onClick={handleGuest}>
+              Continue as Guest
+            </button>
+
             <div className="auth-link">
-              No account? <span onClick={() => setView('register')}>Register now</span>
+              No account?{" "}
+              <span onClick={() => setView("register")}>Register now</span>
             </div>
           </div>
         ) : (
           <div key="register" className="card scroll-animate view-animate">
             <div className="auth-title">Create Account</div>
             <div className="auth-sub">Join thousands of travelers</div>
-            
+
             <form onSubmit={handleRegister}>
               <div className="form-group">
                 <label className="label">Full Name</label>
-                <input type="text" name="fullname" placeholder="John Doe" required />
+                <input
+                  type="text"
+                  name="fullname"
+                  placeholder="John Doe"
+                  required
+                />
               </div>
               <div className="form-group">
                 <label className="label">Email</label>
-                <input type="email" name="email" placeholder="john@example.com" required />
+                <input
+                  type="email"
+                  name="email"
+                  placeholder="john@example.com"
+                  required
+                />
               </div>
               <div className="form-group">
                 <label className="label">Phone Number</label>
-                <input type="tel" name="phone" placeholder="+855 12 345 678" required />
+                <input
+                  type="tel"
+                  name="phone"
+                  placeholder="+855 12 345 678"
+                  required
+                />
               </div>
               <div className="form-group">
                 <label className="label">Password</label>
-                <input type="password" name="password" placeholder="••••••••" required />
+                <input
+                  type="password"
+                  name="password"
+                  placeholder="••••••••"
+                  required
+                />
               </div>
-              
-              <button type="submit" className="btn btn-primary">Sign up</button>
-              
+
+              <button type="submit" className="btn btn-primary">
+                Sign up
+              </button>
+
               {error && <div className="error-msg">{error}</div>}
             </form>
-            
+
             <div className="auth-link">
-              Already have an account? <span onClick={() => setView('login')}>Sign in</span>
+              Already have an account?{" "}
+              <span onClick={() => setView("login")}>Sign in</span>
             </div>
           </div>
         )}
       </div>
       <div
         className="scroll-animate"
-        style={{ width: '100%', maxWidth: 520, marginTop: 18, padding: '0 12px' }}
+        style={{
+          width: "100%",
+          maxWidth: 520,
+          marginTop: 18,
+          padding: "0 12px",
+        }}
       >
         <Footer />
       </div>
