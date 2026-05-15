@@ -43,10 +43,18 @@ export const setupScrollReveal = () => {
       }
     });
   }, {
-    threshold: 0.2,
-    rootMargin: '0px 0px -10% 0px'
+    threshold: 0.05,
+    rootMargin: '0px 0px 0px 0px'
   });
-  elements.forEach(el => observer.observe(el));
+  elements.forEach(el => {
+    // Immediately reveal elements already visible in the viewport
+    const rect = el.getBoundingClientRect();
+    if (rect.top < window.innerHeight && rect.bottom > 0) {
+      el.dataset.revealed = 'true';
+    } else {
+      observer.observe(el);
+    }
+  });
   return () => observer.disconnect();
 };
 

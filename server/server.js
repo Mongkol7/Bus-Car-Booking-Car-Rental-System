@@ -273,18 +273,166 @@ app.get("/api/bookings/user", async (req, res) => {
   }
 });
 
-// 8. Fetch user profile info
+// 8. Fetch user profile info and stats
 app.get("/api/users/:id", async (req, res) => {
   const { id } = req.params;
   try {
-    const result = await pool.query(
-      `SELECT id, first_name, last_name, email, phone, role, created_at FROM users WHERE id = $1`,
+    const userResult = await pool.query(
+      `SELECT id, first_name, last_name, email, phone, national_id, role, created_at
+       FROM users WHERE id = $1`,
       [id],
     );
-    if (result.rows.length === 0) {
+
+    if (userResult.rows.length === 0) {
       return res.status(404).json({ error: "User not found" });
     }
-    res.json(result.rows[0]);
+
+    const user = userResult.rows[0];
+
+    const tripCountResult = await pool.query(
+      `SELECT COUNT(*) AS total_trips FROM bus_bookings WHERE user_id = $1`,
+      [id],
+    );
+    const rentalCountResult = await pool.query(
+      `SELECT COUNT(*) AS total_rentals FROM car_rentals WHERE user_id = $1`,
+      [id],
+    );
+    const favoriteRouteResult = await pool.query(
+      `SELECT br.origin, br.destination, COUNT(*) AS count
+       FROM bus_bookings b
+       JOIN bus_routes br ON b.route_id = br.id
+       WHERE b.user_id = $1
+       GROUP BY br.origin, br.destination
+       ORDER BY count DESC
+       LIMIT 1`,
+      [id],
+    );
+
+    const favoriteRoute = favoriteRouteResult.rows[0]
+      ? `${favoriteRouteResult.rows[0].origin} → ${favoriteRouteResult.rows[0].destination}`
+      : "N/A";
+
+    res.json({
+      ...user,
+      stats: {
+        total_trips: Number(tripCountResult.rows[0].total_trips || 0),
+        total_rentals: Number(rentalCountResult.rows[0].total_rentals || 0),
+        favorite_route: favoriteRoute,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 9. Update user profile info
+app.patch("/api/users/:id", async (req, res) => {
+  const { id } = req.params;
+  const { first_name, last_name, email, phone, national_id } = req.body;
+
+  if (!first_name || !last_name || !email) {
+    return res
+      .status(400)
+      .json({ error: "First name, last name, and email are required." });
+  }
+
+  try {
+    const updateResult = await pool.query(
+      `UPDATE users
+       SET first_name = $1,
+           last_name = $2,
+           email = $3,
+           phone = $4,
+           national_id = $5
+       WHERE id = $6
+       RETURNING id, first_name, last_name, email, phone, national_id, role, created_at`,
+      [first_name, last_name, email, phone || null, national_id || null, id],
+    );
+
+    if (updateResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const user = updateResult.rows[0];
+    const tripCountResult = await pool.query(
+      `SELECT COUNT(*) AS total_trips FROM bus_bookings WHERE user_id = $1`,
+      [id],
+    );
+    const rentalCountResult = await pool.query(
+      `SELECT COUNT(*) AS total_rentals FROM car_rentals WHERE user_id = $1`,
+      [id],
+    );
+    const favoriteRouteResult = await pool.query(
+      `SELECT br.origin, br.destination, COUNT(*) AS count
+       FROM bus_bookings b
+       JOIN bus_routes br ON b.route_id = br.id
+       WHERE b.user_id = $1
+       GROUP BY br.origin, br.destination
+       ORDER BY count DESC
+       LIMIT 1`,
+      [id],
+    );
+
+    const favoriteRoute = favoriteRouteResult.rows[0]
+      ? `${favoriteRouteResult.rows[0].origin} → ${favoriteRouteResult.rows[0].destination}`
+      : "N/A";
+
+    res.json({
+      ...user,
+      stats: {
+        total_trips: Number(tripCountResult.rows[0].total_trips || 0),
+        total_rentals: Number(rentalCountResult.rows[0].total_rentals || 0),
+        favorite_route: favoriteRoute,
+      },
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 10. Change user password
+app.post("/api/users/:id/password", async (req, res) => {
+  const { id } = req.params;
+  const { current_password, new_password } = req.body;
+
+  if (!current_password || !new_password) {
+    return res
+      .status(400)
+      .json({ error: "Current and new passwords are required." });
+  }
+
+  if (new_password.length < 8) {
+    return res
+      .status(400)
+      .json({ error: "New password must be at least 8 characters." });
+  }
+
+  try {
+    const existing = await pool.query(
+      `SELECT password_hash FROM users WHERE id = $1`,
+      [id],
+    );
+
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const isMatch = await bcrypt.compare(
+      current_password,
+      existing.rows[0].password_hash,
+    );
+
+    if (!isMatch) {
+      return res.status(401).json({ error: "Current password is incorrect." });
+    }
+
+    const newHash = await bcrypt.hash(new_password, 10);
+    await pool.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [
+      newHash,
+      id,
+    ]);
+
+    res.json({ message: "Password updated successfully." });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
