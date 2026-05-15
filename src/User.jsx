@@ -38,6 +38,7 @@ export default function UserApp({ role, userId, onLogout }) {
         active={page}
         setActive={setPage}
         role={role}
+        userId={userId}
         onLogout={onLogout}
       />
       <div
