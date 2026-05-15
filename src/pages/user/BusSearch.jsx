@@ -1,16 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { carModels } from "../../data/transportData";
 import Footer from "../../components/Footer";
-import {
-  Icon,
-  icons,
-  setupScrollReveal,
-  NAV,
-  companyMeta,
-  getCompanyMeta,
-  getTodayISO,
-} from "../../utils/sharedUser";
+import { Icon, icons, setupScrollReveal, NAV } from "../../utils/sharedUser";
 import AuthModal from "./AuthModal";
 
 function formatApiRouteRows(data) {
@@ -50,7 +41,13 @@ function formatApiRouteRows(data) {
   });
 }
 
-export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
+export default function BusSearch({
+  role,
+  userId,
+  setActive,
+  setBookingsTab,
+  setBookingsRefresh,
+}) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [selectedRoute, setSelectedRoute] = useState(null);
@@ -64,7 +61,6 @@ export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
   const [travelDate, setTravelDate] = useState("");
   const [allRoutes, setAllRoutes] = useState([]);
   const [searchedRoutes, setSearchedRoutes] = useState([]);
-  const [companies, setCompanies] = useState([]);
   const [lastSearch, setLastSearch] = useState(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [bookedSeats, setBookedSeats] = useState([]);
@@ -84,20 +80,6 @@ export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
         }
         const formattedRoutes = formatApiRouteRows(data);
         setAllRoutes(formattedRoutes);
-
-        const uniqueCompanies = Array.from(
-          new Map(
-            formattedRoutes.map((r) => [
-              r.vehicle,
-              {
-                name: r.vehicle,
-                color: r.color,
-                bg: r.bg,
-              },
-            ]),
-          ).values(),
-        );
-        setCompanies(uniqueCompanies);
       })
       .catch((err) => console.error("Error fetching routes:", err));
   }, []);
@@ -151,6 +133,13 @@ export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
     const cleanup = setupScrollReveal();
     return cleanup;
   }, [step, displayRoutes]);
+
+  useEffect(() => {
+    if (selectedRoute) {
+      loadBookedSeats(selectedRoute);
+    }
+  }, [selectedRoute]);
+
   if (paymentSuccess)
     return (
       <div
@@ -213,6 +202,10 @@ export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
     setStep((prev) => Math.max(1, prev - 1));
   };
 
+  const selectedRouteObj =
+    allRoutes.find((r) => r.id === selectedRoute) ||
+    searchedRoutes.find((r) => r.id === selectedRoute);
+
   const handleConfirmPayment = async () => {
     if (!userId) {
       setBookingError("Please sign in to complete the booking.");
@@ -225,10 +218,16 @@ export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
       return;
     }
 
+    if (!selectedRouteObj) {
+      setBookingError("Unable to locate selected route. Please choose again.");
+      return;
+    }
+
     setBookingError("");
     setBookingSubmitting(true);
 
     try {
+      const totalPrice = selectedRouteObj.price * selectedSeats.length;
       const res = await fetch("/api/bookings/bus", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -236,6 +235,7 @@ export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
           user_id: Number(userId),
           route_id: selectedRoute,
           seat_numbers: selectedSeats,
+          total_price: totalPrice,
           payment_method: payMethod,
         }),
       });
@@ -250,12 +250,36 @@ export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
         return;
       }
 
+      await loadBookedSeats(selectedRoute);
+      if (setBookingsRefresh) {
+        setBookingsRefresh((prev) => prev + 1);
+      }
       setPaymentSuccess(true);
     } catch (err) {
       console.error("Booking request failed:", err);
       setBookingError("Booking failed. Please try again.");
     } finally {
       setBookingSubmitting(false);
+    }
+  };
+
+  const loadBookedSeats = async (routeId) => {
+    if (!routeId) return;
+    setSeatsLoading(true);
+    setSeatsFetchError("");
+    try {
+      const res = await fetch(`/api/routes/${routeId}/booked-seats`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || res.statusText);
+      }
+      setBookedSeats(Array.isArray(data.seat_numbers) ? data.seat_numbers : []);
+    } catch (err) {
+      console.error("Failed to load booked seats:", err);
+      setSeatsFetchError(err.message || "Unable to load booked seats");
+      setBookedSeats([]);
+    } finally {
+      setSeatsLoading(false);
     }
   };
 
@@ -692,6 +716,13 @@ export default function BusSearch({ role, userId, setActive, setBookingsTab }) {
               <span>Selected</span>
             </div>
           </div>
+          {seatsFetchError ? (
+            <div
+              style={{ color: "var(--red)", fontSize: 13, marginBottom: 12 }}
+            >
+              {seatsFetchError}
+            </div>
+          ) : null}
           <div className="seat-layout">
             <div>
               <div className="bus-shell">

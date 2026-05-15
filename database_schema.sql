@@ -102,7 +102,8 @@ CREATE TABLE bus_bookings (
     total_price DECIMAL(10,2) NOT NULL,
     payment_method VARCHAR(50),
     status booking_status DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (route_id, seat_number) REFERENCES bus_seats (route_id, seat_number) ON DELETE CASCADE
 );
 
 -- 9. CAR RENTALS (Transactions)

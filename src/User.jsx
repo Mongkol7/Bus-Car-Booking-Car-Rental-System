@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Icon, icons, NAV, setupScrollReveal } from "./utils/sharedUser";
+import { Icon, NAV, setupScrollReveal } from "./utils/sharedUser";
 import TopNav from "./pages/user/TopNav";
 import Home from "./pages/user/Home";
 import BusSearch from "./pages/user/BusSearch";
@@ -7,8 +7,6 @@ import CarRental from "./pages/user/CarRental";
 import MyBookings from "./pages/user/MyBookings";
 import Profile from "./pages/user/Profile";
 import AuthModal from "./pages/user/AuthModal";
-import { useNavigate } from "react-router-dom";
-import { carModels } from "./data/transportData";
 import Footer from "./components/Footer";
 
 const PAGES = {
@@ -21,6 +19,7 @@ const PAGES = {
 export default function UserApp({ role, userId, onLogout }) {
   const [page, setPage] = useState("home");
   const [bookingsTab, setBookingsTab] = useState("trips");
+  const [bookingsRefresh, setBookingsRefresh] = useState(0);
   const PageComp = PAGES[page] || Home;
   useEffect(() => {
     const cleanup = setupScrollReveal();
@@ -53,6 +52,8 @@ export default function UserApp({ role, userId, onLogout }) {
           onLogout={onLogout}
           bookingsTab={bookingsTab}
           setBookingsTab={setBookingsTab}
+          bookingsRefresh={bookingsRefresh}
+          setBookingsRefresh={setBookingsRefresh}
         />
       </div>
       <Footer />
