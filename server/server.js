@@ -564,6 +564,12 @@ const BUS_SELECT = `
   ORDER BY c.name NULLS LAST, b.name
 `;
 
+const DESTINATION_SELECT = `
+  SELECT id, name, created_at
+  FROM destinations
+  ORDER BY name
+`;
+
 function normalizeRoutePayload(body) {
   const busId = Number(body.bus_id);
   const origin = String(body.origin || '').trim();
@@ -605,6 +611,14 @@ function normalizeRoutePayload(body) {
   };
 }
 
+function normalizeDestinationPayload(body) {
+  const name = String(body.name || '').trim();
+  if (!name) {
+    return { error: 'Destination name is required.' };
+  }
+  return { value: { name } };
+}
+
 async function ensureBusExists(busId) {
   const result = await pool.query(`SELECT id FROM buses WHERE id = $1`, [busId]);
   return result.rowCount > 0;
@@ -632,11 +646,17 @@ async function hasOverlappingSchedule(busId, departureTime, arrivalTime, exclude
 async function fetchAdminRoutes() {
   const routes = await pool.query(`${ROUTE_SELECT} ORDER BY r.departure_time ASC`);
   const buses = await pool.query(BUS_SELECT);
-  return { routes: routes.rows, buses: buses.rows };
+  const destinations = await pool.query(DESTINATION_SELECT);
+  return { routes: routes.rows, buses: buses.rows, destinations: destinations.rows };
 }
 
 async function fetchAdminRouteById(routeId) {
   const result = await pool.query(`${ROUTE_SELECT} WHERE r.id = $1`, [routeId]);
+  return result.rows[0] || null;
+}
+
+async function fetchDestinationById(destinationId) {
+  const result = await pool.query(`SELECT id, name, created_at FROM destinations WHERE id = $1`, [destinationId]);
   return result.rows[0] || null;
 }
 
@@ -897,6 +917,92 @@ app.get('/api/admin/routes', async (req, res) => {
   try {
     const data = await fetchAdminRoutes();
     res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/destinations', async (req, res) => {
+  const parsed = normalizeDestinationPayload(req.body);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO destinations (name)
+       VALUES ($1)
+       RETURNING id, name, created_at`,
+      [parsed.value.name]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'This destination already exists.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/destinations/:id', async (req, res) => {
+  const destinationId = Number(req.params.id);
+  const parsed = normalizeDestinationPayload(req.body);
+  if (!destinationId) {
+    return res.status(400).json({ error: 'Invalid destination id.' });
+  }
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const client = await pool.connect();
+  try {
+    const existing = await fetchDestinationById(destinationId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Destination not found.' });
+    }
+
+    await client.query('BEGIN');
+    await client.query(`UPDATE destinations SET name = $1 WHERE id = $2`, [parsed.value.name, destinationId]);
+    await client.query(`UPDATE bus_routes SET origin = $1 WHERE origin = $2`, [parsed.value.name, existing.name]);
+    await client.query(`UPDATE bus_routes SET destination = $1 WHERE destination = $2`, [parsed.value.name, existing.name]);
+    await client.query('COMMIT');
+
+    res.json(await fetchDestinationById(destinationId));
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'This destination already exists.' });
+    }
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/admin/destinations/:id', async (req, res) => {
+  const destinationId = Number(req.params.id);
+  if (!destinationId) {
+    return res.status(400).json({ error: 'Invalid destination id.' });
+  }
+
+  try {
+    const existing = await fetchDestinationById(destinationId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Destination not found.' });
+    }
+
+    const usage = await pool.query(
+      `SELECT COUNT(*)::INT AS count
+       FROM bus_routes
+       WHERE origin = $1 OR destination = $1`,
+      [existing.name]
+    );
+    if (Number(usage.rows[0].count || 0) > 0) {
+      return res.status(400).json({ error: 'Cannot delete a destination that is used by schedules.' });
+    }
+
+    await pool.query(`DELETE FROM destinations WHERE id = $1`, [destinationId]);
+    res.json({ id: destinationId, message: 'Destination deleted successfully.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -42,6 +42,15 @@ ON CONFLICT (plate_number) DO NOTHING;
 
 -- 5. SEED BUS ROUTES
 -- Note: Dates are generated dynamically but for seeding we use fixed dates
+INSERT INTO destinations (name) VALUES
+('Phnom Penh'),
+('Siem Reap'),
+('Battambang'),
+('Sihanoukville'),
+('Kampot'),
+('Kep')
+ON CONFLICT (name) DO NOTHING;
+
 INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price) VALUES
 ((SELECT id FROM buses WHERE plate_number = '2A-1234'), 'Phnom Penh', 'Siem Reap', CURRENT_DATE + TIME '06:00:00', CURRENT_DATE + TIME '11:00:00', 12.00),
 ((SELECT id FROM buses WHERE plate_number = '2B-5678'), 'Phnom Penh', 'Battambang', CURRENT_DATE + TIME '09:00:00', CURRENT_DATE + TIME '14:00:00', 12.00),

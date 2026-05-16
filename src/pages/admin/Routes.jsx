@@ -334,10 +334,126 @@ function DeleteModal({ route, onClose, onConfirm, deleting }) {
   );
 }
 
+function DestinationModal({
+  value,
+  error,
+  saving,
+  destinations,
+  editingDestinationId,
+  deletingDestinationId,
+  onChange,
+  onClose,
+  onSubmit,
+  onEdit,
+  onDelete,
+  onReset
+}) {
+  return (
+    <div className="modal-overlay">
+      <div
+        className="modal-card"
+        style={{ maxWidth: 460, textAlign: 'left' }}
+        onClick={event => event.stopPropagation()}
+      >
+        <div className="modal-title">{editingDestinationId ? 'Edit destination' : 'Add destination'}</div>
+        <div className="modal-text" style={{ marginBottom: 18 }}>
+          Manage destination values stored in the database. Changes appear immediately in both Origin and Destination dropdowns.
+        </div>
+
+        {error ? (
+          <div
+            style={{
+              marginBottom: 16,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'var(--red-soft)',
+              color: 'var(--red)',
+              fontSize: 13
+            }}
+          >
+            {error}
+          </div>
+        ) : null}
+
+        <div style={{ marginBottom: 18 }}>
+          <div className="sec-sub" style={{ marginBottom: 8 }}>Destination name</div>
+          <input
+            value={value}
+            onChange={onChange}
+            placeholder="Kampot"
+            disabled={saving}
+          />
+        </div>
+
+        {editingDestinationId ? (
+          <div style={{ marginBottom: 18 }}>
+            <button className="btn btn-ghost btn-sm" onClick={onReset} disabled={saving}>
+              Cancel edit
+            </button>
+          </div>
+        ) : null}
+
+        <div style={{ marginBottom: 18 }}>
+          <div className="sec-sub" style={{ marginBottom: 8 }}>Existing destinations</div>
+          {destinations.length ? (
+            <div style={{ display: 'grid', gap: 8, maxHeight: 160, overflowY: 'auto', paddingRight: 4 }}>
+              {destinations.map(destination => (
+                <div
+                  key={destination.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    padding: '8px 10px',
+                    borderRadius: 10,
+                    background: 'var(--glass)',
+                    border: '0.5px solid var(--glass-border)'
+                  }}
+                >
+                  <span style={{ fontSize: 13 }}>{destination.name}</span>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => onEdit(destination)}
+                      disabled={saving}
+                    >
+                      <Icon d={icons.edit} size={12} />
+                    </button>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() => onDelete(destination)}
+                      disabled={saving || deletingDestinationId === destination.id}
+                    >
+                      {deletingDestinationId === destination.id ? '...' : <Icon d={icons.trash} size={12} />}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="sec-sub">No destinations saved yet.</div>
+          )}
+        </div>
+
+        <div className="modal-btns">
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={onSubmit} disabled={saving}>
+            {saving ? (editingDestinationId ? 'Saving...' : 'Adding...') : (editingDestinationId ? 'Save destination' : 'Add destination')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Routes() {
   const todayKey = useMemo(() => getLocalDateKey(new Date()), []);
   const [routes, setRoutes] = useState([]);
   const [buses, setBuses] = useState([]);
+  const [destinations, setDestinations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pageError, setPageError] = useState('');
@@ -348,6 +464,12 @@ export default function Routes() {
   const [saving, setSaving] = useState(false);
   const [deletingRoute, setDeletingRoute] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [showDestinationModal, setShowDestinationModal] = useState(false);
+  const [newDestinationName, setNewDestinationName] = useState('');
+  const [destinationModalError, setDestinationModalError] = useState('');
+  const [destinationSaving, setDestinationSaving] = useState(false);
+  const [editingDestinationId, setEditingDestinationId] = useState(null);
+  const [deletingDestinationId, setDeletingDestinationId] = useState(null);
   const [filterMode, setFilterMode] = useState('preset-day');
   const [selectedDayKey, setSelectedDayKey] = useState(todayKey);
   const [customDateKey, setCustomDateKey] = useState('');
@@ -402,13 +524,27 @@ export default function Routes() {
   }, [activeDayKey, filteredRoutes, filterMode, todayKey]);
 
   const cityOptions = useMemo(() => {
-    const cities = new Set();
+    const cityMap = new Map();
     routes.forEach(route => {
-      if (route.origin) cities.add(route.origin);
-      if (route.destination) cities.add(route.destination);
+      [route.origin, route.destination].forEach(city => {
+        const normalized = String(city || '').trim();
+        if (!normalized) return;
+        const key = normalized.toLowerCase();
+        if (!cityMap.has(key)) {
+          cityMap.set(key, normalized);
+        }
+      });
     });
-    return Array.from(cities).sort((a, b) => a.localeCompare(b));
-  }, [routes]);
+    destinations.forEach(item => {
+      const normalized = String(item?.name || '').trim();
+      if (!normalized) return;
+      const key = normalized.toLowerCase();
+      if (!cityMap.has(key)) {
+        cityMap.set(key, normalized);
+      }
+    });
+    return Array.from(cityMap.values()).sort((a, b) => a.localeCompare(b));
+  }, [destinations, routes]);
 
   const selectedDayInVisibleWeek = useMemo(
     () => weekDays.some(day => day.key === activeDayKey),
@@ -472,6 +608,7 @@ export default function Routes() {
       const data = await parseJsonResponse(await fetch('/api/admin/routes'));
       setRoutes(data.routes || []);
       setBuses(data.buses || []);
+      setDestinations(data.destinations || []);
     } catch (error) {
       setPageError(error.message || 'Unable to load schedules.');
     } finally {
@@ -547,6 +684,116 @@ export default function Routes() {
 
     setFilterMode('custom-day');
     setSelectedDayKey(nextValue);
+  }
+
+  function openDestinationModal() {
+    setShowDestinationModal(true);
+    setNewDestinationName('');
+    setDestinationModalError('');
+    setEditingDestinationId(null);
+  }
+
+  function closeDestinationModal() {
+    if (destinationSaving) return;
+    setShowDestinationModal(false);
+    setNewDestinationName('');
+    setDestinationModalError('');
+    setEditingDestinationId(null);
+    setDeletingDestinationId(null);
+  }
+
+  async function handleAddDestination() {
+    const normalized = newDestinationName.trim();
+    if (!normalized) {
+      setDestinationModalError('Destination name is required.');
+      return;
+    }
+
+    const exists = cityOptions.some(city => city.toLowerCase() === normalized.toLowerCase());
+    const existingEditing = destinations.find(item => item.id === editingDestinationId);
+    const duplicateWhileEditing = editingDestinationId
+      ? destinations.some(item => item.id !== editingDestinationId && item.name.toLowerCase() === normalized.toLowerCase())
+      : exists;
+    if (duplicateWhileEditing) {
+      setDestinationModalError('This destination already exists.');
+      return;
+    }
+
+    setDestinationSaving(true);
+    setDestinationModalError('');
+
+    try {
+      const created = await parseJsonResponse(
+        await fetch(editingDestinationId ? `/api/admin/destinations/${editingDestinationId}` : '/api/admin/destinations', {
+          method: editingDestinationId ? 'PUT' : 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ name: normalized })
+        })
+      );
+
+      setDestinations(current => {
+        const next = editingDestinationId
+          ? current.map(item => (item.id === editingDestinationId ? created : item))
+          : [...current, created];
+        next.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+        return next;
+      });
+      setRoutes(current => current.map(route => {
+        if (!editingDestinationId || !existingEditing) return route;
+        return {
+          ...route,
+          origin: route.origin === existingEditing.name ? created.name : route.origin,
+          destination: route.destination === existingEditing.name ? created.name : route.destination
+        };
+      }));
+      setShowDestinationModal(false);
+      setNewDestinationName('');
+      setDestinationModalError('');
+      setEditingDestinationId(null);
+    } catch (error) {
+      setDestinationModalError(error.message || 'Unable to add destination.');
+    } finally {
+      setDestinationSaving(false);
+    }
+  }
+
+  function handleEditDestination(destination) {
+    setEditingDestinationId(destination.id);
+    setNewDestinationName(destination.name);
+    setDestinationModalError('');
+  }
+
+  function resetDestinationEditor() {
+    if (destinationSaving) return;
+    setEditingDestinationId(null);
+    setNewDestinationName('');
+    setDestinationModalError('');
+  }
+
+  async function handleDeleteDestination(destination) {
+    const confirmed = window.confirm(`Delete destination "${destination.name}"?`);
+    if (!confirmed) return;
+
+    setDeletingDestinationId(destination.id);
+    setDestinationModalError('');
+
+    try {
+      await parseJsonResponse(
+        await fetch(`/api/admin/destinations/${destination.id}`, {
+          method: 'DELETE'
+        })
+      );
+      setDestinations(current => current.filter(item => item.id !== destination.id));
+      if (editingDestinationId === destination.id) {
+        resetDestinationEditor();
+      }
+    } catch (error) {
+      setDestinationModalError(error.message || 'Unable to delete destination.');
+    } finally {
+      setDeletingDestinationId(null);
+    }
   }
 
   function validateForm() {
@@ -663,6 +910,9 @@ export default function Routes() {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button className="btn btn-ghost btn-sm" onClick={() => loadRoutes(false)} disabled={refreshing}>
             <Icon d={icons.clock} size={13} /> {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={openDestinationModal}>
+            <Icon d={icons.plus} size={13} /> Add destination
           </button>
           <button className="btn btn-primary btn-sm" onClick={openCreateModal}>
             <Icon d={icons.plus} size={13} color="#fff" /> Add schedule
@@ -978,6 +1228,28 @@ export default function Routes() {
           cityOptions={cityOptions}
           saving={saving}
           editing={editingId !== null}
+        />
+      ) : null}
+
+      {showDestinationModal ? (
+        <DestinationModal
+          value={newDestinationName}
+          error={destinationModalError}
+          saving={destinationSaving}
+          destinations={destinations}
+          editingDestinationId={editingDestinationId}
+          deletingDestinationId={deletingDestinationId}
+          onChange={event => {
+            setNewDestinationName(event.target.value);
+            if (destinationModalError) {
+              setDestinationModalError('');
+            }
+          }}
+          onClose={closeDestinationModal}
+          onSubmit={handleAddDestination}
+          onEdit={handleEditDestination}
+          onDelete={handleDeleteDestination}
+          onReset={resetDestinationEditor}
         />
       ) : null}
 
