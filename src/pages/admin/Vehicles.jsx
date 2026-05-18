@@ -1,9 +1,17 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon, icons, getCompanyMeta } from '../../utils/sharedAdmin';
 
 const STATUS_TABS = ['all', 'available', 'rented', 'maintenance'];
 const VEHICLE_STATUSES = ['available', 'rented', 'maintenance'];
+const SEAT_CELL_TYPES = [
+  { id: 'seat', label: 'Seat' },
+  { id: 'empty', label: 'Empty' },
+  { id: 'door', label: 'Door' },
+  { id: 'bathroom', label: 'Bathroom' },
+  { id: 'driver', label: 'Driver' },
+  { id: 'note', label: 'Note' }
+];
 
 const EMPTY_BUS = {
   company_id: '',
@@ -54,6 +62,77 @@ function formatMoney(value) {
   return `$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function rowLabel(index) {
+  let label = '';
+  let value = index + 1;
+  while (value > 0) {
+    const mod = (value - 1) % 26;
+    label = String.fromCharCode(65 + mod) + label;
+    value = Math.floor((value - mod) / 26);
+  }
+  return label;
+}
+
+function generateSeatMap(rowsValue, columnsValue) {
+  const rows = Math.max(1, Number(rowsValue || 1));
+  const columns = Math.max(1, Number(columnsValue || 1));
+  const cells = [];
+  for (let row = 1; row <= rows; row += 1) {
+    for (let column = 1; column <= columns; column += 1) {
+      cells.push({
+        row,
+        column,
+        type: 'seat',
+        label: `${rowLabel(row - 1)}${column}`,
+        color: '',
+        note: ''
+      });
+    }
+  }
+  return { rows, columns, cells };
+}
+
+function normalizeSeatMap(layout, fallbackSeats = 1) {
+  if (layout?.rows && layout?.columns && Array.isArray(layout?.cells)) return layout;
+  return generateSeatMap(Math.max(1, Math.ceil(Number(fallbackSeats || 1) / 4)), 4);
+}
+
+function seatCount(layout) {
+  return (layout?.cells || []).filter((cell) => cell.type === 'seat').length;
+}
+
+function cellTitle(cell) {
+  if (cell.type === 'seat') return cell.label;
+  if (cell.type === 'empty') return '';
+  if (cell.type === 'bathroom') return 'WC';
+  if (cell.type === 'driver') return 'DR';
+  if (cell.type === 'door') return 'DO';
+  return cell.label || 'Note';
+}
+
+function cellStyle(cell, selected) {
+  const base = {
+    width: 46,
+    height: 40,
+    borderRadius: 7,
+    border: selected ? '1px solid var(--accent)' : '0.5px solid var(--glass-border)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 10,
+    fontWeight: 600,
+    cursor: 'pointer',
+    color: 'var(--text-2)',
+    background: 'var(--glass-strong)'
+  };
+  if (cell.type === 'seat') return { ...base, background: cell.color || 'var(--glass-strong)', color: cell.color ? '#fff' : 'var(--text-2)' };
+  if (cell.type === 'empty') return { ...base, background: 'transparent', borderStyle: 'dashed', color: 'var(--text-3)' };
+  if (cell.type === 'door') return { ...base, background: 'rgba(96,165,250,0.16)', color: 'var(--accent)' };
+  if (cell.type === 'bathroom') return { ...base, background: 'rgba(167,139,250,0.16)', color: 'var(--purple)' };
+  if (cell.type === 'driver') return { ...base, background: 'rgba(245,158,11,0.16)', color: 'var(--amber)' };
+  return { ...base, background: 'rgba(255,255,255,0.07)' };
+}
+
 function hexToRgba(hex, alpha = 0.16) {
   const clean = String(hex || '').replace('#', '');
   if (!/^[0-9a-fA-F]{6}$/.test(clean)) return EMPTY_COMPANY.theme_bg;
@@ -101,6 +180,321 @@ function BusModal({ form, companies, editing, saving, error, onChange, onSubmit,
           </button>
         </div>
         {!companies.length ? <div className="td-muted" style={{ marginTop: 10, fontSize: 12 }}>Create a company before adding buses.</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function SeatMapModal({ bus, initialData, saving, error, notice, onClose, onSave, onRefreshHistory }) {
+  const initialLayout = normalizeSeatMap(initialData?.layout, bus?.total_seats);
+  const [layout, setLayout] = useState(initialLayout);
+  const [selectedKey, setSelectedKey] = useState(initialLayout.cells[0] ? `${initialLayout.cells[0].row}-${initialLayout.cells[0].column}` : '');
+  const [rows, setRows] = useState(String(initialLayout.rows || 1));
+  const [columns, setColumns] = useState(String(initialLayout.columns || 4));
+  const [templateName, setTemplateName] = useState(bus?.seat_map_template_name || `${bus?.company_name || 'Bus'} ${bus?.type || ''} layout`.trim());
+  const [mode, setMode] = useState('override');
+  const [selectedTemplateId, setSelectedTemplateId] = useState(bus?.seat_map_template_id ? String(bus.seat_map_template_id) : '');
+  const [previewTemplateId, setPreviewTemplateId] = useState('');
+  const [templatePreviewDirty, setTemplatePreviewDirty] = useState(false);
+  const [loadedHistoryName, setLoadedHistoryName] = useState('');
+  const [duplicateWarning, setDuplicateWarning] = useState('');
+
+  useEffect(() => {
+    onRefreshHistory(Number(rows), Number(columns));
+  }, [rows, columns, onRefreshHistory]);
+
+  const selectedCell = layout.cells.find((cell) => `${cell.row}-${cell.column}` === selectedKey) || layout.cells[0];
+  const currentSeatCount = seatCount(layout);
+  const seatDelta = currentSeatCount - Number(bus?.total_seats || 0);
+
+  function markTemplatePreviewEdited() {
+    if (!previewTemplateId) return;
+    setTemplatePreviewDirty(true);
+    setLoadedHistoryName('Edited reusable template preview');
+  }
+
+  function duplicateTemplate(targetMode) {
+    const nextName = String(templateName || '').trim().toLowerCase();
+    if (!nextName) return null;
+    return (initialData?.templates || []).find((item) => {
+      const sameName = String(item.name || '').trim().toLowerCase() === nextName;
+      const sameTemplate = String(item.id) === String(selectedTemplateId);
+      return sameName && !(targetMode === 'update-template' && sameTemplate);
+    }) || null;
+  }
+
+  function handleSaveClick() {
+    const applyTemplateOnly = Boolean(previewTemplateId && !templatePreviewDirty && mode !== 'template');
+    const duplicate = !applyTemplateOnly ? duplicateTemplate(mode) : null;
+    if (duplicate) {
+      setDuplicateWarning(`"${templateName}" already exists as a reusable template. Please rename this map before saving.`);
+      return;
+    }
+    if (mode === 'update-template' && !selectedTemplateId) {
+      setDuplicateWarning('Select a reusable template before using Update on this template.');
+      return;
+    }
+    onSave({
+      layout,
+      templateName,
+      saveAsTemplate: mode === 'template',
+      updateTemplate: mode === 'update-template',
+      templateId: selectedTemplateId,
+      applyTemplateOnly
+    });
+  }
+
+  function updateCell(updates) {
+    if (!selectedCell) return;
+    markTemplatePreviewEdited();
+    setLayout((current) => ({
+      ...current,
+      cells: current.cells.map((cell) => {
+        if (`${cell.row}-${cell.column}` !== selectedKey) return cell;
+        const next = { ...cell, ...updates };
+        if (updates.type && updates.type !== 'seat' && !next.label) next.label = '';
+        if (updates.type === 'seat' && !next.label) next.label = `${rowLabel(cell.row - 1)}${cell.column}`;
+        return next;
+      })
+    }));
+  }
+
+  function generateNew() {
+    const next = generateSeatMap(Number(rows), Number(columns));
+    setLayout(next);
+    setSelectedKey(next.cells[0] ? `${next.cells[0].row}-${next.cells[0].column}` : '');
+    setSelectedTemplateId('');
+    setPreviewTemplateId('');
+    setTemplatePreviewDirty(true);
+    setMode('override');
+    setLoadedHistoryName('');
+  }
+
+  function autoLabelSeats() {
+    markTemplatePreviewEdited();
+    setLayout((current) => ({
+      ...current,
+      cells: current.cells.map((cell) => cell.type === 'seat'
+        ? { ...cell, label: `${rowLabel(cell.row - 1)}${cell.column}` }
+        : cell)
+    }));
+  }
+
+  function loadHistory(item) {
+    const next = normalizeSeatMap(item.layout_json, bus?.total_seats);
+    setLayout(next);
+    setRows(String(next.rows));
+    setColumns(String(next.columns));
+    setSelectedKey(next.cells[0] ? `${next.cells[0].row}-${next.cells[0].column}` : '');
+    setTemplateName(item.name || templateName);
+    setSelectedTemplateId('');
+    setPreviewTemplateId('');
+    setTemplatePreviewDirty(true);
+    setMode('template');
+    setLoadedHistoryName(item.name || 'history layout');
+  }
+
+  function previewTemplate(templateId) {
+    setSelectedTemplateId(templateId);
+    const template = (initialData?.templates || []).find((item) => String(item.id) === String(templateId));
+    if (!template) return;
+    const next = normalizeSeatMap(template.layout_json, bus?.total_seats);
+    setLayout(next);
+    setRows(String(next.rows));
+    setColumns(String(next.columns));
+    setSelectedKey(next.cells[0] ? `${next.cells[0].row}-${next.cells[0].column}` : '');
+    setTemplateName(template.name || templateName);
+    setPreviewTemplateId(String(templateId));
+    setTemplatePreviewDirty(false);
+    setMode('override');
+    setLoadedHistoryName(`template preview: ${template.name}`);
+  }
+
+  function changeRows(value) {
+    setRows(value);
+    if (selectedTemplateId) {
+      setSelectedTemplateId('');
+      setPreviewTemplateId('');
+      setTemplatePreviewDirty(false);
+      setLoadedHistoryName('');
+    }
+  }
+
+  function changeColumns(value) {
+    setColumns(value);
+    if (selectedTemplateId) {
+      setSelectedTemplateId('');
+      setPreviewTemplateId('');
+      setTemplatePreviewDirty(false);
+      setLoadedHistoryName('');
+    }
+  }
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal-card" style={{ maxWidth: 1040, textAlign: 'left', maxHeight: '92vh', overflow: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 16 }}>
+          <div>
+            <div className="modal-title">Seat map</div>
+            <div className="modal-sub">{bus?.company_name || 'Unknown company'} - {bus?.name} - {bus?.type}</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>
+            <Icon d={icons.x} size={12} />
+          </button>
+        </div>
+
+        {error ? <div style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 8, color: 'var(--red)', background: 'var(--red-soft)' }}>{error}</div> : null}
+        {notice ? <div style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 8, color: 'var(--green)', background: 'var(--green-soft)' }}>{notice}</div> : null}
+
+        <div className="form-row">
+          <input type="number" min="1" max="30" placeholder="Rows" value={rows} onChange={(event) => changeRows(event.target.value)} />
+          <input type="number" min="1" max="12" placeholder="Columns" value={columns} onChange={(event) => changeColumns(event.target.value)} />
+          <button className="btn btn-ghost" type="button" onClick={generateNew}>New map</button>
+          <button className="btn btn-ghost" type="button" onClick={autoLabelSeats}>Auto-label</button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) 280px', gap: 18, alignItems: 'start' }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div className="sec-title">Layout editor</div>
+              <div className="td-muted">{currentSeatCount} bookable seats</div>
+            </div>
+            {seatDelta !== 0 ? (
+              <div style={{ marginBottom: 12, padding: '9px 11px', borderRadius: 8, color: 'var(--amber)', background: 'rgba(245,158,11,0.12)', fontSize: 12 }}>
+                Seat count will change from {bus?.total_seats || 0} to {currentSeatCount}.
+              </div>
+            ) : null}
+            <div className="bus-shell" style={{ display: 'inline-block' }}>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${layout.columns}, 46px)`,
+                  gap: 8,
+                  position: 'relative',
+                  zIndex: 1
+                }}
+              >
+                {layout.cells.map((cell) => {
+                  const key = `${cell.row}-${cell.column}`;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      style={cellStyle(cell, selectedKey === key)}
+                      title={cell.note || cell.label || cell.type}
+                      onClick={() => setSelectedKey(key)}
+                    >
+                      {cellTitle(cell)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 18 }}>
+              <div className="sec-title">Matching layouts from history</div>
+              <div className="td-muted" style={{ marginBottom: 8 }}>Same rows and columns. Pick one, then save it for this bus or as a reusable template.</div>
+              <div style={{ display: 'grid', gap: 8, maxHeight: 170, overflow: 'auto' }}>
+                {(initialData?.history || []).map((item) => (
+                  <button key={item.id} className="btn btn-ghost btn-sm" style={{ justifyContent: 'space-between', textAlign: 'left' }} onClick={() => loadHistory(item)}>
+                    <span>
+                      {item.name}
+                      <span className="td-muted" style={{ display: 'block', fontSize: 10 }}>
+                        {item.company_name || bus?.company_name || 'Unknown company'} - {item.vehicle_type}
+                      </span>
+                    </span>
+                    <span className="td-muted">{item.seat_count} seats</span>
+                  </button>
+                ))}
+                {!initialData?.history?.length ? <div className="td-muted">No matching history yet. Create a new map for these dimensions.</div> : null}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="sec-title">Cell details</div>
+            {selectedCell ? (
+              <>
+                <select value={selectedCell.type} onChange={(event) => updateCell({ type: event.target.value })} style={{ marginBottom: 10 }}>
+                  {SEAT_CELL_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+                </select>
+                <input value={selectedCell.label || ''} placeholder="Label" onChange={(event) => updateCell({ label: event.target.value })} style={{ marginBottom: 10 }} />
+                <input type="color" value={selectedCell.color || '#4f8ef7'} onChange={(event) => updateCell({ color: event.target.value })} style={{ marginBottom: 10 }} />
+                <textarea value={selectedCell.note || ''} placeholder="Note, e.g. near bathroom" onChange={(event) => updateCell({ note: event.target.value })} style={{ minHeight: 86 }} />
+              </>
+            ) : <div className="td-muted">Select a cell to edit.</div>}
+
+            <div className="sec-title" style={{ marginTop: 18 }}>Reusable templates</div>
+            {bus?.seat_map_template_name && !bus?.has_seat_map_override ? (
+              <div style={{ marginBottom: 10, padding: '8px 10px', borderRadius: 8, color: 'var(--green)', background: 'var(--green-soft)', fontSize: 12 }}>
+                Using reusable template: {bus.seat_map_template_name}
+              </div>
+            ) : null}
+            {bus?.has_seat_map_override ? (
+              <div style={{ marginBottom: 10, padding: '8px 10px', borderRadius: 8, color: 'var(--amber)', background: 'rgba(245,158,11,0.12)', fontSize: 12 }}>
+                This bus has a custom override.
+              </div>
+            ) : null}
+            <select
+              value={selectedTemplateId}
+              onChange={(event) => {
+                const nextTemplateId = event.target.value;
+                if (nextTemplateId) {
+                  previewTemplate(nextTemplateId);
+                } else {
+                  setSelectedTemplateId('');
+                  setLoadedHistoryName('');
+                }
+              }}
+              disabled={saving}
+              style={{ marginBottom: 10 }}
+            >
+              <option value="">No template selected</option>
+              {(initialData?.templates || []).map((template) => (
+                <option key={template.id} value={template.id}>{template.name} - {template.company_name || 'Any company'} - {template.vehicle_type} ({template.seat_count} seats)</option>
+              ))}
+            </select>
+            <div className="td-muted" style={{ fontSize: 11 }}>
+              Templates shown here match the current row and column inputs. Selecting one previews it only; click Save seat map to save it.
+            </div>
+            {loadedHistoryName ? (
+              <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8, color: 'var(--accent)', background: 'var(--accent-soft)', fontSize: 12 }}>
+                {loadedHistoryName}. {previewTemplateId && !templatePreviewDirty ? 'Click Save seat map to apply this reusable template.' : 'Choose whether to update this bus only or save as a reusable template.'}
+              </div>
+            ) : null}
+
+            <div className="sec-title" style={{ marginTop: 18 }}>Save map</div>
+            <input value={templateName} placeholder="Template/history name" onChange={(event) => setTemplateName(event.target.value)} style={{ marginBottom: 10 }} />
+            <select value={mode} onChange={(event) => setMode(event.target.value)} style={{ marginBottom: 10 }}>
+              <option value="override">Save this bus only</option>
+              <option value="template">Save as a reusable template</option>
+              <option value="update-template" disabled={!selectedTemplateId}>Update on this template</option>
+            </select>
+            <button
+              className="btn btn-primary btn-full"
+              disabled={saving}
+              onClick={handleSaveClick}
+            >
+              {saving ? 'Saving...' : 'Save seat map'}
+            </button>
+          </div>
+        </div>
+
+        {duplicateWarning ? (
+          <div className="modal-overlay" style={{ position: 'fixed', background: 'rgba(0,0,0,0.32)' }} onClick={() => setDuplicateWarning('')}>
+            <div className="modal-card" style={{ maxWidth: 420, textAlign: 'center' }} onClick={(event) => event.stopPropagation()}>
+              <div className="modal-icon" style={{ background: 'rgba(245,158,11,0.16)', color: 'var(--amber)', borderColor: 'rgba(245,158,11,0.35)' }}>
+                <Icon d={icons.x} size={22} />
+              </div>
+              <div className="modal-title">Duplicate template name</div>
+              <div className="modal-text">{duplicateWarning}</div>
+              <div className="modal-btns">
+                <button className="btn btn-primary" onClick={() => setDuplicateWarning('')}>Rename</button>
+                <button className="btn btn-ghost" onClick={() => setDuplicateWarning('')}>Close</button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -288,6 +682,11 @@ export default function Vehicles() {
   const [companyModalOpen, setCompanyModalOpen] = useState(false);
   const [deletingTarget, setDeletingTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [seatMapBus, setSeatMapBus] = useState(null);
+  const [seatMapData, setSeatMapData] = useState(null);
+  const [seatMapLoading, setSeatMapLoading] = useState(false);
+  const [seatMapError, setSeatMapError] = useState('');
+  const [seatMapNotice, setSeatMapNotice] = useState('');
 
   function setTab(nextTab) {
     navigate(nextTab === 'cars' ? '/admin/vehicles/rental-cars' : '/admin/vehicles/buses');
@@ -371,6 +770,22 @@ export default function Vehicles() {
     });
     setVehicleError('');
     setBusModalOpen(true);
+  }
+
+  async function openSeatMap(bus) {
+    setSeatMapBus(bus);
+    setSeatMapData(null);
+    setSeatMapError('');
+    setSeatMapNotice('');
+    setSeatMapLoading(true);
+    try {
+      const data = await parseJsonResponse(await fetch(`/api/admin/buses/${bus.id}/seat-map`));
+      setSeatMapData(data);
+    } catch (error) {
+      setSeatMapError(error.message || 'Unable to load seat map.');
+    } finally {
+      setSeatMapLoading(false);
+    }
   }
 
   function openCreateCar() {
@@ -537,6 +952,80 @@ export default function Vehicles() {
     }
   }
 
+  const refreshSeatMapHistory = useCallback(async (rows, columns) => {
+    if (!rows || !columns) return;
+    try {
+      const params = new URLSearchParams({
+        rows: String(rows),
+        columns: String(columns)
+      });
+      const [history, templates] = await Promise.all([
+        parseJsonResponse(await fetch(`/api/admin/seat-map-history?${params.toString()}`)),
+        parseJsonResponse(await fetch(`/api/admin/seat-map-templates?${params.toString()}`))
+      ]);
+      setSeatMapData((current) => current ? { ...current, history, templates } : current);
+    } catch (error) {
+      setSeatMapError(error.message || 'Unable to load matching seat maps.');
+    }
+  }, []);
+
+  async function saveSeatMap({ layout, templateName, saveAsTemplate, updateTemplate, templateId, applyTemplateOnly }) {
+    if (!seatMapBus) return;
+    setSaving(true);
+    setSeatMapError('');
+    setSeatMapNotice('');
+    try {
+      if (updateTemplate) {
+        const currentBus = seatMapData?.bus || seatMapBus;
+        await parseJsonResponse(await fetch(`/api/admin/seat-map-templates/${templateId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            company_id: currentBus.company_id,
+            vehicle_type: currentBus.type,
+            name: templateName,
+            layout
+          })
+        }));
+      }
+
+      const payload = applyTemplateOnly
+        ? {
+            template_id: templateId ? Number(templateId) : null,
+            use_template_only: true
+          }
+        : updateTemplate
+          ? {
+              template_id: templateId ? Number(templateId) : null,
+              use_template_only: true
+            }
+        : {
+            layout,
+            template_name: templateName,
+            save_as_template: saveAsTemplate,
+            template_id: saveAsTemplate && templateId ? Number(templateId) : null
+          };
+
+      await parseJsonResponse(await fetch(`/api/admin/buses/${seatMapBus.id}/seat-map`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }));
+      const data = await parseJsonResponse(await fetch(`/api/admin/buses/${seatMapBus.id}/seat-map`));
+      setSeatMapData(data);
+      await loadVehicles(false);
+      navigate('/admin/vehicles/buses', { replace: true });
+      setSeatMapBus(null);
+      setSeatMapData(null);
+      setSeatMapNotice('');
+      setSeatMapError('');
+    } catch (error) {
+      setSeatMapError(error.message || 'Unable to save seat map.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const activeRows = tab === 'buses' ? filteredBuses : filteredCars;
 
   return (
@@ -608,6 +1097,7 @@ export default function Vehicles() {
                   <th>Type</th>
                   <th>Plate</th>
                   <th>Seats</th>
+                  <th>Seat map</th>
                   <th>Routes</th>
                   <th>Status</th>
                   <th>Actions</th>
@@ -630,10 +1120,18 @@ export default function Vehicles() {
                       <td className="td-muted">{bus.type}</td>
                       <td className="td-muted">{bus.plate_number}</td>
                       <td className="td-muted">{bus.total_seats}</td>
+                      <td className="td-muted">
+                        {bus.has_seat_map_override
+                          ? 'Custom'
+                          : bus.seat_map_template_name || 'Fallback'}
+                      </td>
                       <td>{bus.route_count || 0}</td>
                       <td><span className={`badge ${statusBadge(bus.status)}`}>{titleCase(bus.status)}</span></td>
                       <td>
                         <div style={{ display: 'flex', gap: 6 }}>
+                          <button className="btn btn-ghost btn-sm" onClick={() => openSeatMap(bus)} title="Edit seat map">
+                            <Icon d={icons.grid || icons.settings} size={12} />
+                          </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => openEditBus(bus)}>
                             <Icon d={icons.edit} size={12} />
                           </button>
@@ -645,7 +1143,7 @@ export default function Vehicles() {
                     </tr>
                   );
                 })}
-                {!activeRows.length ? <tr><td colSpan={9} className="td-muted" style={{ padding: 18 }}>No buses found.</td></tr> : null}
+                {!activeRows.length ? <tr><td colSpan={10} className="td-muted" style={{ padding: 18 }}>No buses found.</td></tr> : null}
               </tbody>
             </table>
           </div>
@@ -722,6 +1220,37 @@ export default function Vehicles() {
           onSubmit={saveCar}
           onClose={closeVehicleModal}
         />
+      ) : null}
+
+      {seatMapBus ? (
+        seatMapLoading || !seatMapData ? (
+          <div className="modal-overlay">
+            <div className="modal-card">
+              <div className="modal-title">Seat map</div>
+              <div className="modal-text">{seatMapError || 'Loading seat map...'}</div>
+              <button className="btn btn-ghost" onClick={() => setSeatMapBus(null)}>Close</button>
+            </div>
+          </div>
+        ) : (
+          <SeatMapModal
+            key={`${seatMapBus.id}-${seatMapData.bus?.seat_map_template_id || 'custom'}-${seatMapData.bus?.has_seat_map_override ? 'override' : 'template'}-${seatMapData.layout?.rows || 0}-${seatMapData.layout?.columns || 0}`}
+            bus={seatMapData.bus || seatMapBus}
+            initialData={seatMapData}
+            saving={saving}
+            error={seatMapError}
+            notice={seatMapNotice}
+            onClose={() => {
+              if (!saving) {
+                setSeatMapBus(null);
+                setSeatMapData(null);
+                setSeatMapError('');
+                setSeatMapNotice('');
+              }
+            }}
+            onSave={saveSeatMap}
+            onRefreshHistory={refreshSeatMapHistory}
+          />
+        )
       ) : null}
 
       {companyModalOpen ? (

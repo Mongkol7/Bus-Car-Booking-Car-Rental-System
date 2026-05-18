@@ -133,6 +133,50 @@ async function runUserSchemaMigration() {
     `);
     await pool.query(`ALTER TABLE users ALTER COLUMN role_id SET DEFAULT ${Number(defaultRoleId)}`);
   }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS dashboard_monthly_expenses (
+      id SERIAL PRIMARY KEY,
+      month_key VARCHAR(7) UNIQUE NOT NULL,
+      total_expense DECIMAL(12,2) NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bus_seat_map_templates (
+      id SERIAL PRIMARY KEY,
+      company_id INT REFERENCES companies(id) ON DELETE CASCADE,
+      vehicle_type VARCHAR(100) NOT NULL,
+      name VARCHAR(120) NOT NULL,
+      rows INT NOT NULL,
+      columns INT NOT NULL,
+      seat_count INT NOT NULL DEFAULT 0,
+      layout_json JSONB NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bus_seat_map_history (
+      id SERIAL PRIMARY KEY,
+      company_id INT REFERENCES companies(id) ON DELETE SET NULL,
+      bus_id INT REFERENCES buses(id) ON DELETE SET NULL,
+      template_id INT REFERENCES bus_seat_map_templates(id) ON DELETE SET NULL,
+      vehicle_type VARCHAR(100) NOT NULL,
+      name VARCHAR(120) NOT NULL,
+      rows INT NOT NULL,
+      columns INT NOT NULL,
+      seat_count INT NOT NULL DEFAULT 0,
+      layout_json JSONB NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`ALTER TABLE buses ADD COLUMN IF NOT EXISTS seat_map_template_id INT REFERENCES bus_seat_map_templates(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE buses ADD COLUMN IF NOT EXISTS seat_map_override JSONB`);
 }
 
 const USER_SELECT = `
@@ -279,6 +323,7 @@ const BOOKING_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
 const RENTAL_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled', 'returned'];
 const PAYMENT_METHODS = ['aba', 'khqr', 'cash'];
 const VEHICLE_STATUSES = ['available', 'rented', 'maintenance'];
+const SEAT_MAP_CELL_TYPES = ['seat', 'empty', 'door', 'bathroom', 'driver', 'note'];
 
 function normalizeText(value) {
   return String(value || '').trim();
@@ -671,15 +716,22 @@ async function fetchAdminVehicles() {
          b.plate_number,
          b.total_seats,
          b.status,
+         b.seat_map_template_id,
+         b.seat_map_override IS NOT NULL AS has_seat_map_override,
          b.created_at,
+         t.name AS seat_map_template_name,
+         t.rows AS seat_map_rows,
+         t.columns AS seat_map_columns,
+         t.seat_count AS seat_map_seat_count,
          c.name AS company_name,
          c.theme_color AS color,
          c.theme_bg AS bg,
          COUNT(br.id)::INT AS route_count
        FROM buses b
        LEFT JOIN companies c ON c.id = b.company_id
+       LEFT JOIN bus_seat_map_templates t ON t.id = b.seat_map_template_id
        LEFT JOIN bus_routes br ON br.bus_id = b.id
-       GROUP BY b.id, c.id
+       GROUP BY b.id, c.id, t.id
        ORDER BY c.name NULLS LAST, b.name`
     ),
     pool.query(
@@ -728,16 +780,25 @@ async function fetchAdminBusById(busId) {
        b.plate_number,
        b.total_seats,
        b.status,
+       b.seat_map_template_id,
+       b.seat_map_override,
+       b.seat_map_override IS NOT NULL AS has_seat_map_override,
        b.created_at,
+       t.name AS seat_map_template_name,
+       t.layout_json AS template_layout,
+       t.rows AS seat_map_rows,
+       t.columns AS seat_map_columns,
+       t.seat_count AS seat_map_seat_count,
        c.name AS company_name,
        c.theme_color AS color,
        c.theme_bg AS bg,
        COUNT(br.id)::INT AS route_count
      FROM buses b
      LEFT JOIN companies c ON c.id = b.company_id
+     LEFT JOIN bus_seat_map_templates t ON t.id = b.seat_map_template_id
      LEFT JOIN bus_routes br ON br.bus_id = b.id
      WHERE b.id = $1
-     GROUP BY b.id, c.id`,
+     GROUP BY b.id, c.id, t.id`,
     [busId]
   );
   return result.rows[0] || null;
@@ -871,6 +932,195 @@ function normalizeCompanyPayload(body) {
   };
 }
 
+function rowLabel(index) {
+  let label = '';
+  let value = index + 1;
+  while (value > 0) {
+    const mod = (value - 1) % 26;
+    label = String.fromCharCode(65 + mod) + label;
+    value = Math.floor((value - mod) / 26);
+  }
+  return label;
+}
+
+function buildFallbackSeatMap(totalSeats = 0) {
+  const seatTotal = Math.max(0, Number(totalSeats || 0));
+  const columns = 4;
+  const rows = Math.max(1, Math.ceil(seatTotal / columns));
+  const cells = [];
+  let seatIndex = 0;
+
+  for (let row = 1; row <= rows; row += 1) {
+    for (let column = 1; column <= columns; column += 1) {
+      seatIndex += 1;
+      cells.push({
+        row,
+        column,
+        type: seatIndex <= seatTotal ? 'seat' : 'empty',
+        label: seatIndex <= seatTotal ? `${rowLabel(row - 1)}${column}` : '',
+        color: '',
+        note: ''
+      });
+    }
+  }
+
+  return { rows, columns, cells };
+}
+
+function normalizeSeatMap(layout) {
+  const rows = Number(layout?.rows);
+  const columns = Number(layout?.columns);
+
+  if (!Number.isInteger(rows) || rows <= 0 || rows > 30 || !Number.isInteger(columns) || columns <= 0 || columns > 12) {
+    return { error: 'Seat map rows and columns must be valid whole numbers.' };
+  }
+
+  const sourceCells = Array.isArray(layout?.cells) ? layout.cells : [];
+  const sourceByPosition = new Map(sourceCells.map((cell) => [`${Number(cell.row)}-${Number(cell.column)}`, cell]));
+  const cells = [];
+  const seatLabels = new Set();
+
+  for (let row = 1; row <= rows; row += 1) {
+    for (let column = 1; column <= columns; column += 1) {
+      const source = sourceByPosition.get(`${row}-${column}`) || {};
+      const type = SEAT_MAP_CELL_TYPES.includes(normalizeText(source.type).toLowerCase())
+        ? normalizeText(source.type).toLowerCase()
+        : 'seat';
+      const label = normalizeText(source.label);
+      const color = normalizeText(source.color);
+      const note = normalizeText(source.note);
+
+      if (type === 'seat') {
+        if (!label) return { error: 'Every seat cell needs a seat label.' };
+        if (seatLabels.has(label.toUpperCase())) return { error: `Duplicate seat label: ${label}.` };
+        seatLabels.add(label.toUpperCase());
+      }
+
+      cells.push({
+        row,
+        column,
+        type,
+        label: type === 'seat' ? label : label,
+        color,
+        note
+      });
+    }
+  }
+
+  return {
+    value: {
+      rows,
+      columns,
+      cells
+    },
+    seatCount: cells.filter((cell) => cell.type === 'seat').length,
+    seatLabels: Array.from(seatLabels)
+  };
+}
+
+function resolveSeatMap(bus) {
+  const override = bus?.seat_map_override;
+  const templateLayout = bus?.template_layout || bus?.layout_json;
+  return override || templateLayout || buildFallbackSeatMap(bus?.total_seats);
+}
+
+async function getBookedSeatLabelsForBus(busId) {
+  const result = await pool.query(
+    `SELECT DISTINCT bb.seat_number
+     FROM bus_bookings bb
+     JOIN bus_routes br ON br.id = bb.route_id
+     WHERE br.bus_id = $1
+       AND bb.status <> 'cancelled'`,
+    [busId]
+  );
+  return result.rows.map((row) => String(row.seat_number || '').toUpperCase()).filter(Boolean);
+}
+
+async function ensureBookedSeatsStillExist(busId, seatLabels) {
+  const bookedLabels = await getBookedSeatLabelsForBus(busId);
+  const nextLabels = new Set(seatLabels.map((label) => String(label || '').toUpperCase()));
+  const missing = bookedLabels.filter((label) => !nextLabels.has(label));
+  if (missing.length) {
+    return { error: `Cannot remove or rename booked seats: ${missing.join(', ')}.` };
+  }
+  return { ok: true };
+}
+
+async function fetchSeatMapTemplates(filters = {}) {
+  const params = [];
+  const where = [];
+
+  if (filters.company_id) {
+    params.push(Number(filters.company_id));
+    where.push(`t.company_id = $${params.length}`);
+  }
+  if (filters.vehicle_type) {
+    params.push(normalizeText(filters.vehicle_type));
+    where.push(`LOWER(t.vehicle_type) = LOWER($${params.length})`);
+  }
+  if (filters.rows) {
+    params.push(Number(filters.rows));
+    where.push(`t.rows = $${params.length}`);
+  }
+  if (filters.columns) {
+    params.push(Number(filters.columns));
+    where.push(`t.columns = $${params.length}`);
+  }
+
+  const result = await pool.query(
+    `SELECT
+       t.id,
+       t.company_id,
+       c.name AS company_name,
+       t.vehicle_type,
+       t.name,
+       t.rows,
+       t.columns,
+       t.seat_count,
+       t.layout_json,
+       t.created_at,
+       t.updated_at,
+       COUNT(b.id)::INT AS bus_count
+     FROM bus_seat_map_templates t
+     LEFT JOIN companies c ON c.id = t.company_id
+     LEFT JOIN buses b ON b.seat_map_template_id = t.id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     GROUP BY t.id, c.id
+     ORDER BY t.updated_at DESC, t.name`,
+    params
+  );
+
+  return result.rows;
+}
+
+async function createSeatMapHistory({ companyId, busId = null, templateId = null, vehicleType, name, layout, seatCount }) {
+  await pool.query(
+    `INSERT INTO bus_seat_map_history (company_id, bus_id, template_id, vehicle_type, name, rows, columns, seat_count, layout_json)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [companyId, busId, templateId, vehicleType, name, layout.rows, layout.columns, seatCount, layout]
+  );
+}
+
+async function createSeatMapTemplate({ companyId, vehicleType, name, layout, seatCount }) {
+  const existing = await pool.query(
+    `SELECT id FROM bus_seat_map_templates WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+    [name]
+  );
+  if (existing.rowCount) {
+    const error = new Error('Duplicate template name. Please choose a different Template/history name.');
+    error.status = 409;
+    throw error;
+  }
+
+  const result = await pool.query(
+    `INSERT INTO bus_seat_map_templates (company_id, vehicle_type, name, rows, columns, seat_count, layout_json)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id`,
+    [companyId, vehicleType, name, layout.rows, layout.columns, seatCount, layout]
+  );
+  return { id: result.rows[0].id };
+}
+
 // 1. Fetch all Rental Cars
 app.get('/api/cars', async (req, res) => {
   try {
@@ -892,6 +1142,8 @@ app.get('/api/routes', async (req, res) => {
         b.name AS vehicle,
         b.type AS vehicle_type,
         b.total_seats,
+        b.seat_map_override,
+        t.layout_json AS template_layout,
         c.name AS company_name,
         c.theme_color AS color,
         c.theme_bg AS bg,
@@ -902,12 +1154,16 @@ app.get('/api/routes', async (req, res) => {
         ) AS booked_seats
       FROM bus_routes r
       JOIN buses b ON r.bus_id = b.id
+      LEFT JOIN bus_seat_map_templates t ON t.id = b.seat_map_template_id
       LEFT JOIN companies c ON b.company_id = c.id
       LEFT JOIN bus_bookings bb ON bb.route_id = r.id AND bb.status <> 'cancelled'
-      GROUP BY r.id, b.id, c.id
+      GROUP BY r.id, b.id, t.id, c.id
       ORDER BY r.departure_time ASC
     `);
-    res.json(result.rows);
+    res.json(result.rows.map((row) => ({
+      ...row,
+      seat_map: resolveSeatMap(row)
+    })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1014,6 +1270,332 @@ app.get('/api/admin/vehicles', async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/seat-map-templates', async (req, res) => {
+  try {
+    const templates = await fetchSeatMapTemplates(req.query);
+    res.json(templates);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/seat-map-templates', async (req, res) => {
+  const companyId = Number(req.body.company_id);
+  const vehicleType = normalizeText(req.body.vehicle_type);
+  const name = normalizeText(req.body.name) || `${vehicleType || 'Bus'} layout`;
+  const parsed = normalizeSeatMap(req.body.layout_json || req.body.layout);
+  if (!companyId || !vehicleType) return res.status(400).json({ error: 'Company and vehicle type are required.' });
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+  try {
+    const company = await fetchAdminCompanyById(companyId);
+    if (!company) return res.status(400).json({ error: 'Selected company does not exist.' });
+
+    const savedTemplate = await createSeatMapTemplate({
+      companyId,
+      vehicleType,
+      name,
+      layout: parsed.value,
+      seatCount: parsed.seatCount
+    });
+
+    await createSeatMapHistory({
+      companyId,
+      templateId: savedTemplate.id,
+      vehicleType,
+      name,
+      layout: parsed.value,
+      seatCount: parsed.seatCount
+    });
+
+    const templates = await fetchSeatMapTemplates({ company_id: companyId, vehicle_type: vehicleType });
+    res.status(201).json(templates.find((template) => template.id === savedTemplate.id));
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/seat-map-templates/:id', async (req, res) => {
+  const templateId = Number(req.params.id);
+  const companyId = Number(req.body.company_id);
+  const vehicleType = normalizeText(req.body.vehicle_type);
+  const name = normalizeText(req.body.name) || `${vehicleType || 'Bus'} layout`;
+  const parsed = normalizeSeatMap(req.body.layout_json || req.body.layout);
+  if (!templateId) return res.status(400).json({ error: 'Invalid template id.' });
+  if (!companyId || !vehicleType) return res.status(400).json({ error: 'Company and vehicle type are required.' });
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+  try {
+    const existing = await pool.query(`SELECT id FROM bus_seat_map_templates WHERE id = $1`, [templateId]);
+    if (!existing.rowCount) return res.status(404).json({ error: 'Seat map template not found.' });
+
+    const duplicateName = await pool.query(
+      `SELECT id
+       FROM bus_seat_map_templates
+       WHERE LOWER(name) = LOWER($1)
+         AND id <> $2
+       LIMIT 1`,
+      [name, templateId]
+    );
+    if (duplicateName.rowCount) {
+      return res.status(409).json({ error: 'Duplicate template name. Please choose a different Template/history name.' });
+    }
+
+    const assignedBuses = await pool.query(
+      `SELECT id FROM buses WHERE seat_map_template_id = $1 AND seat_map_override IS NULL`,
+      [templateId]
+    );
+    for (const bus of assignedBuses.rows) {
+      const safety = await ensureBookedSeatsStillExist(bus.id, parsed.seatLabels);
+      if (safety.error) return res.status(400).json({ error: safety.error });
+    }
+
+    await pool.query(
+      `UPDATE bus_seat_map_templates
+       SET company_id = $1,
+           vehicle_type = $2,
+           name = $3,
+           rows = $4,
+           columns = $5,
+           seat_count = $6,
+           layout_json = $7,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $8`,
+      [companyId, vehicleType, name, parsed.value.rows, parsed.value.columns, parsed.seatCount, parsed.value, templateId]
+    );
+
+    await createSeatMapHistory({
+      companyId,
+      templateId,
+      vehicleType,
+      name,
+      layout: parsed.value,
+      seatCount: parsed.seatCount
+    });
+
+    const templates = await fetchSeatMapTemplates({ company_id: companyId, vehicle_type: vehicleType });
+    res.json(templates.find((template) => template.id === templateId));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/seat-map-templates/:id', async (req, res) => {
+  const templateId = Number(req.params.id);
+  if (!templateId) return res.status(400).json({ error: 'Invalid template id.' });
+
+  try {
+    const busCount = await pool.query(`SELECT COUNT(*)::INT AS count FROM buses WHERE seat_map_template_id = $1`, [templateId]);
+    if (Number(busCount.rows[0].count || 0) > 0) {
+      return res.status(400).json({ error: 'Cannot delete a template assigned to buses.' });
+    }
+
+    const result = await pool.query(`DELETE FROM bus_seat_map_templates WHERE id = $1 RETURNING id`, [templateId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Seat map template not found.' });
+    res.json({ id: templateId, message: 'Seat map template deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/seat-map-history', async (req, res) => {
+  const rows = Number(req.query.rows);
+  const columns = Number(req.query.columns);
+  const companyId = Number(req.query.company_id);
+  const vehicleType = normalizeText(req.query.vehicle_type);
+  const params = [];
+  const where = [];
+
+  if (Number.isInteger(rows) && rows > 0) {
+    params.push(rows);
+    where.push(`h.rows = $${params.length}`);
+  }
+  if (Number.isInteger(columns) && columns > 0) {
+    params.push(columns);
+    where.push(`h.columns = $${params.length}`);
+  }
+  if (companyId) {
+    params.push(companyId);
+    where.push(`h.company_id = $${params.length}`);
+  }
+  if (vehicleType) {
+    params.push(vehicleType);
+    where.push(`LOWER(h.vehicle_type) = LOWER($${params.length})`);
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         h.id,
+         h.company_id,
+         c.name AS company_name,
+         h.bus_id,
+         b.name AS bus_name,
+         h.template_id,
+         h.vehicle_type,
+         h.name,
+         h.rows,
+         h.columns,
+         h.seat_count,
+         h.layout_json,
+         h.created_at
+       FROM bus_seat_map_history h
+       LEFT JOIN companies c ON c.id = h.company_id
+       LEFT JOIN buses b ON b.id = h.bus_id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY h.created_at DESC
+       LIMIT 20`,
+      params
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/seat-map-history', async (req, res) => {
+  const companyId = Number(req.body.company_id);
+  const vehicleType = normalizeText(req.body.vehicle_type);
+  const name = normalizeText(req.body.name) || `${vehicleType || 'Bus'} history`;
+  const parsed = normalizeSeatMap(req.body.layout_json || req.body.layout);
+  if (!companyId || !vehicleType) return res.status(400).json({ error: 'Company and vehicle type are required.' });
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+  try {
+    await createSeatMapHistory({
+      companyId,
+      vehicleType,
+      name,
+      layout: parsed.value,
+      seatCount: parsed.seatCount
+    });
+    res.status(201).json({ message: 'Seat map history saved successfully.' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/buses/:id/seat-map', async (req, res) => {
+  const busId = Number(req.params.id);
+  if (!busId) return res.status(400).json({ error: 'Invalid bus id.' });
+
+  try {
+    const bus = await fetchAdminBusById(busId);
+    if (!bus) return res.status(404).json({ error: 'Bus not found.' });
+
+    const layout = resolveSeatMap(bus);
+    const templates = await fetchSeatMapTemplates({ rows: layout.rows, columns: layout.columns });
+    const history = await pool.query(
+      `SELECT h.*, c.name AS company_name
+       FROM bus_seat_map_history h
+       LEFT JOIN companies c ON c.id = h.company_id
+       WHERE h.rows = $1 AND h.columns = $2
+       ORDER BY
+         CASE WHEN h.company_id = $3 THEN 0 ELSE 1 END,
+         CASE WHEN LOWER(h.vehicle_type) = LOWER($4) THEN 0 ELSE 1 END,
+         h.created_at DESC
+       LIMIT 20`,
+      [layout.rows, layout.columns, bus.company_id, bus.type]
+    );
+
+    res.json({
+      bus: {
+        id: bus.id,
+        company_id: bus.company_id,
+        company_name: bus.company_name,
+        name: bus.name,
+        type: bus.type,
+        total_seats: bus.total_seats,
+        seat_map_template_id: bus.seat_map_template_id,
+        seat_map_template_name: bus.seat_map_template_name,
+        has_seat_map_override: bus.has_seat_map_override
+      },
+      layout,
+      templates,
+      history: history.rows,
+      booked_seats: await getBookedSeatLabelsForBus(busId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/buses/:id/seat-map', async (req, res) => {
+  const busId = Number(req.params.id);
+  const templateId = Number(req.body.template_id);
+  const saveAsTemplate = Boolean(req.body.save_as_template);
+  const templateName = normalizeText(req.body.template_name);
+  const useTemplateOnly = Boolean(req.body.use_template_only);
+  if (!busId) return res.status(400).json({ error: 'Invalid bus id.' });
+
+  try {
+    const bus = await fetchAdminBusById(busId);
+    if (!bus) return res.status(404).json({ error: 'Bus not found.' });
+
+    if (templateId && useTemplateOnly) {
+      const templateResult = await pool.query(`SELECT * FROM bus_seat_map_templates WHERE id = $1`, [templateId]);
+      const template = templateResult.rows[0];
+      if (!template) return res.status(404).json({ error: 'Seat map template not found.' });
+
+      const safety = await ensureBookedSeatsStillExist(busId, template.layout_json.cells.filter((cell) => cell.type === 'seat').map((cell) => cell.label));
+      if (safety.error) return res.status(400).json({ error: safety.error });
+
+      await pool.query(
+        `UPDATE buses
+         SET seat_map_template_id = $1,
+             seat_map_override = NULL,
+             total_seats = $2
+         WHERE id = $3`,
+        [templateId, template.seat_count, busId]
+      );
+      return res.json(await fetchAdminBusById(busId));
+    }
+
+    const parsed = normalizeSeatMap(req.body.layout_json || req.body.layout);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+    const safety = await ensureBookedSeatsStillExist(busId, parsed.seatLabels);
+    if (safety.error) return res.status(400).json({ error: safety.error });
+
+    let assignedTemplateId = templateId || null;
+    const name = templateName || `${bus.company_name || 'Bus'} ${bus.type} layout`;
+
+    if (saveAsTemplate) {
+      const savedTemplate = await createSeatMapTemplate({
+        companyId: bus.company_id,
+        vehicleType: bus.type,
+        name,
+        layout: parsed.value,
+        seatCount: parsed.seatCount
+      });
+      assignedTemplateId = savedTemplate.id;
+    }
+
+    await pool.query(
+      `UPDATE buses
+       SET seat_map_template_id = COALESCE($1, seat_map_template_id),
+           seat_map_override = $2,
+           total_seats = $3
+       WHERE id = $4`,
+      [assignedTemplateId, saveAsTemplate ? null : parsed.value, parsed.seatCount, busId]
+    );
+
+    await createSeatMapHistory({
+      companyId: bus.company_id,
+      busId,
+      templateId: assignedTemplateId,
+      vehicleType: bus.type,
+      name,
+      layout: parsed.value,
+      seatCount: parsed.seatCount
+    });
+
+    res.json(await fetchAdminBusById(busId));
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1587,11 +2169,16 @@ app.get('/api/admin/dashboard', async (req, res) => {
     const [
       bookingMonth,
       rentalMonth,
+      activeBookings,
+      cancelledTickets,
+      cancelledRentals,
+      monthlyExpense,
       activeRentals,
       usersSummary,
       bookingActivity,
       rentalActivity,
       recentBookings,
+      recentRentals,
       busFleet,
       carFleet,
       routeFleet,
@@ -1600,6 +2187,10 @@ app.get('/api/admin/dashboard', async (req, res) => {
     ] = await Promise.all([
       pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2`, monthParams),
       pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2`, monthParams),
+      pool.query(`SELECT COUNT(*)::INT AS count FROM bus_bookings WHERE status = 'confirmed' AND created_at >= $1 AND created_at < $2`, monthParams),
+      pool.query(`SELECT COUNT(*)::INT AS count FROM bus_bookings WHERE status = 'cancelled' AND created_at >= $1 AND created_at < $2`, monthParams),
+      pool.query(`SELECT COUNT(*)::INT AS count FROM car_rentals WHERE status = 'cancelled' AND booked_at >= $1 AND booked_at < $2`, monthParams),
+      pool.query(`SELECT total_expense FROM dashboard_monthly_expenses WHERE month_key = $1`, [monthRange.key]),
       pool.query(`SELECT COUNT(*)::INT AS count FROM car_rentals WHERE status = 'confirmed'`),
       pool.query(`SELECT COUNT(*)::INT AS total, COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2)::INT AS new_this_month FROM users`, monthParams),
       pool.query(`SELECT created_at::DATE AS day, COUNT(*)::INT AS count FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2 GROUP BY created_at::DATE ORDER BY day`, recentParams),
@@ -1624,6 +2215,23 @@ app.get('/api/admin/dashboard', async (req, res) => {
          JOIN buses b ON b.id = br.bus_id
          LEFT JOIN companies c ON c.id = b.company_id
          ORDER BY bb.created_at DESC, bb.id DESC
+         LIMIT 5`
+      ),
+      pool.query(
+        `SELECT
+           cr.id,
+           cr.total_price,
+           cr.payment_method,
+           cr.status,
+           cr.booked_at,
+           rc.name AS car_name,
+           rc.type AS car_type,
+           CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+           u.email AS user_email
+         FROM car_rentals cr
+         JOIN users u ON u.id = cr.user_id
+         JOIN rental_cars rc ON rc.id = cr.car_id
+         ORDER BY cr.booked_at DESC, cr.id DESC
          LIMIT 5`
       ),
       pool.query(`SELECT COUNT(*)::INT AS total, COUNT(*) FILTER (WHERE status = 'available')::INT AS available FROM buses`),
@@ -1665,6 +2273,8 @@ app.get('/api/admin/dashboard', async (req, res) => {
     const rentalCount = Number(rentalMonth.rows[0].count || 0);
     const bookingRevenue = Number(bookingMonth.rows[0].revenue || 0);
     const rentalRevenue = Number(rentalMonth.rows[0].revenue || 0);
+    const totalRevenue = bookingRevenue + rentalRevenue;
+    const totalExpense = Number(monthlyExpense.rows[0]?.total_expense || 0);
     const busTotal = Number(busFleet.rows[0].total || 0);
     const busAvailable = Number(busFleet.rows[0].available || 0);
     const carTotal = Number(carFleet.rows[0].total || 0);
@@ -1679,13 +2289,21 @@ app.get('/api/admin/dashboard', async (req, res) => {
         total_bookings: bookingCount + rentalCount,
         booking_count: bookingCount,
         rental_count: rentalCount,
+        active_bookings: Number(activeBookings.rows[0].count || 0),
         active_rentals: Number(activeRentals.rows[0].count || 0),
-        total_revenue: bookingRevenue + rentalRevenue,
+        total_revenue: totalRevenue,
+        cancelled_tickets: Number(cancelledTickets.rows[0].count || 0),
+        cancelled_rentals: Number(cancelledRentals.rows[0].count || 0),
+        total_expense: totalExpense,
+        net_revenue: totalRevenue - totalExpense,
         total_users: Number(usersSummary.rows[0].total || 0),
         new_users: Number(usersSummary.rows[0].new_this_month || 0)
       },
       activity: buildCountSeries(recentRange, bookingActivity.rows, rentalActivity.rows),
+      booking_activity: buildCountSeries(recentRange, bookingActivity.rows, []),
+      rental_activity: buildCountSeries(recentRange, [], rentalActivity.rows),
       recent_bookings: recentBookings.rows,
+      recent_rentals: recentRentals.rows,
       fleet: {
         buses: { available: busAvailable, total: busTotal, percent: percent(busAvailable, busTotal) },
         cars: { available: carAvailable, total: carTotal, percent: percent(carAvailable, carTotal) },
@@ -1693,6 +2311,42 @@ app.get('/api/admin/dashboard', async (req, res) => {
       },
       top_customers: topCustomers.rows,
       top_companies: topCompanies.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/dashboard/expense', async (req, res) => {
+  const { month, total_expense: totalExpenseInput } = req.body || {};
+
+  let monthRange;
+  try {
+    monthRange = buildMonthRange(month);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || 'Invalid month.' });
+  }
+
+  const totalExpense = Number(totalExpenseInput);
+  if (!Number.isFinite(totalExpense) || totalExpense < 0) {
+    return res.status(400).json({ error: 'Total expense must be a valid non-negative number.' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO dashboard_monthly_expenses (month_key, total_expense, updated_at)
+       VALUES ($1, $2, CURRENT_TIMESTAMP)
+       ON CONFLICT (month_key)
+       DO UPDATE SET
+         total_expense = EXCLUDED.total_expense,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING id, month_key, total_expense, created_at, updated_at`,
+      [monthRange.key, totalExpense]
+    );
+
+    res.json({
+      message: 'Dashboard expense saved successfully.',
+      expense: result.rows[0]
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

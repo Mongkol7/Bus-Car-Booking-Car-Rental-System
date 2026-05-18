@@ -122,3 +122,146 @@ WHERE id IN (
   FROM duplicates
   WHERE rn > 1
 );
+
+
+
+
+-- =========================
+-- SAMPLE BUS BOOKINGS
+-- =========================
+INSERT INTO bus_bookings (
+  user_id,
+  route_id,
+  seat_number,
+  total_price,
+  payment_method,
+  status,
+  created_at
+)
+VALUES
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM bus_routes WHERE origin = 'Phnom Penh' AND destination = 'Siem Reap' ORDER BY departure_time ASC LIMIT 1),
+  'A1',
+  12.00,
+  'aba',
+  'confirmed',
+  NOW() - INTERVAL '1 day'
+),
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM bus_routes WHERE origin = 'Phnom Penh' AND destination = 'Battambang' ORDER BY departure_time ASC LIMIT 1),
+  'A2',
+  13.50,
+  'cash',
+  'cancelled',
+  NOW() - INTERVAL '2 days'
+),
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM bus_routes WHERE origin = 'Phnom Penh' AND destination = 'Kampot' ORDER BY departure_time ASC LIMIT 1),
+  'B1',
+  9.00,
+  'khqr',
+  'confirmed',
+  NOW() - INTERVAL '3 days'
+),
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM bus_routes WHERE origin = 'Phnom Penh' AND destination = 'Sihanoukville' ORDER BY departure_time ASC LIMIT 1),
+  'B2',
+  14.00,
+  'aba',
+  'cancelled',
+  NOW() - INTERVAL '4 days'
+),
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM bus_routes WHERE origin = 'Siem Reap' AND destination = 'Phnom Penh' ORDER BY departure_time ASC LIMIT 1),
+  'C1',
+  12.00,
+  'cash',
+  'confirmed',
+  NOW() - INTERVAL '5 days'
+);
+
+-- =========================
+-- SAMPLE CAR RENTALS
+-- =========================
+INSERT INTO car_rentals (
+  user_id,
+  car_id,
+  pickup_date,
+  return_date,
+  driver_name,
+  driver_license,
+  total_price,
+  payment_method,
+  status,
+  booked_at
+)
+VALUES
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM rental_cars ORDER BY id ASC LIMIT 1),
+  CURRENT_DATE + INTERVAL '1 day',
+  CURRENT_DATE + INTERVAL '4 days',
+  'Serey Mongkol',
+  'DL-10001',
+  90.00,
+  'aba',
+  'confirmed',
+  NOW() - INTERVAL '1 day'
+),
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM rental_cars ORDER BY id ASC OFFSET 1 LIMIT 1),
+  CURRENT_DATE + INTERVAL '2 days',
+  CURRENT_DATE + INTERVAL '5 days',
+  'Dara Sok',
+  'DL-10002',
+  120.00,
+  'cash',
+  'cancelled',
+  NOW() - INTERVAL '2 days'
+),
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM rental_cars ORDER BY id ASC OFFSET 2 LIMIT 1),
+  CURRENT_DATE + INTERVAL '3 days',
+  CURRENT_DATE + INTERVAL '6 days',
+  'Vannak Lim',
+  'DL-10003',
+  150.00,
+  'khqr',
+  'confirmed',
+  NOW() - INTERVAL '3 days'
+),
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM rental_cars ORDER BY id ASC OFFSET 3 LIMIT 1),
+  CURRENT_DATE + INTERVAL '4 days',
+  CURRENT_DATE + INTERVAL '7 days',
+  'Nita Chhay',
+  'DL-10004',
+  110.00,
+  'aba',
+  'cancelled',
+  NOW() - INTERVAL '4 days'
+),
+(
+  (SELECT id FROM users WHERE email = 'admin@bookride.com' LIMIT 1),
+  (SELECT id FROM rental_cars ORDER BY id ASC OFFSET 4 LIMIT 1),
+  CURRENT_DATE,
+  CURRENT_DATE + INTERVAL '2 days',
+  'Piseth Heng',
+  'DL-10005',
+  70.00,
+  'cash',
+  'confirmed',
+  NOW() - INTERVAL '5 days'
+);
+
+SELECT id, seat_number, total_price, payment_method, status, created_at
+FROM bus_bookings
+ORDER BY id DESC;

@@ -31,8 +31,62 @@ function formatDuration(startValue, endValue) {
   return `${hours ? `${hours}h` : ''}${hours && mins ? ' ' : ''}${mins ? `${mins}m` : ''}`;
 }
 
+function rowLabel(index) {
+  let label = '';
+  let value = index + 1;
+  while (value > 0) {
+    const mod = (value - 1) % 26;
+    label = String.fromCharCode(65 + mod) + label;
+    value = Math.floor((value - mod) / 26);
+  }
+  return label;
+}
+
+function fallbackSeatMap(totalSeats = 0) {
+  const seatTotal = Math.max(0, Number(totalSeats || 0));
+  const columns = 4;
+  const rows = Math.max(1, Math.ceil(seatTotal / columns));
+  const cells = [];
+  let seatIndex = 0;
+
+  for (let row = 1; row <= rows; row += 1) {
+    for (let column = 1; column <= columns; column += 1) {
+      seatIndex += 1;
+      cells.push({
+        row,
+        column,
+        type: seatIndex <= seatTotal ? 'seat' : 'empty',
+        label: seatIndex <= seatTotal ? `${rowLabel(row - 1)}${column}` : '',
+        color: '',
+        note: ''
+      });
+    }
+  }
+
+  return { rows, columns, cells };
+}
+
+function normalizeSeatMap(layout, totalSeats) {
+  if (layout?.rows && layout?.columns && Array.isArray(layout?.cells)) return layout;
+  return fallbackSeatMap(totalSeats);
+}
+
+function countBookableSeats(layout) {
+  return (layout?.cells || []).filter((cell) => cell.type === 'seat').length;
+}
+
+function seatCellText(cell) {
+  if (cell.type === 'seat') return cell.label;
+  if (cell.type === 'bathroom') return 'WC';
+  if (cell.type === 'driver') return 'DR';
+  if (cell.type === 'door') return 'DO';
+  if (cell.type === 'note') return cell.label || 'Note';
+  return '';
+}
+
 function formatDbRoute(route) {
-  const totalSeats = Number(route.total_seats || 0);
+  const seatMap = normalizeSeatMap(route.seat_map, Number(route.total_seats || 0));
+  const totalSeats = countBookableSeats(seatMap);
   const bookedCount = Number(route.booked_count || 0);
   const companyName = route.company_name || route.vehicle || 'Unknown company';
 
@@ -48,6 +102,7 @@ function formatDbRoute(route) {
     busName: route.vehicle,
     type: route.vehicle_type || 'Bus',
     layout: String(route.vehicle_type || '').toLowerCase().includes('sleeper') ? 'sleeper' : 'standard',
+    seatMap,
     totalSeats,
     bookedCount,
     takenSeats: Array.isArray(route.booked_seats) ? route.booked_seats : [],
@@ -164,6 +219,7 @@ export default function BusSearch({
   }, [step, routes.length, filteredRoutes.length, fromCity, toCity, travelDate]);
   const currentRoute = routes.find(r => r.id === selectedRoute);
   const takenSeats = currentRoute?.takenSeats || [];
+  const currentSeatMap = currentRoute?.seatMap || fallbackSeatMap(currentRoute?.totalSeats || 0);
   const goBack = () => {
     goStep(Math.max(1, step - 1));
   };
@@ -207,8 +263,6 @@ export default function BusSearch({
           </div>
         </div>
       </div>;
-  const seatRows = ['A', 'B', 'C', 'D', 'E'];
-  const seatCols = [1, 2, 3, 4];
   const toggleSeat = sid => {
     if (takenSeats.includes(sid)) return;
     setSelectedSeats(prev => prev.includes(sid) ? prev.filter(s => s !== sid) : [...prev, sid]);
@@ -492,6 +546,10 @@ export default function BusSearch({
               <div className="seat-dot seat-dot-sel" />
               <span>Selected</span>
             </div>
+            <div className="seat-legend-item">
+              <div className="seat-dot" style={{ background: 'rgba(255,255,255,0.07)', border: '0.5px dashed var(--glass-border)' }} />
+              <span>Facility</span>
+            </div>
           </div>
           <div className="seat-layout">
             <div>
@@ -501,22 +559,43 @@ export default function BusSearch({
                 <div className="bus-front">
                   <span className="steering">??</span>
                 </div>
-                <div className="seat-grid">
-                  {seatRows.map((row, ri) => <div key={row} style={{
-                display: 'contents'
-              }}>
-                      {seatCols.map(col => {
-                  const sid = `${row}${col}`;
-                  const taken = takenSeats.includes(sid);
-                  const sel = selectedSeats.includes(sid);
-                  return <div key={sid} className={`seat ${taken ? 'seat-taken' : sel ? 'seat-sel' : 'seat-avail'}`} style={col === 3 ? {
-                    marginLeft: 8
-                  } : {}} onClick={() => toggleSeat(sid)}>
-                            {sid}
-                          </div>;
-                })}
-                      {ri < seatRows.length - 1 && <div className="seat-col-gap" />}
-                    </div>)}
+                <div
+                  className="seat-grid"
+                  style={{
+                    gridTemplateColumns: `repeat(${currentSeatMap.columns || 4}, 44px)`,
+                    maxWidth: 'none'
+                  }}
+                >
+                  {(currentSeatMap.cells || []).map(cell => {
+                    const sid = cell.label;
+                    const isSeat = cell.type === 'seat';
+                    const taken = isSeat && takenSeats.includes(sid);
+                    const sel = isSeat && selectedSeats.includes(sid);
+                    const className = isSeat
+                      ? `seat ${taken ? 'seat-taken' : sel ? 'seat-sel' : 'seat-avail'}`
+                      : 'seat';
+                    const facilityStyle = !isSeat ? {
+                      background: cell.type === 'empty' ? 'transparent' : 'rgba(255,255,255,0.07)',
+                      borderStyle: cell.type === 'empty' ? 'dashed' : 'solid',
+                      color: 'var(--text-3)',
+                      cursor: 'default'
+                    } : cell.color && !taken && !sel ? {
+                      background: cell.color,
+                      color: '#fff',
+                      borderColor: cell.color
+                    } : {};
+                    return (
+                      <div
+                        key={`${cell.row}-${cell.column}`}
+                        className={className}
+                        style={facilityStyle}
+                        title={cell.note || cell.label || cell.type}
+                        onClick={() => isSeat && toggleSeat(sid)}
+                      >
+                        {seatCellText(cell)}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
