@@ -1,0 +1,8 @@
+ALTER TABLE car_rentals
+  ADD COLUMN IF NOT EXISTS rental_mode VARCHAR(20) NOT NULL DEFAULT 'self_drive';
+
+ALTER TABLE car_rentals
+  ADD COLUMN IF NOT EXISTS phone_number VARCHAR(30);
+
+ALTER TABLE car_rentals
+  ADD COLUMN IF NOT EXISTS driver_fee_per_day DECIMAL(10,2) NOT NULL DEFAULT 0;

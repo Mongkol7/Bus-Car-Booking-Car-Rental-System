@@ -1,7 +1,6 @@
 import { Router } from "express";
 const router = Router();
- import { query as _query } from "../../../../server/db"; // Adjusted path to reach the actual server db
-
+import { query as _query } from "../../../../server/db"; // Adjusted path to reach the actual server db
 
 // GET all cars, with optional type filtering
 router.get("/", async (req, res) => {

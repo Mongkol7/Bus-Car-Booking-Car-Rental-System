@@ -1,0 +1,81 @@
+.rental-booking-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rental-booking-form .date-range {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.rental-booking-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rental-booking-form .label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.rental-booking-form input {
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass);
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.rental-booking-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 142, 247, 0.1);
+}
+
+.rental-booking-form input.input-error {
+  border-color: #ef4444;
+}
+
+.rental-booking-form input.input-error:focus {
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+}
+
+.rental-booking-form .error-message {
+  font-size: 11px;
+  color: #ef4444;
+  margin-top: 2px;
+}
+
+.rental-booking-form .form-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.rental-booking-form .form-actions .btn-lg {
+  flex: 0 1 auto;
+}
+
+.rental-booking-form .total-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--glass-border);
+}
+
+@media (max-width: 600px) {
+  .rental-booking-form .date-range {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}

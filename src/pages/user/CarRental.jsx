@@ -1,8 +1,17 @@
 ﻿﻿
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon, icons, setupScrollReveal } from '../../utils/sharedUser';
 import AuthModal from './AuthModal';
+import { useAuth } from '../../context/AuthContext';
+import RentalBookingForm from '../../features/rental/booking-form/RentalBookingForm';
+import RentalPaymentPanel from '../../features/checkout/payment/RentalPaymentPanel';
+import CheckoutSuccess from '../../features/checkout/confirmation/CheckoutSuccess';
+import {
+  confirmRentalBooking,
+  loadCheckoutConfirmation,
+  saveCheckoutConfirmation
+} from '../../features/checkout/confirmation/confirmationApi';
 
 function normalizeCar(car) {
   const status = car.status ? `${car.status}` : 'maintenance';
@@ -23,7 +32,7 @@ function normalizeCar(car) {
     id: car.id,
     name: car.name,
     type,
-    location: car.location ?? 'Phnom Penh, Cambodia',
+    location: car.location || 'Unknown location',
     plateNumber: car.plateNumber ?? car.plate_number ?? 'N/A',
     seats,
     trans: car.trans ?? car.transmission ?? 'Auto',
@@ -45,14 +54,16 @@ function normalizeCar(car) {
   };
 }
 
-const USD_TO_KHR = 4000;
+const DRIVER_FEE_PER_DAY = 25;
+const RENTAL_CONFIRMATION_KEY = 'checkout-confirmation-rental';
 
-function formatPaymentAmount(amountUsd, method) {
-  if (method === 'khqr') {
-    return `${Math.round(amountUsd * USD_TO_KHR).toLocaleString()}៛`;
-  }
-
-  return `$${amountUsd.toFixed(2)}`;
+function getDateInputValue(daysFromToday = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() + daysFromToday);
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export default function CarRental({
@@ -62,6 +73,7 @@ export default function CarRental({
 }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user } = useAuth();
   const stepByPath = {
     '/cars': 1,
     '/cars/details': 2,
@@ -82,25 +94,28 @@ export default function CarRental({
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [shaking, setShaking] = useState(null);
-  const [pickupDate, setPickupDate] = useState('2026-04-05');
-  const [returnDate, setReturnDate] = useState('2026-04-08');
+  const [pickupDate, setPickupDate] = useState(() => getDateInputValue());
+  const [returnDate, setReturnDate] = useState(() => getDateInputValue(3));
   const [showSpecs, setShowSpecs] = useState(false);
   const [selectedCarType, setSelectedCarType] = useState('All');
   const [carTypes, setCarTypes] = useState([]);
   const [selectedLocation, setSelectedLocation] = useState('All');
   const [draftLocation, setDraftLocation] = useState('All');
-  const [draftPickupDate, setDraftPickupDate] = useState('2026-04-05');
-  const [draftReturnDate, setDraftReturnDate] = useState('2026-04-08');
+  const [draftPickupDate, setDraftPickupDate] = useState(() => getDateInputValue());
+  const [draftReturnDate, setDraftReturnDate] = useState(() => getDateInputValue(3));
   const [selectedStatus, setSelectedStatus] = useState('All');
   const [locationOptions, setLocationOptions] = useState([]);
   const [searchError, setSearchError] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
   const [activePhotoIndex, setActivePhotoIndex] = useState(0);
-const qrPattern = useMemo(
-  () => Array.from({ length: 100 }, () => Math.random() > 0.45),
-  [],
-);
+  const [rentalMode, setRentalMode] = useState('self_drive');
+  const [driverName, setDriverName] = useState('');
+  const [driverLicense, setDriverLicense] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [bookingError, setBookingError] = useState('');
+  const [isBookingSubmitting, setIsBookingSubmitting] = useState(false);
+  const [confirmation, setConfirmation] = useState(() => loadCheckoutConfirmation(RENTAL_CONFIRMATION_KEY));
 
   const goBack = () => {
     const next = Math.max(1, step - 1);
@@ -131,13 +146,16 @@ const qrPattern = useMemo(
     if (selectedLocation && selectedLocation !== 'All') {
       params.set('location', selectedLocation);
     }
-    if (selectedStatus && selectedStatus !== 'All') {
+    if (selectedStatus === 'available') {
       params.set('status', selectedStatus);
     }
-    if (pickupDate) {
+    if (selectedCarType && selectedCarType !== 'All') {
+      params.set('type', selectedCarType);
+    }
+    if (selectedStatus === 'available' && pickupDate) {
       params.set('pickupDate', pickupDate);
     }
-    if (returnDate) {
+    if (selectedStatus === 'available' && returnDate) {
       params.set('returnDate', returnDate);
     }
     const apiUrl = `/api/cars${params.toString() ? `?${params.toString()}` : ''}`;
@@ -146,15 +164,7 @@ const qrPattern = useMemo(
       .then(res => res.json())
       .then(data => {
         const normalizedCars = Array.isArray(data) ? data.map(normalizeCar) : [];
-        const filteredCars = normalizedCars.filter(car => {
-          const matchesType = selectedCarType === 'All' || car.filterCategory === selectedCarType;
-          const matchesLocation = selectedLocation === 'All' || car.location === selectedLocation;
-          const matchesStatus = selectedStatus === 'All' || car.status.toLowerCase() === selectedStatus.toLowerCase();
-
-          return matchesType && matchesLocation && matchesStatus;
-        });
-
-        setCars(filteredCars);
+        setCars(normalizedCars);
       })
       .catch(err => console.error("Error fetching vehicles:", err));
   }, [pickupDate, returnDate, selectedCarType, selectedLocation, selectedStatus]);
@@ -165,13 +175,16 @@ const qrPattern = useMemo(
         const types = Array.isArray(data)
           ? [...new Set(data.map(normalizeCar).map(car => car.filterCategory).filter(Boolean))].sort((a, b) => a.localeCompare(b))
           : [];
-        const locations = Array.isArray(data)
-          ? [...new Set(data.map(car => car.location).filter(Boolean))].sort((a, b) => a.localeCompare(b))
-          : [];
         setCarTypes(types);
-        setLocationOptions(locations);
       })
       .catch(err => console.error('Error fetching car filters:', err));
+
+    fetch('/api/cars/locations')
+      .then(res => res.json())
+      .then(data => {
+        setLocationOptions(Array.isArray(data) ? data : []);
+      })
+      .catch(err => console.error('Error fetching car locations:', err));
   }, []);
   const handleSearch = () => {
     if (draftPickupDate && draftReturnDate && draftReturnDate < draftPickupDate) {
@@ -197,64 +210,105 @@ const qrPattern = useMemo(
     const value = event.target.value;
     setDraftReturnDate(value);
   };
+  const validateRentalDetails = () => {
+    if (pickupDate && returnDate && returnDate < pickupDate) {
+      return 'Return date must be on or after pickup date.';
+    }
+    if (!driverName.trim()) {
+      return rentalMode === 'with_driver' ? 'Passenger full name is required.' : 'Driver full name is required.';
+    }
+    if (rentalMode === 'self_drive' && !driverLicense.trim()) {
+      return 'Driver license number is required for self-drive rentals.';
+    }
+    if (!phoneNumber.trim()) {
+      return 'Phone number is required.';
+    }
+
+    return '';
+  };
+  const handleContinueToPayment = (details) => {
+    setPickupDate(details.pickupDate);
+    setReturnDate(details.returnDate);
+    setRentalMode(details.rentalMode);
+    setDriverName(details.driverName);
+    setDriverLicense(details.driverLicense);
+    setPhoneNumber(details.phone);
+    setBookingError('');
+    goStep(3);
+  };
+  const handleConfirmRental = async () => {
+    const error = validateRentalDetails();
+    if (error) {
+      setBookingError(error);
+      goStep(2);
+      return;
+    }
+
+    setIsBookingSubmitting(true);
+    setBookingError('');
+
+    try {
+      const responseData = await confirmRentalBooking({
+        carId: car.id,
+        pickupDate,
+        returnDate,
+        fullName: driverName.trim(),
+        licenseNumber: rentalMode === 'self_drive' ? driverLicense.trim() : '',
+        rentalMode,
+        phoneNumber: phoneNumber.trim(),
+        paymentMethod: payMethod,
+        userId: user?.id || null
+      });
+
+      const nextConfirmation = responseData.confirmation;
+      setConfirmation(nextConfirmation);
+      saveCheckoutConfirmation(RENTAL_CONFIRMATION_KEY, nextConfirmation);
+      setCars(prev => prev.map(item => (
+        item.id === car.id ? { ...item, status: 'Rented' } : item
+      )));
+      setPaymentSuccess(true);
+      goStep(4);
+    } catch (err) {
+      setBookingError(err.message || 'Failed to create rental booking.');
+    } finally {
+      setIsBookingSubmitting(false);
+    }
+  };
   const car = cars.find(c => c.id === selected);
   const startDate = new Date(pickupDate);
   const endDate = new Date(returnDate);
   const diffDays = Math.floor((endDate - startDate) / 86400000);
   const days = Number.isFinite(diffDays) ? Math.max(1, diffDays) : 1;
-  const totalAmount = car ? car.price * days : 0;
+  const dailyDriverFee = rentalMode === 'with_driver' ? DRIVER_FEE_PER_DAY : 0;
+  const dailyTotal = car ? car.price + dailyDriverFee : 0;
+  const totalAmount = dailyTotal * days;
   const depositAmount = totalAmount * 0.2;
   const remainingAmount = totalAmount * 0.8;
   useEffect(() => {
     setShowSpecs(false);
     setShowPhotos(false);
     setActivePhotoIndex(0);
+    setBookingError('');
   }, [selected, step]);
   useEffect(() => {
-    if (step >= 2 && !selected) {
+    if (step >= 2 && step !== 4 && !selected) {
       navigate('/cars', { replace: true });
     }
   }, [step, selected, navigate]);
-  if (paymentSuccess || step === 4) return <div className="page" style={{
-    maxWidth: 480
-  }}>
-        <div className="card" style={{
-      textAlign: 'center',
-      padding: '40px'
-    }}>
-          <div className="confirm-icon" style={{
-        background: 'var(--green-soft)',
-        color: 'var(--green)',
-        width: 60,
-        height: 60,
-        borderRadius: '50%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        margin: '0 auto 20px',
-        fontSize: 24
-      }}>
-            ?
-          </div>
-          <div className="page-title">Payment successful!</div>
-          <div className="page-sub">Choose where to go next</div>
-          <div className="success-actions">
-            <button className="btn btn-primary btn-full" onClick={() => {
-          if (setBookingsTab) setBookingsTab('rentals');
-          setPaymentSuccess(false);
-          setActive('bookings');
-        }}>
-              My Bookings
-            </button>
-            <button className="btn btn-ghost btn-full" onClick={() => {
-          setPaymentSuccess(false);
-          setActive('home');
-        }}>
-              Back to Home
-            </button>
-          </div>
-        </div>
-      </div>;
+  if (paymentSuccess || step === 4) return (
+    <CheckoutSuccess
+      confirmation={confirmation}
+      onMyBookings={() => {
+        if (setBookingsTab) setBookingsTab('rentals');
+        setPaymentSuccess(false);
+        setActive('bookings');
+      }}
+      onHome={() => {
+        setPaymentSuccess(false);
+        setActive('home');
+      }}
+    />
+  );
   if (done) return <div className="page" style={{
     maxWidth: 480
   }}>
@@ -301,11 +355,11 @@ const qrPattern = useMemo(
             </label>
             <label className="rental-search-field">
               <span className="rental-search-icon">📅</span>
-              <input className="rental-search-input" type="date" value={draftPickupDate} onChange={handlePickupDateChange} />
+              <input className="rental-search-input" type="date" value={draftPickupDate} min={getDateInputValue()} onChange={handlePickupDateChange} />
             </label>
             <label className="rental-search-field">
               <span className="rental-search-icon">📅</span>
-              <input className="rental-search-input" type="date" value={draftReturnDate} onChange={handleReturnDateChange} />
+              <input className="rental-search-input" type="date" value={draftReturnDate} min={draftPickupDate || getDateInputValue()} onChange={handleReturnDateChange} />
             </label>
             <button type="button" className="rental-search-btn" onClick={handleSearch}>
               Search
@@ -320,10 +374,11 @@ const qrPattern = useMemo(
           <div className="rental-filter-row">
             <button
               type="button"
-              className={`rental-filter-pill ${selectedCarType === 'All' ? 'active' : ''}`}
+              className={`rental-filter-pill ${selectedCarType === 'All' && selectedStatus === 'All' ? 'active' : ''}`}
               onClick={() => {
                 handleSearch();
                 setSelectedCarType('All');
+                setSelectedStatus('All');
               }}
             >
               All cars
@@ -362,7 +417,7 @@ const qrPattern = useMemo(
         flex: i === 1 ? 'initial' : 1
       }}>
               <div className={`step ${i + 2 === step ? 'active' : i + 2 < step ? 'done' : 'idle'}`}>
-                <div className="step-num">{i + 2 < step ? '?' : i + 1}</div>
+                <div className="step-num">{i + 2 < step ? <Icon d={icons.check} size={12} /> : i + 1}</div>
                 <div className="step-label" style={{
             marginLeft: 6,
             fontSize: 11
@@ -517,58 +572,18 @@ const qrPattern = useMemo(
               </div>
             </div>
             <div className="divider" />
-            <div className="date-range">
-              <div>
-                <div className="label">Pickup</div>
-                <input type="date" value={pickupDate} onChange={e => setPickupDate(e.target.value)} />
-              </div>
-              <div>
-                <div className="label">Return</div>
-                <input type="date" value={returnDate} onChange={e => setReturnDate(e.target.value)} />
-              </div>
-            </div>
-            <div className="form-group">
-              <div className="label">Driver full name</div>
-              <input placeholder="Sereymongkol Thoeung" />
-            </div>
-            <div className="form-group">
-              <div className="label">Driver license number</div>
-              <input placeholder="DL-12345678" />
-            </div>
-            <div className="form-group">
-              <div className="label">Phone number</div>
-              <input placeholder="+855 17 420 0051" />
-            </div>
-            <div className="total-box">
-              <div>
-                <div style={{
-              fontSize: 12,
-              color: 'var(--accent)'
-            }}>
-                  Total ({days} days × ${car.price})
-                </div>
-              </div>
-              <div style={{
-            fontSize: 20,
-            fontWeight: 700,
-            color: 'var(--accent)'
-          }}>
-                ${car.price * days}
-              </div>
-            </div>
-            <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          marginTop: 24
-        }}>
-              <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}>
-                <Icon d={icons.back} size={15} />
-              </button>
-              <button className="btn btn-primary btn-lg" onClick={() => goStep(3)}>
-                Continue to Payment{' '}
-                <Icon d={icons.arrow} size={15} color="#fff" />
-              </button>
-            </div>
+            <RentalBookingForm
+              initialPickupDate={pickupDate}
+              initialReturnDate={returnDate}
+              initialRentalMode={rentalMode}
+              initialDriverName={driverName}
+              initialDriverLicense={driverLicense}
+              initialPhone={phoneNumber}
+              dailyRate={car.price}
+              submitError={bookingError}
+              onSubmit={handleContinueToPayment}
+              onCancel={goBack}
+            />
           </div>
         </div>}
 
@@ -576,89 +591,21 @@ const qrPattern = useMemo(
       maxWidth: 560,
       padding: 0
     }}>
-          <div className="card">
-            <div className="sec-title">Choose payment method</div>
-            {[{
-          id: 'aba',
-          icon: '??',
-          name: 'ABA Bank',
-          sub: 'Scan QR or transfer'
-        }, {
-          id: 'khqr',
-          icon: '????',
-          name: 'KHQR',
-          sub: 'Cambodia QR payment standard'
-        }].map(m => <div key={m.id} className={`pay-method ${payMethod === m.id ? 'selected' : ''}`} onClick={() => setPayMethod(m.id)}>
-                <div className="pay-method-icon">{m.icon}</div>
-                <div>
-                  <div className="pay-method-name">{m.name}</div>
-                  <div className="pay-method-sub">{m.sub}</div>
-                </div>
-                <div className={`pay-radio ${payMethod === m.id ? 'checked' : ''}`} />
-              </div>)}
-
-            <div style={{
-          textAlign: 'center',
-          marginTop: 20
-        }}>
-              <div style={{
-            fontSize: 12,
-            color: 'var(--text-2)',
-            marginBottom: 12
-          }}>
-                Scan to pay deposit
-              </div>
-              <div className="qr-box">
-                <div className="qr-pattern">
-                  {Array.from({
-                length: 100
-              }, (_, i) => <div key={i} className="qr-cell" style={{
-                background: qrPattern[i] ? '#111' : 'transparent'
-              }} />)}
-                </div>
-              </div>
-              <div style={{
-            fontSize: 11,
-            color: 'var(--text-3)',
-            marginTop: 10
-          }}>
-                Deposit: {formatPaymentAmount(depositAmount, payMethod)}
-              </div>
-            </div>
-
-            <div className="divider" />
-            <div className="total-box">
-              <span style={{
-            fontSize: 13,
-            color: 'var(--accent)'
-          }}>
-                Remaining to pay on pickup
-              </span>
-              <span style={{
-            fontSize: 18,
-            fontWeight: 700,
-            color: 'var(--accent)'
-          }}>
-                {formatPaymentAmount(remainingAmount, payMethod)}
-              </span>
-            </div>
-
-            <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          marginTop: 24
-        }}>
-              <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}>
-                <Icon d={icons.back} size={15} />
-              </button>
-              <button className="btn btn-primary btn-lg" onClick={() => {
-            setPaymentSuccess(true);
-            goStep(4);
-          }}>
-                Confirm Rental <Icon d={icons.check} size={15} color="#fff" />
-              </button>
-            </div>
-          </div>
+          <RentalPaymentPanel
+            paymentMethod={payMethod}
+            onPaymentMethodChange={setPayMethod}
+            pickupDate={pickupDate}
+            returnDate={returnDate}
+            days={days}
+            dailyTotal={dailyTotal}
+            totalAmount={totalAmount}
+            depositAmount={depositAmount}
+            remainingAmount={remainingAmount}
+            isSubmitting={isBookingSubmitting}
+            error={bookingError}
+            onBack={goBack}
+            onConfirm={handleConfirmRental}
+          />
         </div>}
     </div>;
 }

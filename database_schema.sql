@@ -101,11 +101,23 @@ CREATE TABLE bus_bookings (
     user_id INT REFERENCES users(id) ON DELETE CASCADE,
     route_id INT REFERENCES bus_routes(id) ON DELETE CASCADE,
     seat_number VARCHAR(10) NOT NULL,
+    passenger_first_name VARCHAR(80) NOT NULL,
+    passenger_last_name VARCHAR(80) NOT NULL,
+    passenger_phone VARCHAR(30) NOT NULL,
+    passenger_national_id VARCHAR(50) NOT NULL,
+    passenger_email VARCHAR(255) NOT NULL,
     total_price DECIMAL(10,2) NOT NULL,
     payment_method VARCHAR(50),
     status booking_status DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Existing database migration:
+-- ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_first_name VARCHAR(80);
+-- ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_last_name VARCHAR(80);
+-- ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_phone VARCHAR(30);
+-- ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_national_id VARCHAR(50);
+-- ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_email VARCHAR(255);
 
 -- 9. CAR RENTALS (Transactions)
 CREATE TABLE car_rentals (
@@ -116,11 +128,19 @@ CREATE TABLE car_rentals (
     return_date DATE NOT NULL,
     driver_name VARCHAR(150) NOT NULL,
     driver_license VARCHAR(50) NOT NULL,
+    rental_mode VARCHAR(20) NOT NULL DEFAULT 'self_drive',
+    phone_number VARCHAR(30),
+    driver_fee_per_day DECIMAL(10,2) NOT NULL DEFAULT 0,
     total_price DECIMAL(10,2) NOT NULL,
     payment_method payment_method NOT NULL,
     status booking_status DEFAULT 'pending',
     booked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Existing database migration:
+-- ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS rental_mode VARCHAR(20) NOT NULL DEFAULT 'self_drive';
+-- ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS phone_number VARCHAR(30);
+-- ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS driver_fee_per_day DECIMAL(10,2) NOT NULL DEFAULT 0;
 
 -- 10. USER SESSIONS
 CREATE TABLE user_sessions (

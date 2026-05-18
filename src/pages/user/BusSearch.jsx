@@ -1,18 +1,27 @@
-﻿﻿import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import Footer from "../../components/Footer";
 import {
   Icon,
   icons,
   setupScrollReveal,
-  NAV,
   getTodayISO,
 } from "../../utils/sharedUser";
 import AuthModal from "./AuthModal";
+import PassengerInfoForm from "../../features/checkout/passenger/PassengerInfoForm";
+import CheckoutSuccess from "../../features/checkout/confirmation/CheckoutSuccess";
+import {
+  confirmBusBooking,
+  loadCheckoutConfirmation,
+  saveCheckoutConfirmation,
+} from "../../features/checkout/confirmation/confirmationApi";
+import { useAuth } from "../../context/AuthContext";
+
+const BUS_CONFIRMATION_KEY = "checkout-confirmation-bus";
 
 export default function BusSearch({ role, setActive, setBookingsTab }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user } = useAuth();
   const stepByPath = {
     "/booking/search": 1,
     "/booking/seats": 2,
@@ -40,6 +49,10 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
   const [travelDate, setTravelDate] = useState(getTodayISO());
   const [routes, setRoutes] = useState([]);
   const [_companies, setCompanies] = useState([]);
+  const [passengerInfo, setPassengerInfo] = useState(null);
+  const [confirmation, setConfirmation] = useState(() => loadCheckoutConfirmation(BUS_CONFIRMATION_KEY));
+  const [bookingError, setBookingError] = useState("");
+  const [isBookingSubmitting, setIsBookingSubmitting] = useState(false);
 
   // Stable mock QR patterns to prevent flickering during re-renders
   const qrPatternDone = useMemo(
@@ -98,71 +111,35 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
     return cleanup;
   }, [step, routes]);
   useEffect(() => {
+    if (step === 5) {
+      return;
+    }
     if (step >= 2 && !selectedRoute) {
       navigate("/booking/search", { replace: true });
       return;
     }
     if (step >= 3 && !selectedSeats.length) {
       navigate("/booking/seats", { replace: true });
+      return;
     }
-  }, [step, selectedRoute, selectedSeats.length, navigate]);
+    if (step >= 4 && !passengerInfo) {
+      navigate("/booking/passenger", { replace: true });
+    }
+  }, [step, selectedRoute, selectedSeats.length, passengerInfo, confirmation, navigate]);
   if (paymentSuccess || step === 5)
     return (
-      <div
-        className="page"
-        style={{
-          maxWidth: 480,
+      <CheckoutSuccess
+        confirmation={confirmation}
+        onMyBookings={() => {
+          if (setBookingsTab) setBookingsTab("trips");
+          setPaymentSuccess(false);
+          setActive("bookings");
         }}
-      >
-        <div
-          className="card"
-          style={{
-            textAlign: "center",
-            padding: "40px",
-          }}
-        >
-          <div
-            className="confirm-icon"
-            style={{
-              background: "var(--green-soft)",
-              color: "var(--green)",
-              width: 60,
-              height: 60,
-              borderRadius: "50%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              margin: "0 auto 20px",
-              fontSize: 24,
-            }}
-          >
-            ?
-          </div>
-          <div className="page-title">Payment successful!</div>
-          <div className="page-sub">Choose where to go next</div>
-          <div className="success-actions">
-            <button
-              className="btn btn-primary btn-full"
-              onClick={() => {
-                if (setBookingsTab) setBookingsTab("trips");
-                setPaymentSuccess(false);
-                setActive("bookings");
-              }}
-            >
-              My Bookings
-            </button>
-            <button
-              className="btn btn-ghost btn-full"
-              onClick={() => {
-                setPaymentSuccess(false);
-                setActive("home");
-              }}
-            >
-              Back to Home
-            </button>
-          </div>
-        </div>
-      </div>
+        onHome={() => {
+          setPaymentSuccess(false);
+          setActive("home");
+        }}
+      />
     );
   const goBack = () => {
     goStep(Math.max(1, step - 1));
@@ -180,6 +157,13 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
     "Banteay Meanchey",
   ];
   const currentRoute = routes.find((r) => r.id === selectedRoute);
+  const bookingTotal = (currentRoute?.price ?? 0) * selectedSeats.length;
+  const passengerBookingSummary = {
+    route: `${fromCity} to ${toCity}`,
+    date: `${travelDate} - ${currentRoute?.from || "Not selected"}`,
+    seats: selectedSeats.length ? selectedSeats.join(", ") : "None",
+    total: `$${bookingTotal.toFixed(2)}`,
+  };
   const takenSeats = ["A1", "A3", "B2", "B4", "C1", "D3", "D4"];
   const seatRows = ["A", "B", "C", "D", "E"];
   const seatCols = [1, 2, 3, 4];
@@ -188,6 +172,41 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
     setSelectedSeats((prev) =>
       prev.includes(sid) ? prev.filter((s) => s !== sid) : [...prev, sid],
     );
+  };
+  const handleConfirmBusBooking = async () => {
+    if (!currentRoute || !selectedSeats.length || !passengerInfo) {
+      setBookingError("Complete route, seats, and passenger information before payment.");
+      return;
+    }
+
+    setIsBookingSubmitting(true);
+    setBookingError("");
+
+    try {
+      const responseData = await confirmBusBooking({
+        route_id: currentRoute.id,
+        seat_number: selectedSeats,
+        user_id: user?.id || null,
+        total_price: bookingTotal,
+        payment_method: payMethod,
+        passengerInfo,
+        confirmationSummary: {
+          route: `${fromCity} to ${toCity}`,
+          date: `${travelDate} - ${currentRoute.from}`,
+          vehicle: `${currentRoute.vehicle} (${currentRoute.type})`,
+        },
+      });
+
+      const nextConfirmation = responseData.confirmation;
+      setConfirmation(nextConfirmation);
+      saveCheckoutConfirmation(BUS_CONFIRMATION_KEY, nextConfirmation);
+      setPaymentSuccess(true);
+      goStep(5);
+    } catch (error) {
+      setBookingError(error.message || "Failed to create bus booking.");
+    } finally {
+      setIsBookingSubmitting(false);
+    }
   };
   if (done)
     return (
@@ -273,6 +292,8 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
               goStep(1);
               setSelectedSeats([]);
               setSelectedRoute(null);
+              setPassengerInfo(null);
+              setBookingError("");
             }}
           >
             Book another
@@ -594,7 +615,7 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
                 <div className="summary-row">
                   <span className="summary-key">Route</span>
                   <span className="summary-val">
-                    {fromCity} ? {toCity}
+                    {fromCity} to {toCity}
                   </span>
                 </div>
                 <div className="summary-row">
@@ -705,52 +726,15 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
       )}
 
       {step === 3 && (
-        <div className="card">
-          <div className="sec-title">Passenger information</div>
-          <div className="form-row">
-            <div>
-              <div className="label">First name</div>
-              <input placeholder="Sereymongkol" />
-            </div>
-            <div>
-              <div className="label">Last name</div>
-              <input placeholder="Thoeung" />
-            </div>
-          </div>
-          <div className="form-group">
-            <div className="label">Phone number</div>
-            <input placeholder="+855 17 420 051" />
-          </div>
-          <div className="form-group">
-            <div className="label">National ID / Passport</div>
-            <input placeholder="ID123456789" />
-          </div>
-          <div className="form-group">
-            <div className="label">Email (for ticket)</div>
-            <input type="email" placeholder="thoeungsereymongkol@gmail.com" />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              marginTop: 20,
-            }}
-          >
-            <button
-              className="btn btn-ghost btn-round-back"
-              aria-label="Back"
-              onClick={goBack}
-            >
-              <Icon d={icons.back} size={15} />
-            </button>
-            <button
-              className="btn btn-primary btn-lg"
-              onClick={() => goStep(4)}
-            >
-              Continue <Icon d={icons.arrow} size={15} color="#fff" />
-            </button>
-          </div>
-        </div>
+        <PassengerInfoForm
+          initialValues={passengerInfo}
+          bookingSummary={passengerBookingSummary}
+          onBack={goBack}
+          onSubmit={(details) => {
+            setPassengerInfo(details);
+            goStep(4);
+          }}
+        />
       )}
 
       {step === 4 && (
@@ -827,12 +811,44 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
                 }}
               >
                 Amount: $
-                {((currentRoute?.price ?? 0) * selectedSeats.length).toFixed(2)}
+                {bookingTotal.toFixed(2)}
               </div>
             </div>
           )}
 
           <div className="divider" />
+          <div className="booking-summary-list" style={{ marginBottom: 12 }}>
+            <div className="booking-summary-row">
+              <span>Passenger</span>
+              <strong>
+                {passengerInfo ? `${passengerInfo.firstName} ${passengerInfo.lastName}` : "Not set"}
+              </strong>
+            </div>
+            <div className="booking-summary-row">
+              <span>Contact</span>
+              <strong>{passengerInfo ? passengerInfo.phone : "Not set"}</strong>
+            </div>
+            <div className="booking-summary-row">
+              <span>Email</span>
+              <strong>{passengerInfo ? passengerInfo.email : "Not set"}</strong>
+            </div>
+            <div className="booking-summary-row">
+              <span>Route</span>
+              <strong>{fromCity} to {toCity}</strong>
+            </div>
+            <div className="booking-summary-row">
+              <span>Travel date</span>
+              <strong>{travelDate} - {currentRoute?.from}</strong>
+            </div>
+            <div className="booking-summary-row">
+              <span>Seats</span>
+              <strong>{selectedSeats.join(", ")}</strong>
+            </div>
+            <div className="booking-summary-row">
+              <span>Price each</span>
+              <strong>${(currentRoute?.price ?? 0).toFixed(2)}</strong>
+            </div>
+          </div>
           <div className="total-box">
             <span
               style={{
@@ -849,9 +865,14 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
                 color: "var(--accent)",
               }}
             >
-              ${((currentRoute?.price ?? 0) * selectedSeats.length).toFixed(2)}
+              ${bookingTotal.toFixed(2)}
             </span>
           </div>
+          {bookingError && (
+            <div className="rental-search-note rental-search-error" style={{ marginTop: 12 }}>
+              {bookingError}
+            </div>
+          )}
 
           <div
             style={{
@@ -869,12 +890,10 @@ export default function BusSearch({ role, setActive, setBookingsTab }) {
             </button>
             <button
               className="btn btn-primary btn-lg"
-              onClick={() => {
-                setPaymentSuccess(true);
-                goStep(5);
-              }}
+              onClick={handleConfirmBusBooking}
+              disabled={isBookingSubmitting}
             >
-              Confirm & Pay <Icon d={icons.check} size={15} color="#fff" />
+              {isBookingSubmitting ? "Confirming..." : "Confirm & Pay"} <Icon d={icons.check} size={15} color="#fff" />
             </button>
           </div>
         </div>

@@ -1,5 +1,7 @@
-const { Pool } = require("pg");
-require("dotenv").config();
+import { Pool } from "pg";
+import { config } from "dotenv";
+
+config();
 
 const pool = new Pool({
   user: process.env.DB_USER,
@@ -11,4 +13,4 @@ const pool = new Pool({
 
 console.log("PostgreSQL Pool Initialized for DB:", process.env.DB_NAME);
 
-module.exports = pool;
+export default pool;

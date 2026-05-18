@@ -1,9 +1,12 @@
-const express = require("express");
-const cors = require("cors");
-const bcrypt = require("bcryptjs");
-const crypto = require("crypto");
-require("dotenv").config();
-const pool = require("./db"); // Import the shared PostgreSQL pool
+import express from "express";
+import cors from "cors";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
+import { config } from "dotenv";
+import pool from "./db.js"; // Import the shared PostgreSQL pool
+import carRoutes from "./routes/carRoutes.js";
+
+config();
 
 const app = express();
 const TOKEN_SECRET = process.env.TOKEN_SECRET || "bookride-dev-secret";
@@ -11,6 +14,9 @@ const TOKEN_SECRET = process.env.TOKEN_SECRET || "bookride-dev-secret";
 // Middleware
 app.use(cors()); // Allow frontend to fetch data
 app.use(express.json()); // Allow parsing JSON requests
+
+// Mount car routes
+app.use("/api/cars", carRoutes);
 
 // Test the connection
 pool
@@ -67,64 +73,7 @@ async function createUserSession(userId, token) {
   );
 }
 
-// 1. Fetch all Rental Cars
-app.get("/api/cars", async (req, res) => {
-  try {
-    const { type, location, pickupDate, returnDate, status, name } = req.query;
-    const conditions = [];
-    const params = [];
-
-    if (type && type !== "All") {
-      params.push(type);
-      conditions.push(`type = $${params.length}`);
-    }
-
-    if (location && location !== "All") {
-      params.push(location);
-      conditions.push(`location = $${params.length}`);
-    }
-
-    if (status && status !== "All") {
-      params.push(status.toLowerCase());
-      conditions.push(`status = $${params.length}`);
-    }
-
-    if (name && name !== "All") {
-      params.push(name);
-      conditions.push(`name = $${params.length}`);
-    }
-
-    if (pickupDate && returnDate) {
-      params.push(pickupDate, returnDate);
-      conditions.push(`
-        NOT EXISTS (
-          SELECT 1
-          FROM car_rentals cr
-          WHERE cr.car_id = rental_cars.id
-            AND cr.status NOT IN ('cancelled', 'returned')
-            AND cr.pickup_date <= $${params.length}
-            AND cr.return_date >= $${params.length - 1}
-        )
-      `);
-    }
-
-    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const result = await pool.query(
-      `
-      SELECT *
-      FROM rental_cars
-      ${whereClause}
-      ORDER BY id
-      `,
-      params,
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 2. Fetch all Bus Routes (For BusSearch.jsx)
+// 1. Fetch all Bus Routes (For BusSearch.jsx)
 app.get("/api/routes", async (req, res) => {
   try {
     const result = await pool.query(`
@@ -217,16 +166,118 @@ app.post("/api/auth/logout", async (req, res) => {
   }
 });
 
+function validatePassengerInfo(passengerInfo) {
+  const firstName = `${passengerInfo?.firstName || ""}`.trim();
+  const lastName = `${passengerInfo?.lastName || ""}`.trim();
+  const phone = `${passengerInfo?.phone || ""}`.trim();
+  const nationalId = `${passengerInfo?.nationalId || ""}`.trim();
+  const email = `${passengerInfo?.email || ""}`.trim();
+
+  if (!/^[A-Za-z\s]{2,40}$/.test(firstName)) {
+    return { error: "Enter a valid passenger first name" };
+  }
+  if (!/^[A-Za-z\s]{2,40}$/.test(lastName)) {
+    return { error: "Enter a valid passenger last name" };
+  }
+  if (!/^\+?[0-9\s-]{8,20}$/.test(phone)) {
+    return { error: "Enter a valid passenger phone number" };
+  }
+  if (!/^[A-Za-z0-9-]{5,30}$/.test(nationalId)) {
+    return { error: "Enter a valid passenger national ID or passport" };
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { error: "Enter a valid passenger email" };
+  }
+
+  return {
+    passenger: {
+      firstName,
+      lastName,
+      phone,
+      nationalId,
+      email,
+    },
+  };
+}
+
 // 5. Create a Bus Booking
 app.post("/api/bookings/bus", async (req, res) => {
-  const { user_id, route_id, seat_number, total_price, payment_method } =
-    req.body;
+  const {
+    route_id,
+    seat_number,
+    user_id,
+    total_price,
+    payment_method,
+    passengerInfo,
+    confirmationSummary = {},
+  } = req.body;
+
   try {
-    // Note: This requires inserting into bus_seats and bus_bookings
-    res
-      .status(201)
-      .json({ message: "Booking created successfully", route_id, seat_number });
+    if (!route_id || !seat_number || !total_price || !payment_method) {
+      return res.status(400).json({ error: "Route, seats, total, and payment method are required" });
+    }
+
+    if (!["aba", "khqr", "cash"].includes(payment_method)) {
+      return res.status(400).json({ error: "Invalid payment method" });
+    }
+
+    const validation = validatePassengerInfo(passengerInfo);
+    if (validation.error) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO bus_bookings (
+        user_id,
+        route_id,
+        seat_number,
+        passenger_first_name,
+        passenger_last_name,
+        passenger_phone,
+        passenger_national_id,
+        passenger_email,
+        total_price,
+        payment_method,
+        status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING *`,
+      [
+        user_id || null,
+        route_id,
+        Array.isArray(seat_number) ? seat_number.join(", ") : `${seat_number}`,
+        validation.passenger.firstName,
+        validation.passenger.lastName,
+        validation.passenger.phone,
+        validation.passenger.nationalId,
+        validation.passenger.email,
+        total_price,
+        payment_method,
+        "confirmed",
+      ],
+    );
+
+    res.status(201).json({
+      message: "Booking created successfully",
+      booking: result.rows[0],
+      confirmation: {
+        type: "bus",
+        id: result.rows[0].id,
+        status: result.rows[0].status,
+        paymentMethod: result.rows[0].payment_method,
+        total: Number(result.rows[0].total_price || 0),
+        summary: {
+          Passenger: `${validation.passenger.firstName} ${validation.passenger.lastName}`,
+          Contact: validation.passenger.phone,
+          Email: validation.passenger.email,
+          Route: confirmationSummary.route || `Route #${route_id}`,
+          Date: confirmationSummary.date || "Not set",
+          Vehicle: confirmationSummary.vehicle || "Bus",
+          Seats: result.rows[0].seat_number,
+        },
+      },
+    });
   } catch (err) {
+    console.error("Error creating bus booking:", err);
     res.status(500).json({ error: err.message });
   }
 });
