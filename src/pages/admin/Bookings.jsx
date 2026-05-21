@@ -32,6 +32,26 @@ function formatDateTime(value) {
   });
 }
 
+function getDateKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateLabel(value) {
+  if (!value) return 'Unknown date';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown date';
+  return date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric'
+  });
+}
+
 function statusBadge(status) {
   if (status === 'confirmed' || status === 'completed') return 'badge-green';
   if (status === 'pending') return 'badge-amber';
@@ -39,13 +59,15 @@ function statusBadge(status) {
 }
 
 function exportCsv(rows) {
-  const headers = ['ID', 'User', 'Email', 'Phone', 'Route', 'Seat', 'Date', 'Paid', 'Payment', 'Status'];
+  const headers = ['ID', 'User', 'Email', 'Phone', 'Route', 'Departure', 'Arrival', 'Seat', 'Booked At', 'Paid', 'Payment', 'Status'];
   const body = rows.map((booking) => [
     booking.id,
     booking.user_name,
     booking.email,
     booking.phone,
     `${booking.origin} -> ${booking.destination}`,
+    formatDateTime(booking.departure_time),
+    formatDateTime(booking.arrival_time),
     booking.seat_number,
     formatDateTime(booking.created_at),
     Number(booking.total_price || 0).toFixed(2),
@@ -124,6 +146,7 @@ function DeleteModal({ booking, deleting, onCancel, onConfirm }) {
 export default function Bookings() {
   const [bookings, setBookings] = useState([]);
   const [filter, setFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState('');
@@ -155,6 +178,7 @@ export default function Bookings() {
     const normalized = query.trim().toLowerCase();
     return bookings.filter((booking) => {
       const matchesStatus = filter === 'all' || booking.status === filter;
+      const matchesDate = dateFilter === 'all' || getDateKey(booking.departure_time) === dateFilter;
       const haystack = [
         booking.id,
         booking.user_name,
@@ -162,13 +186,34 @@ export default function Bookings() {
         booking.phone,
         booking.origin,
         booking.destination,
+        formatDateTime(booking.departure_time),
+        formatDateTime(booking.arrival_time),
         booking.seat_number,
         booking.company_name,
+        booking.bus_name,
+        booking.bus_type,
         booking.payment_method
       ].filter(Boolean).join(' ').toLowerCase();
-      return matchesStatus && (!normalized || haystack.includes(normalized));
+      return matchesStatus && matchesDate && (!normalized || haystack.includes(normalized));
     });
-  }, [bookings, filter, query]);
+  }, [bookings, dateFilter, filter, query]);
+
+  const dateOptions = useMemo(() => {
+    const dateCounts = new Map();
+    bookings.forEach((booking) => {
+      const key = getDateKey(booking.departure_time);
+      if (!key) return;
+      if (!dateCounts.has(key)) {
+        dateCounts.set(key, {
+          key,
+          label: formatDateLabel(booking.departure_time),
+          count: 0
+        });
+      }
+      dateCounts.get(key).count += 1;
+    });
+    return Array.from(dateCounts.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }, [bookings]);
 
   function openEdit(booking) {
     setEditing(booking);
@@ -259,6 +304,21 @@ export default function Bookings() {
         </div>
       </div>
 
+      <div className="pill-nav observe-animate" style={{ width: '100%', flexWrap: 'wrap', marginTop: 10, marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span className="td-muted" style={{ fontSize: 12, marginRight: 2 }}>Schedule date</span>
+          <div className={`pill-tab ${dateFilter === 'all' ? 'active' : ''}`} onClick={() => setDateFilter('all')}>
+            All dates
+          </div>
+          {dateOptions.map((option) => (
+            <div key={option.key} className={`pill-tab ${dateFilter === option.key ? 'active' : ''}`} onClick={() => setDateFilter(option.key)}>
+              {option.label}
+              <span style={{ marginLeft: 6, opacity: 0.72 }}>{option.count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="card observe-animate">
         {loading ? (
           <div className="sec-sub">Loading bookings...</div>
@@ -271,8 +331,9 @@ export default function Bookings() {
                   <th>User</th>
                   <th>Contact</th>
                   <th>Route</th>
+                  <th>Schedule</th>
                   <th>Seat</th>
-                  <th>Date</th>
+                  <th>Booked</th>
                   <th>Paid</th>
                   <th>Status</th>
                   <th>Actions</th>
@@ -296,6 +357,14 @@ export default function Bookings() {
                           {booking.company_name || booking.bus_name}
                         </div>
                       </td>
+                      <td>
+                        <div className="td-muted">
+                          Depart: {formatDateTime(booking.departure_time)}
+                        </div>
+                        <div className="td-muted" style={{ fontSize: 11 }}>
+                          Arrive: {formatDateTime(booking.arrival_time)}
+                        </div>
+                      </td>
                       <td className="td-muted">{booking.seat_number}</td>
                       <td className="td-muted">{formatDateTime(booking.created_at)}</td>
                       <td style={{ color: 'var(--green)', fontWeight: 500 }}>
@@ -313,7 +382,7 @@ export default function Bookings() {
                   );
                 })}
                 {!shown.length && (
-                  <tr><td colSpan={9} className="td-muted" style={{ padding: 18 }}>No bookings found.</td></tr>
+                  <tr><td colSpan={10} className="td-muted" style={{ padding: 18 }}>No bookings found.</td></tr>
                 )}
               </tbody>
             </table>

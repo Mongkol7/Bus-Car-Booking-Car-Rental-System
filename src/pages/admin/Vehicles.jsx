@@ -19,7 +19,9 @@ const EMPTY_BUS = {
   type: '',
   plate_number: '',
   total_seats: '',
-  status: 'available'
+  status: 'available',
+  maintenance_start: '',
+  maintenance_end: ''
 };
 
 const EMPTY_CAR = {
@@ -41,7 +43,12 @@ const EMPTY_COMPANY = {
 
 async function parseJsonResponse(response) {
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Request failed.');
+  if (!response.ok) {
+    const error = new Error(data.error || 'Request failed.');
+    error.code = data.code;
+    error.affected_routes = data.affected_routes || [];
+    throw error;
+  }
   return data;
 }
 
@@ -60,6 +67,36 @@ function statusBadge(status) {
 
 function formatMoney(value) {
   return `$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function toDateTimeInputValue(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60 * 1000);
+  return local.toISOString().slice(0, 16);
+}
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+function formatMaintenanceWindow(bus) {
+  if (bus?.status !== 'maintenance') return '';
+  const start = formatDateTime(bus.maintenance_start);
+  const end = formatDateTime(bus.maintenance_end);
+  if (start && end) return `${start} - ${end}`;
+  return 'Maintenance window not set';
 }
 
 function rowLabel(index) {
@@ -172,6 +209,23 @@ function BusModal({ form, companies, editing, saving, error, onChange, onSubmit,
             ))}
           </select>
         </div>
+        {form.status === 'maintenance' ? (
+          <div>
+            <div className="form-row">
+              <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
+                From when
+                <input name="maintenance_start" type="datetime-local" value={form.maintenance_start || ''} onChange={onChange} />
+              </label>
+              <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
+                To when
+                <input name="maintenance_end" type="datetime-local" value={form.maintenance_end || ''} onChange={onChange} />
+              </label>
+            </div>
+            <div className="td-muted" style={{ fontSize: 12 }}>
+              The bus will return to available after the maintenance end date passes.
+            </div>
+          </div>
+        ) : null}
 
         <div className="modal-btns" style={{ marginTop: 18 }}>
           <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
@@ -180,6 +234,86 @@ function BusModal({ form, companies, editing, saving, error, onChange, onSubmit,
           </button>
         </div>
         {!companies.length ? <div className="td-muted" style={{ marginTop: 10, fontSize: 12 }}>Create a company before adding buses.</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function MaintenanceRecoveryModal({ conflict, buses, saving, error, onChange, onClose, onSubmit }) {
+  const routes = conflict?.affected_routes || [];
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal-card" style={{ maxWidth: 860, textAlign: 'left' }} onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title">Resolve booked maintenance trips</div>
+        <div className="modal-text" style={{ marginBottom: 18 }}>
+          This maintenance window overlaps booked trips. Move every affected booking to an existing compatible route or create a backup route.
+        </div>
+
+        {error ? <div style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 8, color: 'var(--red)', background: 'var(--red-soft)' }}>{error}</div> : null}
+
+        <div style={{ display: 'grid', gap: 12, maxHeight: 460, overflow: 'auto' }}>
+          {routes.map((route) => {
+            const action = conflict.actions?.[route.id] || {};
+            const mode = action.mode || 'existing';
+            return (
+              <div key={route.id} style={{ padding: 14, borderRadius: 10, background: 'var(--glass)', border: '0.5px solid var(--glass-border)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{route.origin} {'->'} {route.destination}</div>
+                    <div className="td-muted" style={{ fontSize: 12 }}>
+                      {formatDateTime(route.departure_time)} - {formatDateTime(route.arrival_time)} - {route.booking_count} booking(s)
+                    </div>
+                  </div>
+                  <span className="badge badge-amber">Seats {(route.booked_seats || []).join(', ')}</span>
+                </div>
+
+                <div className="form-row">
+                  <select value={mode} onChange={(event) => onChange(route.id, { mode: event.target.value })} disabled={saving}>
+                    <option value="existing">Move to existing route</option>
+                    <option value="backup">Create backup route</option>
+                  </select>
+
+                  {mode === 'existing' ? (
+                    <select value={action.replacement_route_id || ''} onChange={(event) => onChange(route.id, { replacement_route_id: event.target.value })} disabled={saving}>
+                      <option value="">Select compatible route</option>
+                      {(route.recovery_options || []).map((option) => (
+                        <option key={option.id} value={option.id}>
+                          #{option.id} {option.bus_name} - {formatDateTime(option.departure_time)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <select value={action.bus_id || ''} onChange={(event) => onChange(route.id, { bus_id: event.target.value })} disabled={saving}>
+                      <option value="">Select backup bus</option>
+                      {buses.filter((bus) => Number(bus.id) !== Number(route.bus_id)).map((bus) => (
+                        <option key={bus.id} value={bus.id}>{bus.name} - {bus.type} ({bus.plate_number})</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {mode === 'backup' ? (
+                  <div className="form-row">
+                    <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
+                      Backup departure
+                      <input type="datetime-local" value={action.departure_time || toDateTimeInputValue(route.departure_time)} onChange={(event) => onChange(route.id, { departure_time: event.target.value })} disabled={saving} />
+                    </label>
+                    <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
+                      Backup arrival
+                      <input type="datetime-local" value={action.arrival_time || toDateTimeInputValue(route.arrival_time)} onChange={(event) => onChange(route.id, { arrival_time: event.target.value })} disabled={saving} />
+                    </label>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="modal-btns" style={{ marginTop: 18 }}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-primary" onClick={onSubmit} disabled={saving}>{saving ? 'Saving...' : 'Resolve and save maintenance'}</button>
+        </div>
       </div>
     </div>
   );
@@ -687,6 +821,8 @@ export default function Vehicles() {
   const [seatMapLoading, setSeatMapLoading] = useState(false);
   const [seatMapError, setSeatMapError] = useState('');
   const [seatMapNotice, setSeatMapNotice] = useState('');
+  const [maintenanceConflict, setMaintenanceConflict] = useState(null);
+  const [maintenanceRecoveryError, setMaintenanceRecoveryError] = useState('');
 
   function setTab(nextTab) {
     navigate(nextTab === 'cars' ? '/admin/vehicles/rental-cars' : '/admin/vehicles/buses');
@@ -766,7 +902,9 @@ export default function Vehicles() {
       type: bus.type || '',
       plate_number: bus.plate_number || '',
       total_seats: String(bus.total_seats || ''),
-      status: bus.status || 'available'
+      status: bus.status || 'available',
+      maintenance_start: toDateTimeInputValue(bus.maintenance_start),
+      maintenance_end: toDateTimeInputValue(bus.maintenance_end)
     });
     setVehicleError('');
     setBusModalOpen(true);
@@ -820,11 +958,17 @@ export default function Vehicles() {
     setBusForm(EMPTY_BUS);
     setCarForm(EMPTY_CAR);
     setVehicleError('');
+    setMaintenanceConflict(null);
+    setMaintenanceRecoveryError('');
   }
 
   function handleBusChange(event) {
     const { name, value } = event.target;
-    setBusForm((current) => ({ ...current, [name]: value }));
+    setBusForm((current) => ({
+      ...current,
+      [name]: value,
+      ...(name === 'status' && value !== 'maintenance' ? { maintenance_start: '', maintenance_end: '' } : {})
+    }));
   }
 
   function handleCarChange(event) {
@@ -841,26 +985,72 @@ export default function Vehicles() {
     }));
   }
 
-  async function saveBus() {
+  async function saveBus(recoveryPlan = null) {
     setSaving(true);
     setVehicleError('');
+    setMaintenanceRecoveryError('');
     try {
       const endpoint = editingBus ? `/api/admin/buses/${editingBus.id}` : '/api/admin/buses';
       const method = editingBus ? 'PUT' : 'POST';
+      const payload = recoveryPlan
+        ? { ...busForm, maintenance_recovery_plan: recoveryPlan }
+        : busForm;
       await parseJsonResponse(await fetch(endpoint, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(busForm)
+        body: JSON.stringify(payload)
       }));
       setEditingBus(null);
       setBusModalOpen(false);
       setBusForm(EMPTY_BUS);
+      setMaintenanceConflict(null);
       await loadVehicles(false);
     } catch (error) {
+      if (error.code === 'MAINTENANCE_BOOKING_CONFLICT') {
+        setMaintenanceConflict({
+          affected_routes: error.affected_routes || [],
+          actions: {}
+        });
+        setMaintenanceRecoveryError('');
+        return;
+      }
+      if (recoveryPlan) {
+        setMaintenanceRecoveryError(error.message || 'Unable to resolve maintenance bookings.');
+        return;
+      }
       setVehicleError(error.message || 'Unable to save bus.');
     } finally {
       setSaving(false);
     }
+  }
+
+  function updateMaintenanceAction(routeId, patch) {
+    setMaintenanceConflict((current) => ({
+      ...current,
+      actions: {
+        ...(current?.actions || {}),
+        [routeId]: {
+          ...(current?.actions?.[routeId] || { mode: 'existing' }),
+          ...patch
+        }
+      }
+    }));
+  }
+
+  async function submitMaintenanceRecovery() {
+    if (!maintenanceConflict) return;
+    const actions = (maintenanceConflict.affected_routes || []).map((route) => {
+      const action = maintenanceConflict.actions?.[route.id] || { mode: 'existing' };
+      return {
+        route_id: route.id,
+        mode: action.mode || 'existing',
+        replacement_route_id: action.replacement_route_id ? Number(action.replacement_route_id) : undefined,
+        bus_id: action.bus_id ? Number(action.bus_id) : undefined,
+        departure_time: action.departure_time || toDateTimeInputValue(route.departure_time),
+        arrival_time: action.arrival_time || toDateTimeInputValue(route.arrival_time)
+      };
+    });
+    await saveBus({ actions });
   }
 
   async function saveCar() {
@@ -1126,7 +1316,14 @@ export default function Vehicles() {
                           : bus.seat_map_template_name || 'Fallback'}
                       </td>
                       <td>{bus.route_count || 0}</td>
-                      <td><span className={`badge ${statusBadge(bus.status)}`}>{titleCase(bus.status)}</span></td>
+                      <td>
+                        <span className={`badge ${statusBadge(bus.status)}`}>{titleCase(bus.status)}</span>
+                        {bus.status === 'maintenance' ? (
+                          <div className="td-muted" style={{ fontSize: 11, marginTop: 5, maxWidth: 210 }}>
+                            {formatMaintenanceWindow(bus)}
+                          </div>
+                        ) : null}
+                      </td>
                       <td>
                         <div style={{ display: 'flex', gap: 6 }}>
                           <button className="btn btn-ghost btn-sm" onClick={() => openSeatMap(bus)} title="Edit seat map">
@@ -1219,6 +1416,23 @@ export default function Vehicles() {
           onChange={handleCarChange}
           onSubmit={saveCar}
           onClose={closeVehicleModal}
+        />
+      ) : null}
+
+      {maintenanceConflict ? (
+        <MaintenanceRecoveryModal
+          conflict={maintenanceConflict}
+          buses={buses}
+          saving={saving}
+          error={maintenanceRecoveryError}
+          onChange={updateMaintenanceAction}
+          onClose={() => {
+            if (!saving) {
+              setMaintenanceConflict(null);
+              setMaintenanceRecoveryError('');
+            }
+          }}
+          onSubmit={submitMaintenanceRecovery}
         />
       ) : null}
 

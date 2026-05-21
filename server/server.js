@@ -177,6 +177,48 @@ async function runUserSchemaMigration() {
 
   await pool.query(`ALTER TABLE buses ADD COLUMN IF NOT EXISTS seat_map_template_id INT REFERENCES bus_seat_map_templates(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE buses ADD COLUMN IF NOT EXISTS seat_map_override JSONB`);
+  await pool.query(`ALTER TABLE buses ADD COLUMN IF NOT EXISTS maintenance_start TIMESTAMP`);
+  await pool.query(`ALTER TABLE buses ADD COLUMN IF NOT EXISTS maintenance_end TIMESTAMP`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS daily_route_templates (
+      id SERIAL PRIMARY KEY,
+      bus_id INT REFERENCES buses(id) ON DELETE CASCADE,
+      origin VARCHAR(100) NOT NULL,
+      destination VARCHAR(100) NOT NULL,
+      departure_time TIME NOT NULL,
+      arrival_time TIME NOT NULL,
+      price DECIMAL(10,2) NOT NULL,
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`ALTER TABLE bus_routes ADD COLUMN IF NOT EXISTS daily_template_id INT REFERENCES daily_route_templates(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE bus_routes ADD COLUMN IF NOT EXISTS service_date DATE`);
+  await pool.query(`ALTER TABLE bus_routes ADD COLUMN IF NOT EXISTS is_generated BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE bus_routes ADD COLUMN IF NOT EXISTS availability_status VARCHAR(20) DEFAULT 'available'`);
+  await pool.query(`ALTER TABLE bus_routes ADD COLUMN IF NOT EXISTS maintenance_start TIMESTAMP`);
+  await pool.query(`ALTER TABLE bus_routes ADD COLUMN IF NOT EXISTS maintenance_end TIMESTAMP`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS booking_recovery_events (
+      id SERIAL PRIMARY KEY,
+      booking_id INT REFERENCES bus_bookings(id) ON DELETE SET NULL,
+      old_route_id INT REFERENCES bus_routes(id) ON DELETE SET NULL,
+      new_route_id INT REFERENCES bus_routes(id) ON DELETE SET NULL,
+      old_seat_number VARCHAR(10),
+      new_seat_number VARCHAR(10),
+      reason TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_bus_routes_daily_template_date
+    ON bus_routes(daily_template_id, service_date)
+    WHERE daily_template_id IS NOT NULL
+  `);
+  await releaseExpiredBusMaintenance();
 }
 
 const USER_SELECT = `
@@ -323,7 +365,9 @@ const BOOKING_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
 const RENTAL_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled', 'returned'];
 const PAYMENT_METHODS = ['aba', 'khqr', 'cash'];
 const VEHICLE_STATUSES = ['available', 'rented', 'maintenance'];
+const ROUTE_AVAILABILITY_STATUSES = ['available', 'maintenance'];
 const SEAT_MAP_CELL_TYPES = ['seat', 'empty', 'door', 'bathroom', 'driver', 'note'];
+const DAILY_ROUTE_WINDOW_DAYS = 30;
 
 function normalizeText(value) {
   return String(value || '').trim();
@@ -332,6 +376,25 @@ function normalizeText(value) {
 function normalizeMoney(value) {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : NaN;
+}
+
+function normalizeDateTime(value) {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+async function releaseExpiredBusMaintenance() {
+  await pool.query(`
+    UPDATE buses
+    SET status = 'available',
+        maintenance_start = NULL,
+        maintenance_end = NULL
+    WHERE status = 'maintenance'
+      AND maintenance_end IS NOT NULL
+      AND maintenance_end <= NOW()
+  `);
 }
 
 function buildMonthRange(month) {
@@ -577,16 +640,51 @@ const ROUTE_SELECT = `
     r.departure_time,
     r.arrival_time,
     r.price,
+    r.daily_template_id,
+    r.service_date,
+    COALESCE(r.is_generated, FALSE) AS is_generated,
+    CASE WHEN COALESCE(r.is_generated, FALSE) THEN 'daily' ELSE 'manual' END AS route_type,
+    COALESCE(r.availability_status, 'available') AS availability_status,
+    r.maintenance_start,
+    r.maintenance_end,
     r.created_at,
     b.name AS bus_name,
     b.type AS bus_type,
     b.plate_number,
     b.total_seats,
     b.status AS bus_status,
+    b.maintenance_start AS bus_maintenance_start,
+    b.maintenance_end AS bus_maintenance_end,
     c.id AS company_id,
     c.name AS company_name,
     c.theme_color AS color,
-    c.theme_bg AS bg
+    c.theme_bg AS bg,
+    (
+      SELECT COUNT(*)::INT
+      FROM bus_bookings bb
+      WHERE bb.route_id = r.id
+        AND bb.status <> 'cancelled'
+    ) AS booking_count,
+    COALESCE((
+      SELECT JSON_AGG(
+        JSON_BUILD_OBJECT(
+          'booking_id', bb.id,
+          'user_id', u.id,
+          'user_name', CONCAT(u.first_name, ' ', u.last_name),
+          'email', u.email,
+          'phone', u.phone,
+          'seat_number', bb.seat_number,
+          'status', bb.status,
+          'payment_method', bb.payment_method,
+          'total_price', bb.total_price
+        )
+        ORDER BY bb.seat_number, bb.id
+      )
+      FROM bus_bookings bb
+      JOIN users u ON u.id = bb.user_id
+      WHERE bb.route_id = r.id
+        AND bb.status <> 'cancelled'
+    ), '[]'::JSON) AS passengers
   FROM bus_routes r
   JOIN buses b ON r.bus_id = b.id
   LEFT JOIN companies c ON b.company_id = c.id
@@ -600,6 +698,8 @@ const BUS_SELECT = `
     b.plate_number,
     b.total_seats,
     b.status,
+    b.maintenance_start,
+    b.maintenance_end,
     c.id AS company_id,
     c.name AS company_name,
     c.theme_color AS color,
@@ -624,6 +724,9 @@ function normalizeRoutePayload(body) {
   const departure = new Date(departureRaw);
   const arrival = new Date(arrivalRaw);
   const price = Number(body.price);
+  const availabilityStatus = normalizeText(body.availability_status || 'available').toLowerCase();
+  const maintenanceStart = normalizeDateTime(body.maintenance_start);
+  const maintenanceEnd = normalizeDateTime(body.maintenance_end);
 
   if (!busId || !origin || !destination || !departureRaw || !arrivalRaw || Number.isNaN(price)) {
     return { error: 'All schedule fields are required.' };
@@ -640,6 +743,20 @@ function normalizeRoutePayload(body) {
   if (price <= 0) {
     return { error: 'Price must be greater than zero.' };
   }
+  if (!ROUTE_AVAILABILITY_STATUSES.includes(availabilityStatus)) {
+    return { error: 'Invalid schedule availability status.' };
+  }
+  if (availabilityStatus === 'maintenance') {
+    if (!maintenanceStart || !maintenanceEnd) {
+      return { error: 'Maintenance start and end date/time are required.' };
+    }
+    if (maintenanceEnd <= maintenanceStart) {
+      return { error: 'Maintenance end date/time must be after the start date/time.' };
+    }
+    if (!(maintenanceStart < arrival && maintenanceEnd > departure)) {
+      return { error: 'Maintenance duration must overlap this scheduled trip.' };
+    }
+  }
 
   const departureLocal = departureRaw.replace('T', ' ') + (departureRaw.length === 16 ? ':00' : '');
   const arrivalLocal = arrivalRaw.replace('T', ' ') + (arrivalRaw.length === 16 ? ':00' : '');
@@ -651,7 +768,84 @@ function normalizeRoutePayload(body) {
       destination,
       departure_time: departureLocal,
       arrival_time: arrivalLocal,
-      price: price.toFixed(2)
+      price: price.toFixed(2),
+      availability_status: availabilityStatus,
+      maintenance_start: availabilityStatus === 'maintenance' ? maintenanceStart : null,
+      maintenance_end: availabilityStatus === 'maintenance' ? maintenanceEnd : null
+    }
+  };
+}
+
+function normalizeTimeOfDay(value, label = 'Time') {
+  const raw = normalizeText(value);
+  const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return { error: `${label} must be a valid time.` };
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3] || 0);
+  if (hours > 23 || minutes > 59 || seconds > 59) {
+    return { error: `${label} must be a valid time.` };
+  }
+  return { value: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}` };
+}
+
+function timeToMinutes(value) {
+  const [hours, minutes] = String(value || '00:00').split(':').map(Number);
+  return (hours * 60) + minutes;
+}
+
+function addDateDays(dateKey, days) {
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return formatDateKey(date);
+}
+
+function todayDateKey() {
+  return formatDateKey(new Date());
+}
+
+function buildTemplateDateTimes(template, serviceDate) {
+  const departureTime = String(template.departure_time || '').slice(0, 8);
+  const arrivalTime = String(template.arrival_time || '').slice(0, 8);
+  const arrivalDate = timeToMinutes(arrivalTime) <= timeToMinutes(departureTime)
+    ? addDateDays(serviceDate, 1)
+    : serviceDate;
+  return {
+    departure_time: `${serviceDate} ${departureTime}`,
+    arrival_time: `${arrivalDate} ${arrivalTime}`
+  };
+}
+
+function normalizeDailyRouteTemplatePayload(body) {
+  const busId = Number(body.bus_id);
+  const origin = normalizeText(body.origin);
+  const destination = normalizeText(body.destination);
+  const departure = normalizeTimeOfDay(body.departure_time, 'Departure time');
+  const arrival = normalizeTimeOfDay(body.arrival_time, 'Arrival time');
+  const price = normalizeMoney(body.price);
+  const isActive = body.is_active === undefined ? true : Boolean(body.is_active);
+
+  if (!busId || !origin || !destination || !normalizeText(body.departure_time) || !normalizeText(body.arrival_time) || Number.isNaN(price)) {
+    return { error: 'Bus, origin, destination, departure time, arrival time, and price are required.' };
+  }
+  if (departure.error) return { error: departure.error };
+  if (arrival.error) return { error: arrival.error };
+  if (departure.value === arrival.value) {
+    return { error: 'Arrival time must be different from departure time.' };
+  }
+  if (price <= 0) {
+    return { error: 'Price must be greater than zero.' };
+  }
+
+  return {
+    value: {
+      bus_id: busId,
+      origin,
+      destination,
+      departure_time: departure.value,
+      arrival_time: arrival.value,
+      price: price.toFixed(2),
+      is_active: isActive
     }
   };
 }
@@ -688,11 +882,779 @@ async function hasOverlappingSchedule(busId, departureTime, arrivalTime, exclude
   return result.rowCount > 0;
 }
 
+async function fetchDailyRouteTemplates() {
+  const result = await pool.query(`
+    SELECT
+      t.id,
+      t.bus_id,
+      t.origin,
+      t.destination,
+      t.departure_time,
+      t.arrival_time,
+      t.price,
+      t.is_active,
+      t.created_at,
+      t.updated_at,
+      b.name AS bus_name,
+      b.type AS bus_type,
+      b.plate_number,
+      c.name AS company_name,
+      c.theme_color AS color,
+      c.theme_bg AS bg,
+      COUNT(r.id)::INT AS generated_count
+    FROM daily_route_templates t
+    JOIN buses b ON b.id = t.bus_id
+    LEFT JOIN companies c ON c.id = b.company_id
+    LEFT JOIN bus_routes r ON r.daily_template_id = t.id
+    GROUP BY t.id, b.id, c.id
+    ORDER BY t.origin, t.destination, t.departure_time
+  `);
+  return result.rows;
+}
+
+async function fetchDailyRouteTemplateById(templateId) {
+  const result = await pool.query(`SELECT * FROM daily_route_templates WHERE id = $1`, [templateId]);
+  return result.rows[0] || null;
+}
+
+async function generateDailyRoutes(db = pool) {
+  const templates = await db.query(`SELECT * FROM daily_route_templates WHERE is_active = TRUE ORDER BY id`);
+  const start = todayDateKey();
+
+  for (const template of templates.rows) {
+    for (let offset = 0; offset < DAILY_ROUTE_WINDOW_DAYS; offset += 1) {
+      const serviceDate = addDateDays(start, offset);
+      const exists = await db.query(
+        `SELECT id FROM bus_routes WHERE daily_template_id = $1 AND service_date = $2`,
+        [template.id, serviceDate]
+      );
+      if (exists.rowCount) continue;
+
+      const times = buildTemplateDateTimes(template, serviceDate);
+      const overlaps = await hasOverlappingSchedule(template.bus_id, times.departure_time, times.arrival_time);
+      if (overlaps) continue;
+
+      await db.query(
+        `INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price, daily_template_id, service_date, is_generated, availability_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, 'available')
+         ON CONFLICT DO NOTHING`,
+        [
+          template.bus_id,
+          template.origin,
+          template.destination,
+          times.departure_time,
+          times.arrival_time,
+          template.price,
+          template.id,
+          serviceDate
+        ]
+      );
+    }
+  }
+}
+
+async function ensureTemplateFutureRowsCanUpdate(templateId, effectiveDate) {
+  const booked = await pool.query(
+    `SELECT r.id, r.origin, r.destination, r.departure_time, COUNT(bb.id)::INT AS booking_count
+     FROM bus_routes r
+     JOIN bus_bookings bb ON bb.route_id = r.id AND bb.status <> 'cancelled'
+     WHERE r.daily_template_id = $1
+       AND COALESCE(r.is_generated, FALSE) = TRUE
+       AND r.service_date >= $2
+     GROUP BY r.id
+     ORDER BY r.departure_time`,
+    [templateId, effectiveDate]
+  );
+
+  if (booked.rowCount) {
+    const error = new Error('Cannot update future daily routes because one or more affected trips already have bookings.');
+    error.status = 409;
+    error.code = 'DAILY_ROUTE_BOOKING_CONFLICT';
+    error.routes = booked.rows;
+    throw error;
+  }
+}
+
+async function syncTemplateFutureRows(template, effectiveDate) {
+  await ensureTemplateFutureRowsCanUpdate(template.id, effectiveDate);
+
+  const rows = await pool.query(
+    `SELECT id, service_date
+     FROM bus_routes
+     WHERE daily_template_id = $1
+       AND COALESCE(is_generated, FALSE) = TRUE
+       AND service_date >= $2
+     ORDER BY service_date`,
+    [template.id, effectiveDate]
+  );
+
+  for (const row of rows.rows) {
+    const serviceDate = formatDateKey(row.service_date);
+    const times = buildTemplateDateTimes(template, serviceDate);
+    const overlaps = await hasOverlappingSchedule(template.bus_id, times.departure_time, times.arrival_time, row.id);
+    if (overlaps) {
+      const error = new Error(`Cannot sync route ${row.id}; the assigned bus has another trip during that time.`);
+      error.status = 409;
+      throw error;
+    }
+
+    await pool.query(
+      `UPDATE bus_routes
+       SET bus_id = $1,
+           origin = $2,
+           destination = $3,
+           departure_time = $4,
+           arrival_time = $5,
+           price = $6
+       WHERE id = $7`,
+      [
+        template.bus_id,
+        template.origin,
+        template.destination,
+        times.departure_time,
+        times.arrival_time,
+        template.price,
+        row.id
+      ]
+    );
+  }
+}
+
+async function fetchBookedMaintenanceRoutes(busId, maintenanceStart, maintenanceEnd) {
+  const result = await pool.query(
+    `SELECT
+       r.id,
+       r.bus_id,
+       r.origin,
+       r.destination,
+       r.departure_time,
+       r.arrival_time,
+       r.price,
+       COUNT(bb.id)::INT AS booking_count,
+       ARRAY_AGG(DISTINCT bb.seat_number ORDER BY bb.seat_number) AS booked_seats
+     FROM bus_routes r
+     JOIN bus_bookings bb ON bb.route_id = r.id AND bb.status <> 'cancelled'
+     WHERE r.bus_id = $1
+       AND r.departure_time < $2
+       AND r.arrival_time > $3
+     GROUP BY r.id
+     ORDER BY r.departure_time`,
+    [busId, maintenanceEnd, maintenanceStart]
+  );
+  return result.rows;
+}
+
+async function fetchRouteWithSeatMap(routeId) {
+  const result = await pool.query(
+    `SELECT
+       r.*,
+       b.total_seats,
+       b.maintenance_start AS bus_maintenance_start,
+       b.maintenance_end AS bus_maintenance_end,
+       b.seat_map_override,
+       t.layout_json AS template_layout
+     FROM bus_routes r
+     JOIN buses b ON b.id = r.bus_id
+     LEFT JOIN bus_seat_map_templates t ON t.id = b.seat_map_template_id
+     WHERE r.id = $1`,
+    [routeId]
+  );
+  return result.rows[0] || null;
+}
+
+async function ensureRouteCanReceiveSeats(routeId, requiredSeats) {
+  const route = await fetchRouteWithSeatMap(routeId);
+  if (!route) throw Object.assign(new Error('Replacement route not found.'), { status: 400 });
+  const routeBlocked = route.availability_status === 'maintenance' && route.maintenance_start && route.maintenance_end && new Date(route.departure_time) < new Date(route.maintenance_end) && new Date(route.arrival_time) > new Date(route.maintenance_start);
+  const busBlocked = route.bus_maintenance_start && route.bus_maintenance_end && new Date(route.departure_time) < new Date(route.bus_maintenance_end) && new Date(route.arrival_time) > new Date(route.bus_maintenance_start);
+  if (routeBlocked || busBlocked) {
+    throw Object.assign(new Error('Replacement route bus is under maintenance during that trip.'), { status: 400 });
+  }
+
+  const layout = resolveSeatMap(route);
+  const seatLabels = new Set((layout.cells || [])
+    .filter((cell) => cell.type === 'seat')
+    .map((cell) => String(cell.label || '').toUpperCase()));
+  const booked = await pool.query(
+    `SELECT seat_number FROM bus_bookings WHERE route_id = $1 AND status <> 'cancelled'`,
+    [routeId]
+  );
+  const taken = new Set(booked.rows.map((row) => String(row.seat_number || '').toUpperCase()));
+  const missing = requiredSeats.filter((seat) => !seatLabels.has(String(seat).toUpperCase()));
+  const unavailable = requiredSeats.filter((seat) => taken.has(String(seat).toUpperCase()));
+
+  if (missing.length) {
+    throw Object.assign(new Error(`Replacement bus does not have these seat labels: ${missing.join(', ')}.`), { status: 400 });
+  }
+  if (unavailable.length) {
+    throw Object.assign(new Error(`Replacement route already has these seats booked: ${unavailable.join(', ')}.`), { status: 400 });
+  }
+
+  return route;
+}
+
+function getBookableSeatLabels(layout) {
+  return (layout?.cells || [])
+    .filter((cell) => cell.type === 'seat' && normalizeText(cell.label))
+    .map((cell) => normalizeText(cell.label).toUpperCase());
+}
+
+async function fetchRouteSeatInventory(routeId) {
+  const route = await fetchRouteWithSeatMap(routeId);
+  if (!route) return null;
+
+  const labels = getBookableSeatLabels(resolveSeatMap(route));
+  const booked = await pool.query(
+    `SELECT seat_number FROM bus_bookings WHERE route_id = $1 AND status <> 'cancelled'`,
+    [routeId]
+  );
+  const taken = new Set(booked.rows.map((row) => normalizeText(row.seat_number).toUpperCase()).filter(Boolean));
+  const free = labels.filter((label) => !taken.has(label));
+
+  return { route, labels, taken, free, capacity: free.length };
+}
+
+async function fetchMaintenanceAffectedBookings(busId, maintenanceStart, maintenanceEnd) {
+  const result = await pool.query(
+    `SELECT
+       bb.id AS booking_id,
+       bb.user_id,
+       bb.route_id,
+       bb.seat_number,
+       bb.total_price,
+       bb.payment_method,
+       bb.status,
+       CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+       u.email AS user_email,
+       r.bus_id,
+       r.origin,
+       r.destination,
+       r.departure_time,
+       r.arrival_time,
+       r.price
+     FROM bus_bookings bb
+     JOIN bus_routes r ON r.id = bb.route_id
+     JOIN users u ON u.id = bb.user_id
+     WHERE r.bus_id = $1
+       AND r.departure_time < $2
+       AND r.arrival_time > $3
+       AND bb.status <> 'cancelled'
+     ORDER BY r.departure_time, bb.id`,
+    [busId, maintenanceEnd, maintenanceStart]
+  );
+  return result.rows;
+}
+
+function groupAffectedBookings(bookings) {
+  const map = new Map();
+  bookings.forEach((booking) => {
+    if (!map.has(Number(booking.route_id))) {
+      map.set(Number(booking.route_id), {
+        id: booking.route_id,
+        bus_id: booking.bus_id,
+        origin: booking.origin,
+        destination: booking.destination,
+        departure_time: booking.departure_time,
+        arrival_time: booking.arrival_time,
+        price: booking.price,
+        booking_count: 0,
+        booked_seats: []
+      });
+    }
+    const route = map.get(Number(booking.route_id));
+    route.booking_count += 1;
+    route.booked_seats.push(booking.seat_number);
+  });
+  return Array.from(map.values());
+}
+
+async function findCompatibleRoutesWithCapacity(route) {
+  const candidates = await findMaintenanceRecoveryOptions(route);
+  const enriched = [];
+
+  for (const candidate of candidates) {
+    const inventory = await fetchRouteSeatInventory(candidate.id);
+    if (!inventory || inventory.capacity <= 0) continue;
+    enriched.push({
+      ...candidate,
+      free_seats: inventory.free,
+      free_seat_count: inventory.capacity
+    });
+  }
+
+  return enriched;
+}
+
+async function fetchBackupBusCandidates(excludeBusId, departureTime, arrivalTime) {
+  const result = await pool.query(
+    `SELECT
+       b.id,
+       b.name,
+       b.type,
+       b.plate_number,
+       b.total_seats,
+       c.name AS company_name
+     FROM buses b
+     LEFT JOIN companies c ON c.id = b.company_id
+     WHERE b.id <> $1
+     ORDER BY c.name NULLS LAST, b.name`,
+    [excludeBusId]
+  );
+  return result.rows;
+}
+
+function assignBookingsToCapacities(bookings, routeCapacities) {
+  const capacities = routeCapacities.map((route) => ({
+    ...route,
+    available: [...(route.free_seats || [])]
+  }));
+  const assignments = [];
+  const unassigned = [];
+
+  bookings.forEach((booking) => {
+    const oldSeat = normalizeText(booking.seat_number).toUpperCase();
+    let target = capacities.find((route) => route.available.includes(oldSeat));
+    let seat = oldSeat;
+
+    if (!target) {
+      target = capacities.find((route) => route.available.length > 0);
+      seat = target?.available[0];
+    }
+
+    if (!target || !seat) {
+      unassigned.push(booking);
+      return;
+    }
+
+    target.available = target.available.filter((item) => item !== seat);
+    assignments.push({
+      booking_id: booking.booking_id,
+      old_route_id: booking.route_id,
+      old_seat_number: booking.seat_number,
+      target_route_id: target.id,
+      target_seat_number: seat,
+      reassigned_seat: oldSeat !== seat
+    });
+  });
+
+  return { assignments, unassigned };
+}
+
+async function buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd) {
+  const route = await fetchAdminRouteById(routeId);
+  if (!route) {
+    const error = new Error('Schedule not found.');
+    error.status = 404;
+    throw error;
+  }
+
+  const affectedBookings = await fetchMaintenanceAffectedBookings(route.bus_id, maintenanceStart, maintenanceEnd);
+  const affectedRoutes = groupAffectedBookings(affectedBookings);
+  const routeOptions = {};
+  const backupCandidates = {};
+  const allAssignments = [];
+  const allUnassigned = [];
+
+  for (const affectedRoute of affectedRoutes) {
+    const routeBookings = affectedBookings.filter((booking) => Number(booking.route_id) === Number(affectedRoute.id));
+    const options = await findCompatibleRoutesWithCapacity(affectedRoute);
+    const split = assignBookingsToCapacities(routeBookings, options);
+    routeOptions[affectedRoute.id] = options;
+    backupCandidates[affectedRoute.id] = await fetchBackupBusCandidates(
+      affectedRoute.bus_id,
+      affectedRoute.departure_time,
+      affectedRoute.arrival_time
+    );
+    allAssignments.push(...split.assignments);
+    allUnassigned.push(...split.unassigned);
+  }
+
+  return {
+    sync_bus_status: true,
+    maintenance_start: maintenanceStart,
+    maintenance_end: maintenanceEnd,
+    affected_routes: affectedRoutes,
+    affected_bookings: affectedBookings,
+    compatible_routes: routeOptions,
+    backup_bus_candidates: backupCandidates,
+    auto_plan: {
+      assignments: allAssignments,
+      unassigned_bookings: allUnassigned
+    }
+  };
+}
+
+async function createBackupRouteForRecovery(sourceRoute, backup) {
+  const backupBusId = Number(backup.bus_id);
+  const departure = normalizeText(backup.departure_time || sourceRoute.departure_time);
+  const arrival = normalizeText(backup.arrival_time || sourceRoute.arrival_time);
+  const departureDate = new Date(departure);
+  const arrivalDate = new Date(arrival);
+  const sourceDepartureDate = new Date(sourceRoute.departure_time);
+  if (!backupBusId || !departure || !arrival) {
+    throw Object.assign(new Error('Backup bus, departure time, and arrival time are required.'), { status: 400 });
+  }
+  if (Number.isNaN(departureDate.getTime()) || Number.isNaN(arrivalDate.getTime())) {
+    throw Object.assign(new Error('Backup departure and arrival must be valid date/time values.'), { status: 400 });
+  }
+  if (backupBusId === Number(sourceRoute.bus_id)) {
+    throw Object.assign(new Error('Backup route must use a different bus.'), { status: 400 });
+  }
+  if (formatDateKey(departure) !== formatDateKey(sourceRoute.departure_time)) {
+    throw Object.assign(new Error('Backup route must depart on the same date as the affected route.'), { status: 400 });
+  }
+  if (departureDate < sourceDepartureDate) {
+    throw Object.assign(new Error('Backup route must depart at the same time or later than the affected route.'), { status: 400 });
+  }
+  if (arrivalDate <= departureDate) {
+    throw Object.assign(new Error('Backup route arrival must be after departure.'), { status: 400 });
+  }
+  const overlaps = await hasOverlappingSchedule(backupBusId, departure, arrival);
+  if (overlaps) {
+    throw Object.assign(new Error('Backup bus already has a trip during that time.'), { status: 409 });
+  }
+
+  const created = await pool.query(
+    `INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price, is_generated, service_date, availability_status)
+     VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, 'available')
+     RETURNING id`,
+    [backupBusId, sourceRoute.origin, sourceRoute.destination, departure, arrival, sourceRoute.price, formatDateKey(departure)]
+  );
+  return created.rows[0].id;
+}
+
+async function applyMaintenanceImpactPlan(routeId, maintenanceStart, maintenanceEnd, plan = {}) {
+  const preview = await buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd);
+  if (!preview.affected_bookings.length) return { preview, assignments: [] };
+
+  const sourceRouteById = new Map(preview.affected_routes.map((route) => [Number(route.id), route]));
+  const createdRouteIds = new Map();
+  const backupRoutes = Array.isArray(plan.backup_routes) ? plan.backup_routes : [];
+
+  for (const backup of backupRoutes) {
+    const sourceRoute = sourceRouteById.get(Number(backup.source_route_id || backup.route_id));
+    if (!sourceRoute) {
+      throw Object.assign(new Error('Backup route source is invalid.'), { status: 400 });
+    }
+    const createdId = await createBackupRouteForRecovery(sourceRoute, backup);
+    if (backup.temp_id) createdRouteIds.set(String(backup.temp_id), createdId);
+  }
+
+  let assignments = Array.isArray(plan.assignments) ? plan.assignments : preview.auto_plan.assignments;
+  const assignedIds = new Set(assignments.map((assignment) => Number(assignment.booking_id)));
+  const missingBookings = preview.affected_bookings.filter((booking) => !assignedIds.has(Number(booking.booking_id)));
+
+  if (missingBookings.length && createdRouteIds.size) {
+    const backupCapacities = [];
+    for (const [tempId, routeIdForBackup] of createdRouteIds.entries()) {
+      const inventory = await fetchRouteSeatInventory(routeIdForBackup);
+      if (!inventory) continue;
+      backupCapacities.push({
+        id: routeIdForBackup,
+        temp_id: tempId,
+        free_seats: inventory.free
+      });
+    }
+    assignments = assignments.concat(assignBookingsToCapacities(missingBookings, backupCapacities).assignments);
+  }
+
+  const finalAssignedIds = new Set(assignments.map((assignment) => Number(assignment.booking_id)));
+  const stillMissing = preview.affected_bookings.filter((booking) => !finalAssignedIds.has(Number(booking.booking_id)));
+  if (stillMissing.length) {
+    throw Object.assign(new Error('Every affected booking needs a target route and seat before saving maintenance.'), { status: 400 });
+  }
+
+  for (const assignment of assignments) {
+    const booking = preview.affected_bookings.find((item) => Number(item.booking_id) === Number(assignment.booking_id));
+    if (!booking) {
+      throw Object.assign(new Error('Recovery assignment references an invalid booking.'), { status: 400 });
+    }
+
+    const targetRouteId = createdRouteIds.get(String(assignment.target_temp_id)) || Number(assignment.target_route_id);
+    const targetSeat = normalizeText(assignment.target_seat_number).toUpperCase();
+    if (!targetRouteId || !targetSeat) {
+      throw Object.assign(new Error('Every assignment needs a target route and seat.'), { status: 400 });
+    }
+
+    const inventory = await fetchRouteSeatInventory(targetRouteId);
+    if (!inventory) {
+      throw Object.assign(new Error('Target route not found.'), { status: 400 });
+    }
+    if (inventory.route.origin !== booking.origin || inventory.route.destination !== booking.destination) {
+      throw Object.assign(new Error('Target route must use the same origin and destination.'), { status: 400 });
+    }
+    if (new Date(inventory.route.departure_time) < new Date(booking.departure_time)) {
+      throw Object.assign(new Error('Target route must depart at the same time or later.'), { status: 400 });
+    }
+    if (!inventory.labels.includes(targetSeat)) {
+      throw Object.assign(new Error(`Target route does not have seat ${targetSeat}.`), { status: 400 });
+    }
+    if (inventory.taken.has(targetSeat)) {
+      throw Object.assign(new Error(`Seat ${targetSeat} is no longer available on the target route.`), { status: 400 });
+    }
+
+    await pool.query(
+      `UPDATE bus_bookings
+       SET route_id = $1,
+           seat_number = $2
+       WHERE id = $3
+         AND status <> 'cancelled'`,
+      [targetRouteId, targetSeat, booking.booking_id]
+    );
+    await pool.query(
+      `INSERT INTO booking_recovery_events (booking_id, old_route_id, new_route_id, old_seat_number, new_seat_number, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [booking.booking_id, booking.route_id, targetRouteId, booking.seat_number, targetSeat, 'maintenance']
+    );
+  }
+
+  return { preview, assignments };
+}
+
+async function syncBusMaintenanceFromRoute(busId, status, maintenanceStart, maintenanceEnd, previousRoute = null) {
+  if (status === 'maintenance') {
+    await pool.query(
+      `UPDATE buses
+       SET status = 'maintenance',
+           maintenance_start = $1,
+           maintenance_end = $2
+       WHERE id = $3`,
+      [maintenanceStart, maintenanceEnd, busId]
+    );
+    return;
+  }
+
+  if (previousRoute?.availability_status === 'maintenance' && previousRoute.maintenance_start && previousRoute.maintenance_end) {
+    await pool.query(
+      `UPDATE buses
+       SET status = 'available',
+           maintenance_start = NULL,
+           maintenance_end = NULL
+       WHERE id = $1
+         AND status = 'maintenance'
+         AND maintenance_start = $2
+         AND maintenance_end = $3`,
+      [previousRoute.bus_id, previousRoute.maintenance_start, previousRoute.maintenance_end]
+    );
+  }
+}
+
+async function findMaintenanceRecoveryOptions(route) {
+  const result = await pool.query(
+    `SELECT
+       r.id,
+       r.bus_id,
+       r.origin,
+       r.destination,
+       r.departure_time,
+       r.arrival_time,
+       r.price,
+       b.name AS bus_name,
+       b.type AS bus_type,
+       b.plate_number,
+       COUNT(bb.id)::INT AS booking_count
+     FROM bus_routes r
+     JOIN buses b ON b.id = r.bus_id
+     LEFT JOIN bus_bookings bb ON bb.route_id = r.id AND bb.status <> 'cancelled'
+     WHERE r.id <> $1
+       AND r.origin = $2
+       AND r.destination = $3
+       AND r.departure_time::date = $4::date
+       AND r.departure_time >= $4
+       AND NOT (
+         COALESCE(r.availability_status, 'available') = 'maintenance'
+         AND r.maintenance_start IS NOT NULL
+         AND r.maintenance_end IS NOT NULL
+         AND r.departure_time < r.maintenance_end
+         AND r.arrival_time > r.maintenance_start
+       )
+       AND NOT (
+         b.maintenance_start IS NOT NULL
+         AND b.maintenance_end IS NOT NULL
+         AND r.departure_time < b.maintenance_end
+         AND r.arrival_time > b.maintenance_start
+       )
+     GROUP BY r.id, b.id
+     ORDER BY r.departure_time
+     LIMIT 12`,
+    [route.id, route.origin, route.destination, route.departure_time]
+  );
+  return result.rows;
+}
+
+async function fetchBookedRouteForRecovery(routeId) {
+  const result = await pool.query(
+    `SELECT
+       r.id,
+       r.bus_id,
+       r.origin,
+       r.destination,
+       r.departure_time,
+       r.arrival_time,
+       r.price,
+       COUNT(bb.id)::INT AS booking_count,
+       ARRAY_AGG(DISTINCT bb.seat_number ORDER BY bb.seat_number) AS booked_seats
+     FROM bus_routes r
+     JOIN bus_bookings bb ON bb.route_id = r.id AND bb.status <> 'cancelled'
+     WHERE r.id = $1
+     GROUP BY r.id`,
+    [routeId]
+  );
+  return result.rows[0] || null;
+}
+
+async function buildRouteMaintenanceConflictPayload(routeId) {
+  const route = await fetchBookedRouteForRecovery(routeId);
+  if (!route) return null;
+  return {
+    ...route,
+    recovery_options: await findMaintenanceRecoveryOptions(route)
+  };
+}
+
+async function applyRouteMaintenanceRecoveryPlan(routeId, plan) {
+  const route = await fetchBookedRouteForRecovery(routeId);
+  if (!route) return;
+
+  const actions = Array.isArray(plan?.actions) ? plan.actions : [];
+  const action = actions.find((item) => Number(item.route_id) === Number(routeId)) || actions[0];
+  if (!action) {
+    throw Object.assign(new Error('This booked route needs a recovery option before saving maintenance.'), { status: 400 });
+  }
+
+  const requiredSeats = (route.booked_seats || []).map((seat) => String(seat || '').toUpperCase()).filter(Boolean);
+  let replacementRouteId = Number(action.replacement_route_id);
+
+  if (action.mode === 'backup') {
+    const backupBusId = Number(action.bus_id);
+    const departure = normalizeText(action.departure_time || route.departure_time);
+    const arrival = normalizeText(action.arrival_time || route.arrival_time);
+    if (!backupBusId || !departure || !arrival) {
+      throw Object.assign(new Error('Backup bus, departure time, and arrival time are required.'), { status: 400 });
+    }
+    if (backupBusId === Number(route.bus_id)) {
+      throw Object.assign(new Error('Backup route must use a different bus.'), { status: 400 });
+    }
+    if (new Date(departure) < new Date(route.departure_time)) {
+      throw Object.assign(new Error('Backup route must depart at the same time or later than the affected route.'), { status: 400 });
+    }
+    const overlaps = await hasOverlappingSchedule(backupBusId, departure, arrival);
+    if (overlaps) {
+      throw Object.assign(new Error('Backup bus already has a trip during that time.'), { status: 409 });
+    }
+    const created = await pool.query(
+      `INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price, is_generated, service_date, availability_status)
+       VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, 'available')
+       RETURNING id`,
+      [backupBusId, route.origin, route.destination, departure, arrival, route.price, formatDateKey(departure)]
+    );
+    replacementRouteId = created.rows[0].id;
+  }
+
+  if (!replacementRouteId) {
+    throw Object.assign(new Error('Replacement route is required.'), { status: 400 });
+  }
+
+  const replacement = await ensureRouteCanReceiveSeats(replacementRouteId, requiredSeats);
+  if (replacement.origin !== route.origin || replacement.destination !== route.destination) {
+    throw Object.assign(new Error('Replacement route must use the same origin and destination.'), { status: 400 });
+  }
+  if (new Date(replacement.departure_time) < new Date(route.departure_time)) {
+    throw Object.assign(new Error('Replacement route must depart at the same time or later.'), { status: 400 });
+  }
+
+  await pool.query(
+    `UPDATE bus_bookings
+     SET route_id = $1
+     WHERE route_id = $2
+       AND status <> 'cancelled'`,
+    [replacementRouteId, route.id]
+  );
+}
+
+async function buildMaintenanceConflictPayload(busId, maintenanceStart, maintenanceEnd) {
+  const affectedRoutes = await fetchBookedMaintenanceRoutes(busId, maintenanceStart, maintenanceEnd);
+  const affected = [];
+  for (const route of affectedRoutes) {
+    affected.push({
+      ...route,
+      recovery_options: await findMaintenanceRecoveryOptions(route)
+    });
+  }
+  return affected;
+}
+
+async function applyMaintenanceRecoveryPlan(busId, maintenanceStart, maintenanceEnd, plan) {
+  const affectedRoutes = await fetchBookedMaintenanceRoutes(busId, maintenanceStart, maintenanceEnd);
+  if (!affectedRoutes.length) return;
+
+  const actions = Array.isArray(plan?.actions) ? plan.actions : [];
+  const actionByRoute = new Map(actions.map((action) => [Number(action.route_id), action]));
+  const missing = affectedRoutes.filter((route) => !actionByRoute.has(Number(route.id)));
+  if (missing.length) {
+    throw Object.assign(new Error('Every affected booked route needs a recovery option before saving maintenance.'), { status: 400 });
+  }
+
+  for (const route of affectedRoutes) {
+    const action = actionByRoute.get(Number(route.id));
+    const requiredSeats = (route.booked_seats || []).map((seat) => String(seat || '').toUpperCase()).filter(Boolean);
+    let replacementRouteId = Number(action.replacement_route_id);
+
+    if (action.mode === 'backup') {
+      const backupBusId = Number(action.bus_id);
+      const departure = normalizeText(action.departure_time || route.departure_time);
+      const arrival = normalizeText(action.arrival_time || route.arrival_time);
+      if (!backupBusId || !departure || !arrival) {
+        throw Object.assign(new Error('Backup bus, departure time, and arrival time are required.'), { status: 400 });
+      }
+      if (backupBusId === Number(busId)) {
+        throw Object.assign(new Error('Backup route must use a different bus.'), { status: 400 });
+      }
+      if (new Date(departure) < new Date(route.departure_time)) {
+        throw Object.assign(new Error('Backup route must depart at the same time or later than the affected route.'), { status: 400 });
+      }
+      const overlaps = await hasOverlappingSchedule(backupBusId, departure, arrival);
+      if (overlaps) {
+        throw Object.assign(new Error('Backup bus already has a trip during that time.'), { status: 409 });
+      }
+      const created = await pool.query(
+        `INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price, is_generated, service_date)
+         VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7)
+         RETURNING id`,
+        [backupBusId, route.origin, route.destination, departure, arrival, route.price, formatDateKey(departure)]
+      );
+      replacementRouteId = created.rows[0].id;
+    }
+
+    if (!replacementRouteId) {
+      throw Object.assign(new Error('Replacement route is required.'), { status: 400 });
+    }
+
+    const replacement = await ensureRouteCanReceiveSeats(replacementRouteId, requiredSeats);
+    if (replacement.origin !== route.origin || replacement.destination !== route.destination) {
+      throw Object.assign(new Error('Replacement route must use the same origin and destination.'), { status: 400 });
+    }
+    if (new Date(replacement.departure_time) < new Date(route.departure_time)) {
+      throw Object.assign(new Error('Replacement route must depart at the same time or later.'), { status: 400 });
+    }
+
+    await pool.query(
+      `UPDATE bus_bookings
+       SET route_id = $1
+       WHERE route_id = $2
+         AND status <> 'cancelled'`,
+      [replacementRouteId, route.id]
+    );
+  }
+}
+
 async function fetchAdminRoutes() {
+  await generateDailyRoutes();
   const routes = await pool.query(`${ROUTE_SELECT} ORDER BY r.departure_time ASC`);
   const buses = await pool.query(BUS_SELECT);
   const destinations = await pool.query(DESTINATION_SELECT);
-  return { routes: routes.rows, buses: buses.rows, destinations: destinations.rows };
+  const daily_templates = await fetchDailyRouteTemplates();
+  return { routes: routes.rows, buses: buses.rows, destinations: destinations.rows, daily_templates };
 }
 
 async function fetchAdminRouteById(routeId) {
@@ -706,6 +1668,8 @@ async function fetchDestinationById(destinationId) {
 }
 
 async function fetchAdminVehicles() {
+  await releaseExpiredBusMaintenance();
+
   const [buses, cars, companies] = await Promise.all([
     pool.query(
       `SELECT
@@ -716,6 +1680,8 @@ async function fetchAdminVehicles() {
          b.plate_number,
          b.total_seats,
          b.status,
+         b.maintenance_start,
+         b.maintenance_end,
          b.seat_map_template_id,
          b.seat_map_override IS NOT NULL AS has_seat_map_override,
          b.created_at,
@@ -780,6 +1746,8 @@ async function fetchAdminBusById(busId) {
        b.plate_number,
        b.total_seats,
        b.status,
+       b.maintenance_start,
+       b.maintenance_end,
        b.seat_map_template_id,
        b.seat_map_override,
        b.seat_map_override IS NOT NULL AS has_seat_map_override,
@@ -852,6 +1820,8 @@ function normalizeBusPayload(body) {
   const plateNumber = normalizeText(body.plate_number).toUpperCase();
   const totalSeats = Number(body.total_seats);
   const status = normalizeText(body.status).toLowerCase();
+  const maintenanceStart = normalizeDateTime(body.maintenance_start);
+  const maintenanceEnd = normalizeDateTime(body.maintenance_end);
 
   if (!companyId || !name || !type || !plateNumber || !status) {
     return { error: 'Company, name, type, plate number, seats, and status are required.' };
@@ -862,6 +1832,14 @@ function normalizeBusPayload(body) {
   if (!VEHICLE_STATUSES.includes(status)) {
     return { error: 'Invalid vehicle status.' };
   }
+  if (status === 'maintenance') {
+    if (!maintenanceStart || !maintenanceEnd) {
+      return { error: 'Maintenance start and end date/time are required.' };
+    }
+    if (maintenanceEnd <= maintenanceStart) {
+      return { error: 'Maintenance end date/time must be after the start date/time.' };
+    }
+  }
 
   return {
     value: {
@@ -870,7 +1848,9 @@ function normalizeBusPayload(body) {
       type,
       plate_number: plateNumber,
       total_seats: totalSeats,
-      status
+      status,
+      maintenance_start: status === 'maintenance' ? maintenanceStart : null,
+      maintenance_end: status === 'maintenance' ? maintenanceEnd : null
     }
   };
 }
@@ -1129,19 +2109,24 @@ app.get('/api/cars', async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code, routes: err.routes });
   }
 });
 
 // 2. Fetch all Bus Routes (For BusSearch.jsx)
 app.get('/api/routes', async (req, res) => {
   try {
+    await releaseExpiredBusMaintenance();
+    await generateDailyRoutes();
+
     const result = await pool.query(`
       SELECT
         r.*,
         b.name AS vehicle,
         b.type AS vehicle_type,
         b.total_seats,
+        b.maintenance_start AS bus_maintenance_start,
+        b.maintenance_end AS bus_maintenance_end,
         b.seat_map_override,
         t.layout_json AS template_layout,
         c.name AS company_name,
@@ -1162,10 +2147,31 @@ app.get('/api/routes', async (req, res) => {
     `);
     res.json(result.rows.map((row) => ({
       ...row,
+      route_type: row.is_generated ? 'daily' : 'manual',
+      is_maintenance_blocked: Boolean(
+        (
+          row.availability_status === 'maintenance' &&
+          row.maintenance_start &&
+          row.maintenance_end &&
+          new Date(row.departure_time) < new Date(row.maintenance_end) &&
+          new Date(row.arrival_time) > new Date(row.maintenance_start)
+        ) ||
+        (
+          row.bus_maintenance_start &&
+          row.bus_maintenance_end &&
+          new Date(row.departure_time) < new Date(row.bus_maintenance_end) &&
+          new Date(row.arrival_time) > new Date(row.bus_maintenance_start)
+        )
+      ),
+      unavailable_reason: row.availability_status === 'maintenance' && row.maintenance_start && row.maintenance_end && new Date(row.departure_time) < new Date(row.maintenance_end) && new Date(row.arrival_time) > new Date(row.maintenance_start)
+        ? 'Trip is under maintenance.'
+        : row.bus_maintenance_start && row.bus_maintenance_end && new Date(row.departure_time) < new Date(row.bus_maintenance_end) && new Date(row.arrival_time) > new Date(row.bus_maintenance_start)
+        ? 'Bus is under maintenance during this trip.'
+        : '',
       seat_map: resolveSeatMap(row)
     })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code, routes: err.routes });
   }
 });
 
@@ -1173,6 +2179,107 @@ app.get('/api/admin/routes', async (req, res) => {
   try {
     const data = await fetchAdminRoutes();
     res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/daily-route-templates', async (req, res) => {
+  try {
+    await generateDailyRoutes();
+    res.json(await fetchDailyRouteTemplates());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/daily-route-templates', async (req, res) => {
+  const parsed = normalizeDailyRouteTemplatePayload(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const payload = parsed.value;
+
+  try {
+    const busExists = await ensureBusExists(payload.bus_id);
+    if (!busExists) return res.status(400).json({ error: 'Assigned vehicle does not exist.' });
+
+    const result = await pool.query(
+      `INSERT INTO daily_route_templates (bus_id, origin, destination, departure_time, arrival_time, price, is_active, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+       RETURNING id`,
+      [payload.bus_id, payload.origin, payload.destination, payload.departure_time, payload.arrival_time, payload.price, payload.is_active]
+    );
+
+    await generateDailyRoutes();
+    res.status(201).json(await fetchDailyRouteTemplateById(result.rows[0].id));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/daily-route-templates/:id', async (req, res) => {
+  const templateId = Number(req.params.id);
+  const parsed = normalizeDailyRouteTemplatePayload(req.body);
+  if (!templateId) return res.status(400).json({ error: 'Invalid daily route template id.' });
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const payload = parsed.value;
+  const effectiveDate = normalizeText(req.body?.effective_date) || todayDateKey();
+
+  try {
+    const existing = await fetchDailyRouteTemplateById(templateId);
+    if (!existing) return res.status(404).json({ error: 'Daily route template not found.' });
+
+    const busExists = await ensureBusExists(payload.bus_id);
+    if (!busExists) return res.status(400).json({ error: 'Assigned vehicle does not exist.' });
+
+    await ensureTemplateFutureRowsCanUpdate(templateId, effectiveDate);
+
+    const result = await pool.query(
+      `UPDATE daily_route_templates
+       SET bus_id = $1,
+           origin = $2,
+           destination = $3,
+           departure_time = $4,
+           arrival_time = $5,
+           price = $6,
+           is_active = $7,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $8
+       RETURNING *`,
+      [payload.bus_id, payload.origin, payload.destination, payload.departure_time, payload.arrival_time, payload.price, payload.is_active, templateId]
+    );
+
+    if (payload.is_active) {
+      await syncTemplateFutureRows(result.rows[0], effectiveDate);
+      await generateDailyRoutes();
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message, code: err.code, routes: err.routes });
+  }
+});
+
+app.delete('/api/admin/daily-route-templates/:id', async (req, res) => {
+  const templateId = Number(req.params.id);
+  if (!templateId) return res.status(400).json({ error: 'Invalid daily route template id.' });
+
+  try {
+    const existing = await fetchDailyRouteTemplateById(templateId);
+    if (!existing) return res.status(404).json({ error: 'Daily route template not found.' });
+
+    await pool.query(`UPDATE daily_route_templates SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [templateId]);
+    await pool.query(
+      `DELETE FROM bus_routes r
+       WHERE r.daily_template_id = $1
+         AND COALESCE(r.is_generated, FALSE) = TRUE
+         AND r.service_date >= $2
+         AND NOT EXISTS (
+           SELECT 1 FROM bus_bookings bb WHERE bb.route_id = r.id AND bb.status <> 'cancelled'
+         )`,
+      [templateId, todayDateKey()]
+    );
+
+    res.json({ id: templateId, message: 'Daily route template deactivated successfully.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1609,10 +2716,19 @@ app.post('/api/admin/buses', async (req, res) => {
     if (!company) return res.status(400).json({ error: 'Selected company does not exist.' });
 
     const result = await pool.query(
-      `INSERT INTO buses (company_id, name, type, plate_number, total_seats, status)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO buses (company_id, name, type, plate_number, total_seats, status, maintenance_start, maintenance_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
-      [payload.company_id, payload.name, payload.type, payload.plate_number, payload.total_seats, payload.status]
+      [
+        payload.company_id,
+        payload.name,
+        payload.type,
+        payload.plate_number,
+        payload.total_seats,
+        payload.status,
+        payload.maintenance_start,
+        payload.maintenance_end
+      ]
     );
 
     res.status(201).json(await fetchAdminBusById(result.rows[0].id));
@@ -1636,6 +2752,22 @@ app.put('/api/admin/buses/:id', async (req, res) => {
     const company = await fetchAdminCompanyById(payload.company_id);
     if (!company) return res.status(400).json({ error: 'Selected company does not exist.' });
 
+    if (payload.status === 'maintenance') {
+      const recoveryPlan = req.body?.maintenance_recovery_plan;
+      if (recoveryPlan) {
+        await applyMaintenanceRecoveryPlan(busId, payload.maintenance_start, payload.maintenance_end, recoveryPlan);
+      }
+
+      const affectedRoutes = await buildMaintenanceConflictPayload(busId, payload.maintenance_start, payload.maintenance_end);
+      if (affectedRoutes.length) {
+        return res.status(409).json({
+          error: 'Maintenance overlaps booked trips. Move those bookings to another route or create backup routes first.',
+          code: 'MAINTENANCE_BOOKING_CONFLICT',
+          affected_routes: affectedRoutes
+        });
+      }
+    }
+
     await pool.query(
       `UPDATE buses
        SET company_id = $1,
@@ -1643,9 +2775,21 @@ app.put('/api/admin/buses/:id', async (req, res) => {
            type = $3,
            plate_number = $4,
            total_seats = $5,
-           status = $6
-       WHERE id = $7`,
-      [payload.company_id, payload.name, payload.type, payload.plate_number, payload.total_seats, payload.status, busId]
+           status = $6,
+           maintenance_start = $7,
+           maintenance_end = $8
+       WHERE id = $9`,
+      [
+        payload.company_id,
+        payload.name,
+        payload.type,
+        payload.plate_number,
+        payload.total_seats,
+        payload.status,
+        payload.maintenance_start,
+        payload.maintenance_end,
+        busId
+      ]
     );
 
     res.json(await fetchAdminBusById(busId));
@@ -1832,8 +2976,8 @@ app.post('/api/admin/routes', async (req, res) => {
     }
 
     const insertResult = await pool.query(
-      `INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO bus_routes (bus_id, origin, destination, departure_time, arrival_time, price, availability_status, maintenance_start, maintenance_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
       [
         payload.bus_id,
@@ -1841,7 +2985,10 @@ app.post('/api/admin/routes', async (req, res) => {
         payload.destination,
         payload.departure_time,
         payload.arrival_time,
-        payload.price
+        payload.price,
+        payload.availability_status,
+        payload.maintenance_start,
+        payload.maintenance_end
       ]
     );
 
@@ -1849,6 +2996,33 @@ app.post('/api/admin/routes', async (req, res) => {
     res.status(201).json(route);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/routes/:id/maintenance-preview', async (req, res) => {
+  const routeId = Number(req.params.id);
+  const maintenanceStart = normalizeDateTime(req.body?.maintenance_start);
+  const maintenanceEnd = normalizeDateTime(req.body?.maintenance_end);
+
+  if (!routeId) return res.status(400).json({ error: 'Invalid route id.' });
+  if (!maintenanceStart || !maintenanceEnd) {
+    return res.status(400).json({ error: 'Maintenance start and end date/time are required.' });
+  }
+  if (maintenanceEnd <= maintenanceStart) {
+    return res.status(400).json({ error: 'Maintenance end date/time must be after the start date/time.' });
+  }
+
+  try {
+    const route = await fetchAdminRouteById(routeId);
+    if (!route) return res.status(404).json({ error: 'Schedule not found.' });
+    if (!(maintenanceStart < new Date(route.arrival_time) && maintenanceEnd > new Date(route.departure_time))) {
+      return res.status(400).json({ error: 'Maintenance duration must overlap this scheduled trip.' });
+    }
+
+    const preview = await buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd);
+    res.json(preview);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -1875,6 +3049,85 @@ app.put('/api/admin/routes/:id', async (req, res) => {
       return res.status(400).json({ error: 'Assigned vehicle does not exist.' });
     }
 
+    if (payload.availability_status === 'maintenance') {
+      const recoveryPlan = req.body?.maintenance_recovery_plan;
+      if (recoveryPlan) {
+        await applyMaintenanceImpactPlan(routeId, payload.maintenance_start, payload.maintenance_end, recoveryPlan);
+      }
+
+      const preview = await buildMaintenanceImpactPreview(routeId, payload.maintenance_start, payload.maintenance_end);
+      if (preview.affected_bookings.length) {
+        return res.status(409).json({
+          error: 'This maintenance window affects booked passengers. Preview the impact and confirm a recovery plan before saving.',
+          code: 'ROUTE_MAINTENANCE_BOOKING_CONFLICT',
+          preview,
+          affected_routes: preview.affected_routes
+        });
+      }
+    }
+
+    const coreChanged =
+      Number(existing.bus_id) !== Number(payload.bus_id) ||
+      existing.origin !== payload.origin ||
+      existing.destination !== payload.destination ||
+      new Date(existing.departure_time).getTime() !== new Date(payload.departure_time).getTime() ||
+      new Date(existing.arrival_time).getTime() !== new Date(payload.arrival_time).getTime() ||
+      Number(existing.price) !== Number(payload.price);
+
+    if (existing.daily_template_id && existing.is_generated && coreChanged) {
+      const effectiveDate = formatDateKey(existing.service_date || payload.departure_time);
+      await ensureTemplateFutureRowsCanUpdate(existing.daily_template_id, effectiveDate);
+
+      const departureTime = String(payload.departure_time).split(' ')[1] || '';
+      const arrivalTime = String(payload.arrival_time).split(' ')[1] || '';
+      const templatePayload = normalizeDailyRouteTemplatePayload({
+        bus_id: payload.bus_id,
+        origin: payload.origin,
+        destination: payload.destination,
+        departure_time: departureTime,
+        arrival_time: arrivalTime,
+        price: payload.price,
+        is_active: true
+      });
+      if (templatePayload.error) {
+        return res.status(400).json({ error: templatePayload.error });
+      }
+
+      const updatedTemplate = await pool.query(
+        `UPDATE daily_route_templates
+         SET bus_id = $1,
+             origin = $2,
+             destination = $3,
+             departure_time = $4,
+             arrival_time = $5,
+             price = $6,
+             is_active = TRUE,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $7
+         RETURNING *`,
+        [
+          templatePayload.value.bus_id,
+          templatePayload.value.origin,
+          templatePayload.value.destination,
+          templatePayload.value.departure_time,
+          templatePayload.value.arrival_time,
+          templatePayload.value.price,
+          existing.daily_template_id
+        ]
+      );
+
+      await syncTemplateFutureRows(updatedTemplate.rows[0], effectiveDate);
+      await generateDailyRoutes();
+    }
+
+    await syncBusMaintenanceFromRoute(
+      payload.bus_id,
+      payload.availability_status,
+      payload.maintenance_start,
+      payload.maintenance_end,
+      existing
+    );
+
     await pool.query(
       `UPDATE bus_routes
        SET bus_id = $1,
@@ -1882,8 +3135,11 @@ app.put('/api/admin/routes/:id', async (req, res) => {
            destination = $3,
            departure_time = $4,
            arrival_time = $5,
-           price = $6
-       WHERE id = $7`,
+           price = $6,
+           availability_status = $7,
+           maintenance_start = $8,
+           maintenance_end = $9
+       WHERE id = $10`,
       [
         payload.bus_id,
         payload.origin,
@@ -1891,6 +3147,9 @@ app.put('/api/admin/routes/:id', async (req, res) => {
         payload.departure_time,
         payload.arrival_time,
         payload.price,
+        payload.availability_status,
+        payload.maintenance_start,
+        payload.maintenance_end,
         routeId
       ]
     );
@@ -1898,7 +3157,7 @@ app.put('/api/admin/routes/:id', async (req, res) => {
     const route = await fetchAdminRouteById(routeId);
     res.json(route);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code, routes: err.routes });
   }
 });
 
@@ -2166,6 +3425,8 @@ app.get('/api/admin/dashboard', async (req, res) => {
   const recentParams = [recentRange.start, recentRange.end];
 
   try {
+    await releaseExpiredBusMaintenance();
+
     const [
       bookingMonth,
       rentalMonth,
@@ -2740,4 +4001,7 @@ userSchemaReady.finally(() => {
   app.listen(PORT, () => {
   console.log(`🚀 Backend Server running on http://localhost:${PORT}`);
   });
+  setInterval(() => {
+    releaseExpiredBusMaintenance().catch((err) => console.error('Bus maintenance release failed:', err.message));
+  }, 60 * 1000);
 });

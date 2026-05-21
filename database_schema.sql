@@ -72,6 +72,8 @@ CREATE TABLE buses (
     plate_number VARCHAR(20) UNIQUE,
     total_seats INT NOT NULL,
     status vehicle_status DEFAULT 'available',
+    maintenance_start TIMESTAMP,
+    maintenance_end TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -99,10 +101,30 @@ CREATE TABLE bus_routes (
     departure_time TIMESTAMP NOT NULL,
     arrival_time TIMESTAMP NOT NULL,
     price DECIMAL(10,2) NOT NULL,
+    daily_template_id INT,
+    service_date DATE,
+    is_generated BOOLEAN DEFAULT FALSE,
+    availability_status VARCHAR(20) DEFAULT 'available',
+    maintenance_start TIMESTAMP,
+    maintenance_end TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 6.1 DESTINATIONS
+-- 6.1 DAILY ROUTE TEMPLATES
+CREATE TABLE daily_route_templates (
+    id SERIAL PRIMARY KEY,
+    bus_id INT REFERENCES buses(id) ON DELETE CASCADE,
+    origin VARCHAR(100) NOT NULL,
+    destination VARCHAR(100) NOT NULL,
+    departure_time TIME NOT NULL,
+    arrival_time TIME NOT NULL,
+    price DECIMAL(10,2) NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 6.2 DESTINATIONS
 CREATE TABLE destinations (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) UNIQUE NOT NULL,
@@ -173,8 +195,21 @@ CREATE TABLE transactions (
     )
 );
 
+-- 11.1 BOOKING RECOVERY EVENTS
+CREATE TABLE booking_recovery_events (
+    id SERIAL PRIMARY KEY,
+    booking_id INT REFERENCES bus_bookings(id) ON DELETE SET NULL,
+    old_route_id INT REFERENCES bus_routes(id) ON DELETE SET NULL,
+    new_route_id INT REFERENCES bus_routes(id) ON DELETE SET NULL,
+    old_seat_number VARCHAR(10),
+    new_seat_number VARCHAR(10),
+    reason TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 12. INDEXES FOR PERFORMANCE
 CREATE INDEX idx_bus_routes_search ON bus_routes(origin, destination, departure_time);
+CREATE UNIQUE INDEX idx_bus_routes_daily_template_date ON bus_routes(daily_template_id, service_date) WHERE daily_template_id IS NOT NULL;
 CREATE INDEX idx_car_rental_dates ON car_rentals(pickup_date, return_date);
 CREATE INDEX idx_user_bookings ON bus_bookings(user_id);
 CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);

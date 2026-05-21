@@ -265,3 +265,22 @@ VALUES
 SELECT id, seat_number, total_price, payment_method, status, created_at
 FROM bus_bookings
 ORDER BY id DESC;
+
+
+-- Insert daily route templates
+INSERT INTO daily_route_templates
+(bus_id, origin, destination, departure_time, arrival_time, price, is_active)
+VALUES
+((SELECT id FROM buses WHERE plate_number = '2A-1234'), 'Phnom Penh', 'Siem Reap', '06:00:00', '11:00:00', 12.00, TRUE),
+((SELECT id FROM buses WHERE plate_number = '2A-1234'), 'Siem Reap', 'Phnom Penh', '13:00:00', '18:00:00', 12.00, TRUE),
+
+((SELECT id FROM buses WHERE plate_number = '2B-5678'), 'Phnom Penh', 'Battambang', '08:30:00', '14:00:00', 13.50, TRUE),
+((SELECT id FROM buses WHERE plate_number = '2B-5678'), 'Battambang', 'Phnom Penh', '15:30:00', '21:00:00', 13.50, TRUE),
+
+((SELECT id FROM buses WHERE plate_number = '4D-3456'), 'Phnom Penh', 'Kampot', '07:00:00', '10:30:00', 9.00, TRUE),
+((SELECT id FROM buses WHERE plate_number = '4D-3456'), 'Kampot', 'Phnom Penh', '12:00:00', '15:30:00', 9.00, TRUE),
+
+((SELECT id FROM buses WHERE plate_number = '5E-7788'), 'Phnom Penh', 'Sihanoukville', '09:00:00', '14:00:00', 15.00, TRUE),
+((SELECT id FROM buses WHERE plate_number = '5E-7788'), 'Sihanoukville', 'Phnom Penh', '16:00:00', '21:00:00', 15.00, TRUE),
+
+((SELECT id FROM buses WHERE plate_number = '6F-4455'), 'Phnom Penh', 'Siem Reap', '22:00:00', '04:00:00', 16.00, TRUE);

@@ -109,7 +109,9 @@ function formatDbRoute(route) {
     avail: Math.max(0, totalSeats - bookedCount),
     price: Number(route.price || 0),
     color: route.color || '#60a5fa',
-    bg: route.bg || 'rgba(96,165,250,0.16)'
+    bg: route.bg || 'rgba(96,165,250,0.16)',
+    isMaintenanceBlocked: Boolean(route.is_maintenance_blocked),
+    unavailableReason: route.unavailable_reason || ''
   };
 }
 
@@ -438,9 +440,11 @@ export default function BusSearch({
           {!loadingRoutes && !routesError ? <div className="sec-title">{filteredRoutes.length} trips found</div> : null}
           {!loadingRoutes && !routesError && !filteredRoutes.length ? <div className="card"><div className="page-sub">No trips found for this route and date.</div></div> : null}
           {!loadingRoutes && !routesError && filteredRoutes.map((r, i) => <div key={r.id} className={`route-card ticket-card scroll-animate ${selectedRoute === r.id ? 'selected' : ''}`} style={{
-        '--delay': `${i * 40}ms`
-      }} onClick={() => {
-        if (r.avail <= 0) return;
+        '--delay': `${i * 40}ms`,
+        opacity: r.isMaintenanceBlocked ? 0.62 : 1,
+        cursor: r.isMaintenanceBlocked ? 'not-allowed' : 'pointer'
+              }} onClick={() => {
+        if (r.avail <= 0 || r.isMaintenanceBlocked) return;
         if (role === 'guest') {
           setShowAuthModal(true);
         } else setSelectedRoute(r.id);
@@ -507,8 +511,9 @@ export default function BusSearch({
             color: r.avail <= 5 ? 'var(--amber)' : 'var(--text-3)',
             marginTop: 2
           }}>
-                  {r.avail > 0 ? `${r.avail} seats left` : 'Sold out'}
+                  {r.isMaintenanceBlocked ? 'Maintenance' : r.avail > 0 ? `${r.avail} seats left` : 'Sold out'}
                 </div>
+                {r.isMaintenanceBlocked ? <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 3 }}>{r.unavailableReason}</div> : null}
               </div>
               <div className="route-price">${r.price}</div>
               <div style={{
