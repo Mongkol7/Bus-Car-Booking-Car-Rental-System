@@ -55,6 +55,8 @@ function normalizeCar(car) {
 }
 
 const DRIVER_FEE_PER_DAY = 25;
+const DEFAULT_PICKUP_TIME = '09:00';
+const DEFAULT_RETURN_TIME = '18:00';
 const RENTAL_CONFIRMATION_KEY = 'checkout-confirmation-rental';
 
 function getDateInputValue(daysFromToday = 0) {
@@ -96,6 +98,8 @@ export default function CarRental({
   const [shaking, setShaking] = useState(null);
   const [pickupDate, setPickupDate] = useState(() => getDateInputValue());
   const [returnDate, setReturnDate] = useState(() => getDateInputValue(3));
+  const [pickupTime, setPickupTime] = useState(DEFAULT_PICKUP_TIME);
+  const [returnTime, setReturnTime] = useState(DEFAULT_RETURN_TIME);
   const [showSpecs, setShowSpecs] = useState(false);
   const [selectedCarType, setSelectedCarType] = useState('All');
   const [carTypes, setCarTypes] = useState([]);
@@ -214,6 +218,17 @@ export default function CarRental({
     if (pickupDate && returnDate && returnDate < pickupDate) {
       return 'Return date must be on or after pickup date.';
     }
+    if (rentalMode === 'self_drive') {
+      if (!pickupTime) {
+        return 'Pickup time is required.';
+      }
+      if (!returnTime) {
+        return 'Return time is required.';
+      }
+      if (pickupDate && returnDate && pickupDate === returnDate && returnTime <= pickupTime) {
+        return 'Return time must be after pickup time for same-day rentals.';
+      }
+    }
     if (!driverName.trim()) {
       return rentalMode === 'with_driver' ? 'Passenger full name is required.' : 'Driver full name is required.';
     }
@@ -229,6 +244,8 @@ export default function CarRental({
   const handleContinueToPayment = (details) => {
     setPickupDate(details.pickupDate);
     setReturnDate(details.returnDate);
+    setPickupTime(details.rentalMode === 'self_drive' ? details.pickupTime : '');
+    setReturnTime(details.rentalMode === 'self_drive' ? details.returnTime : '');
     setRentalMode(details.rentalMode);
     setDriverName(details.driverName);
     setDriverLicense(details.driverLicense);
@@ -251,7 +268,9 @@ export default function CarRental({
       const responseData = await confirmRentalBooking({
         carId: car.id,
         pickupDate,
+        pickupTime: rentalMode === 'self_drive' ? pickupTime : '',
         returnDate,
+        returnTime: rentalMode === 'self_drive' ? returnTime : '',
         fullName: driverName.trim(),
         licenseNumber: rentalMode === 'self_drive' ? driverLicense.trim() : '',
         rentalMode,
@@ -575,6 +594,8 @@ export default function CarRental({
             <RentalBookingForm
               initialPickupDate={pickupDate}
               initialReturnDate={returnDate}
+              initialPickupTime={pickupTime}
+              initialReturnTime={returnTime}
               initialRentalMode={rentalMode}
               initialDriverName={driverName}
               initialDriverLicense={driverLicense}
@@ -595,7 +616,10 @@ export default function CarRental({
             paymentMethod={payMethod}
             onPaymentMethodChange={setPayMethod}
             pickupDate={pickupDate}
+            pickupTime={pickupTime}
             returnDate={returnDate}
+            returnTime={returnTime}
+            rentalMode={rentalMode}
             days={days}
             dailyTotal={dailyTotal}
             totalAmount={totalAmount}
@@ -609,4 +633,3 @@ export default function CarRental({
         </div>}
     </div>;
 }
-

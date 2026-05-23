@@ -3,6 +3,8 @@ import { Icon, icons } from '../../../utils/sharedUser';
 import './RentalBookingForm.css';
 
 const DRIVER_FEE_PER_DAY = 25;
+const DEFAULT_PICKUP_TIME = '09:00';
+const DEFAULT_RETURN_TIME = '18:00';
 const VALID_RENTAL_MODES = new Set(['self_drive', 'with_driver']);
 
 function getDateInputValue(daysFromToday = 0) {
@@ -17,6 +19,8 @@ function getDateInputValue(daysFromToday = 0) {
 export default function RentalBookingForm({
   initialPickupDate = '',
   initialReturnDate = '',
+  initialPickupTime = DEFAULT_PICKUP_TIME,
+  initialReturnTime = DEFAULT_RETURN_TIME,
   initialDriverName = '',
   initialDriverLicense = '',
   initialPhone = '',
@@ -28,6 +32,8 @@ export default function RentalBookingForm({
 }) {
   const [pickupDate, setPickupDate] = useState(initialPickupDate);
   const [returnDate, setReturnDate] = useState(initialReturnDate);
+  const [pickupTime, setPickupTime] = useState(initialPickupTime || DEFAULT_PICKUP_TIME);
+  const [returnTime, setReturnTime] = useState(initialReturnTime || DEFAULT_RETURN_TIME);
   const [driverName, setDriverName] = useState(initialDriverName);
   const [driverLicense, setDriverLicense] = useState(initialDriverLicense);
   const [phone, setPhone] = useState(initialPhone);
@@ -53,12 +59,14 @@ export default function RentalBookingForm({
   const values = {
     pickupDate,
     returnDate,
+    pickupTime,
+    returnTime,
     driverName,
     driverLicense,
     phone
   };
 
-  const validateField = (name, value) => {
+  const validateField = (name, value, mode = rentalMode) => {
     switch (name) {
       case 'pickupDate':
         if (!value) return 'Pickup date is required';
@@ -67,10 +75,34 @@ export default function RentalBookingForm({
       case 'returnDate':
         if (!value) return 'Return date is required';
         if (pickupDate && value < pickupDate) return 'Return date must be on or after pickup date';
+        if (
+          mode === 'self_drive' &&
+          pickupDate &&
+          value === pickupDate &&
+          pickupTime &&
+          returnTime &&
+          returnTime <= pickupTime
+        ) {
+          return 'Return time must be after pickup time for same-day rentals';
+        }
+        return '';
+      case 'pickupTime':
+        if (mode === 'with_driver') return '';
+        if (!value) return 'Pickup time is required';
+        if (pickupDate && returnDate && pickupDate === returnDate && returnTime && returnTime <= value) {
+          return 'Pickup time must be before return time for same-day rentals';
+        }
+        return '';
+      case 'returnTime':
+        if (mode === 'with_driver') return '';
+        if (!value) return 'Return time is required';
+        if (pickupDate && returnDate && pickupDate === returnDate && pickupTime && value <= pickupTime) {
+          return 'Return time must be after pickup time for same-day rentals';
+        }
         return '';
       case 'driverName':
         if (!value.trim()) {
-          return rentalMode === 'with_driver'
+          return mode === 'with_driver'
             ? 'Passenger full name is required'
             : 'Driver name is required';
         }
@@ -78,7 +110,7 @@ export default function RentalBookingForm({
         if (!/^[a-zA-Z\s]+$/.test(value.trim())) return 'Name should only contain letters and spaces';
         return '';
       case 'driverLicense':
-        if (rentalMode === 'with_driver') return '';
+        if (mode === 'with_driver') return '';
         if (!value.trim()) return 'License number is required';
         if (!/^[A-Za-z0-9-]+$/.test(value.trim())) {
           return 'License should only contain letters, numbers, and hyphens';
@@ -98,6 +130,8 @@ export default function RentalBookingForm({
     const nextErrors = {
       pickupDate: validateField('pickupDate', pickupDate),
       returnDate: validateField('returnDate', returnDate),
+      pickupTime: rentalMode === 'self_drive' ? validateField('pickupTime', pickupTime) : '',
+      returnTime: rentalMode === 'self_drive' ? validateField('returnTime', returnTime) : '',
       driverName: validateField('driverName', driverName),
       driverLicense: validateField('driverLicense', driverLicense),
       phone: validateField('phone', phone)
@@ -119,6 +153,8 @@ export default function RentalBookingForm({
     const setters = {
       pickupDate: setPickupDate,
       returnDate: setReturnDate,
+      pickupTime: setPickupTime,
+      returnTime: setReturnTime,
       driverName: setDriverName,
       driverLicense: setDriverLicense,
       phone: setPhone
@@ -138,8 +174,10 @@ export default function RentalBookingForm({
     setRentalMode(nextMode);
     setErrors(prev => ({
       ...prev,
+      pickupTime: nextMode === 'self_drive' ? prev.pickupTime : '',
+      returnTime: nextMode === 'self_drive' ? prev.returnTime : '',
       driverLicense: '',
-      driverName: touched.driverName ? validateField('driverName', driverName) : prev.driverName
+      driverName: touched.driverName ? validateField('driverName', driverName, nextMode) : prev.driverName
     }));
   };
 
@@ -148,6 +186,8 @@ export default function RentalBookingForm({
     setTouched({
       pickupDate: true,
       returnDate: true,
+      pickupTime: rentalMode === 'self_drive',
+      returnTime: rentalMode === 'self_drive',
       driverName: true,
       driverLicense: rentalMode === 'self_drive',
       phone: true
@@ -158,6 +198,8 @@ export default function RentalBookingForm({
     onSubmit({
       pickupDate,
       returnDate,
+      pickupTime: rentalMode === 'self_drive' ? pickupTime : '',
+      returnTime: rentalMode === 'self_drive' ? returnTime : '',
       rentalMode,
       driverName: driverName.trim(),
       driverLicense: rentalMode === 'self_drive' ? driverLicense.trim() : '',
@@ -199,6 +241,36 @@ export default function RentalBookingForm({
             <div className="error-message">{errors.returnDate}</div>
           )}
         </div>
+        {rentalMode === 'self_drive' && (
+          <>
+            <div className="form-group">
+              <label className="label">Pickup time</label>
+              <input
+                type="time"
+                value={pickupTime}
+                onChange={(event) => handleChange('pickupTime', event.target.value)}
+                onBlur={() => handleBlur('pickupTime')}
+                className={touched.pickupTime && errors.pickupTime ? 'input-error' : ''}
+              />
+              {touched.pickupTime && errors.pickupTime && (
+                <div className="error-message">{errors.pickupTime}</div>
+              )}
+            </div>
+            <div className="form-group">
+              <label className="label">Return time</label>
+              <input
+                type="time"
+                value={returnTime}
+                onChange={(event) => handleChange('returnTime', event.target.value)}
+                onBlur={() => handleBlur('returnTime')}
+                className={touched.returnTime && errors.returnTime ? 'input-error' : ''}
+              />
+              {touched.returnTime && errors.returnTime && (
+                <div className="error-message">{errors.returnTime}</div>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       <div className="form-group">

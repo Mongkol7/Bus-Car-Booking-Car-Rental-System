@@ -17,3 +17,13 @@ export function formatDisplayDate(value) {
   if (!year || !month || !day) return value;
   return `${day}/${month}/${year}`;
 }
+
+export function formatDisplayDateTime(dateValue, timeValue = '') {
+  if (!dateValue) return 'Not selected';
+
+  const [datePart, embeddedTime = ''] = `${dateValue}`.split(/[T\s]/);
+  const displayDate = formatDisplayDate(datePart);
+  const timePart = `${timeValue || embeddedTime}`.slice(0, 5);
+
+  return timePart ? `${displayDate} ${timePart}` : displayDate;
+}

@@ -19,6 +19,10 @@ function formatDate(value) {
   return `${month}/${day}/${year}`;
 }
 
+function formatTime(value) {
+  return value ? `${value}`.slice(0, 5) : "Not set";
+}
+
 function getRentalDays(pickupDate, returnDate) {
   if (!pickupDate || !returnDate) return 1;
   const start = new Date(pickupDate);
@@ -47,7 +51,8 @@ function normalizeRental(rental) {
     price: formatMoney(rental.total_price),
     status,
     date: `${formatDate(rental.pickup_date)} - ${formatDate(rental.return_date)}`,
-    time: `${days} day${days > 1 ? "s" : ""}`,
+    time: `${formatTime(rental.pickup_time)} - ${formatTime(rental.return_time)}`,
+    duration: `${days} day${days > 1 ? "s" : ""}`,
     seat: rental.car?.plate_number || "N/A",
     payment: `${rental.payment_method || "aba"}`.toUpperCase(),
     rentalMode: rental.rental_mode === "with_driver" ? "With driver" : "Self-drive",
@@ -395,9 +400,15 @@ export default function MyBookings({ role, bookingsTab, setBookingsTab }) {
 
           <div className="booking-meta">
             <div className="booking-meta-item">
-              {booking.type === "ticket" ? "Departure" : "Duration"}
+              {booking.type === "ticket" ? "Departure" : "Time"}
               <span>{booking.time}</span>
             </div>
+            {booking.type === "rental" && (
+              <div className="booking-meta-item">
+                Duration
+                <span>{booking.duration}</span>
+              </div>
+            )}
             <div className="booking-meta-item">
               {booking.type === "ticket" ? "Seat" : "Plate"}
               <span>{booking.seat}</span>

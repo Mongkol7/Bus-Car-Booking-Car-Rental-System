@@ -126,6 +126,8 @@ CREATE TABLE car_rentals (
     car_id INT REFERENCES rental_cars(id) ON DELETE CASCADE,
     pickup_date DATE NOT NULL,
     return_date DATE NOT NULL,
+    pickup_time TIME NOT NULL DEFAULT '09:00',
+    return_time TIME NOT NULL DEFAULT '18:00',
     driver_name VARCHAR(150) NOT NULL,
     driver_license VARCHAR(50) NOT NULL,
     rental_mode VARCHAR(20) NOT NULL DEFAULT 'self_drive',
@@ -141,6 +143,8 @@ CREATE TABLE car_rentals (
 -- ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS rental_mode VARCHAR(20) NOT NULL DEFAULT 'self_drive';
 -- ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS phone_number VARCHAR(30);
 -- ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS driver_fee_per_day DECIMAL(10,2) NOT NULL DEFAULT 0;
+-- ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS pickup_time TIME NOT NULL DEFAULT '09:00';
+-- ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS return_time TIME NOT NULL DEFAULT '18:00';
 
 -- 10. USER SESSIONS
 CREATE TABLE user_sessions (

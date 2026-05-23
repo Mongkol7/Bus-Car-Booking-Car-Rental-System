@@ -1,6 +1,6 @@
 import React from 'react';
 import { Icon, icons } from '../../../utils/sharedUser';
-import { formatDisplayDate, formatPaymentAmount } from '../payment/paymentUtils';
+import { formatDisplayDateTime, formatPaymentAmount } from '../payment/paymentUtils';
 
 const MONEY_LABELS = new Set([
   'Deposit paid',
@@ -17,7 +17,7 @@ function formatValue(label, value, paymentMethod) {
   }
 
   if (label === 'Pickup' || label === 'Return') {
-    return formatDisplayDate(value);
+    return formatDisplayDateTime(value);
   }
 
   if (typeof value === 'number' && MONEY_LABELS.has(label)) {

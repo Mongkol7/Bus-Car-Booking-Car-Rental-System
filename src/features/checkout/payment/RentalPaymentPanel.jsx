@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { Icon, icons } from '../../../utils/sharedUser';
-import { formatDisplayDate, formatPaymentAmount } from './paymentUtils';
+import { formatDisplayDate, formatDisplayDateTime, formatPaymentAmount } from './paymentUtils';
 
 const PAYMENT_METHODS = [
   {
@@ -27,7 +27,10 @@ export default function RentalPaymentPanel({
   paymentMethod,
   onPaymentMethodChange,
   pickupDate,
+  pickupTime,
   returnDate,
+  returnTime,
+  rentalMode = 'self_drive',
   days,
   dailyTotal,
   totalAmount,
@@ -43,6 +46,7 @@ export default function RentalPaymentPanel({
     []
   );
   const usesQr = paymentMethod === 'aba' || paymentMethod === 'khqr';
+  const isWithDriver = rentalMode === 'with_driver';
 
   return (
     <div className="card">
@@ -98,12 +102,12 @@ export default function RentalPaymentPanel({
       <div className="divider" />
       <div className="booking-summary-list" style={{ marginBottom: 12 }}>
         <div className="booking-summary-row">
-          <span>Pickup date</span>
-          <strong>{formatDisplayDate(pickupDate)}</strong>
+          <span>Pickup</span>
+          <strong>{isWithDriver ? formatDisplayDate(pickupDate) : formatDisplayDateTime(pickupDate, pickupTime)}</strong>
         </div>
         <div className="booking-summary-row">
-          <span>Return date</span>
-          <strong>{formatDisplayDate(returnDate)}</strong>
+          <span>Return</span>
+          <strong>{isWithDriver ? formatDisplayDate(returnDate) : formatDisplayDateTime(returnDate, returnTime)}</strong>
         </div>
         <div className="booking-summary-row">
           <span>Rental days</span>

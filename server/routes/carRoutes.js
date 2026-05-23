@@ -10,11 +10,25 @@ function isValidDateOnly(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+function isValidTimeOnly(value) {
+  return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
 function getRentalDays(pickupDate, returnDate) {
   const start = new Date(`${pickupDate}T00:00:00Z`);
   const end = new Date(`${returnDate}T00:00:00Z`);
   const diffDays = Math.floor((end - start) / 86400000);
   return Number.isFinite(diffDays) ? Math.max(1, diffDays) : 0;
+}
+
+function normalizeTime(value) {
+  return value ? `${value}`.slice(0, 5) : "";
+}
+
+function getRentalDateLabel(rental, dateValue, timeValue) {
+  if (rental.rental_mode === "with_driver") return dateValue;
+  const time = normalizeTime(timeValue);
+  return time ? `${dateValue} ${time}` : dateValue;
 }
 
 function mapRental(row) {
@@ -31,6 +45,8 @@ function mapRental(row) {
     car_id: row.car_id,
     pickup_date: pickupDate,
     return_date: returnDate,
+    pickup_time: normalizeTime(row.pickup_time),
+    return_time: normalizeTime(row.return_time),
     driver_name: row.driver_name,
     driver_license: row.driver_license,
     rental_mode: row.rental_mode,
@@ -66,8 +82,8 @@ function buildRentalConfirmation(rental) {
     summary: {
       Car: rental.car?.name || "Rental car",
       Plate: rental.car?.plate_number || "N/A",
-      Pickup: rental.pickup_date,
-      Return: rental.return_date,
+      Pickup: getRentalDateLabel(rental, rental.pickup_date, rental.pickup_time),
+      Return: getRentalDateLabel(rental, rental.return_date, rental.return_time),
       "Rental days": getRentalDays(rental.pickup_date, rental.return_date),
       Mode: rental.rental_mode === "with_driver" ? "With driver" : "Self-drive",
       [usesQr ? "Deposit paid" : "Payment method"]: usesQr ? total * 0.2 : "Cash",
@@ -319,7 +335,9 @@ router.post("/bookings", async (req, res) => {
     const {
       carId,
       pickupDate,
+      pickupTime,
       returnDate,
+      returnTime,
       fullName,
       licenseNumber,
       rentalMode = "self_drive",
@@ -344,8 +362,27 @@ router.post("/bookings", async (req, res) => {
       return res.status(400).json({ error: "Pickup and return dates must use YYYY-MM-DD format" });
     }
 
+    const normalizedPickupTime = rentalMode === "self_drive"
+      ? normalizeTime(pickupTime)
+      : normalizeTime(pickupTime) || "09:00";
+    const normalizedReturnTime = rentalMode === "self_drive"
+      ? normalizeTime(returnTime)
+      : normalizeTime(returnTime) || "18:00";
+
+    if (!isValidTimeOnly(normalizedPickupTime) || !isValidTimeOnly(normalizedReturnTime)) {
+      return res.status(400).json({ error: "Pickup and return times must use HH:MM format" });
+    }
+
     if (returnDate < pickupDate) {
       return res.status(400).json({ error: "Return date must be on or after pickup date" });
+    }
+
+    if (
+      rentalMode === "self_drive" &&
+      returnDate === pickupDate &&
+      normalizedReturnTime <= normalizedPickupTime
+    ) {
+      return res.status(400).json({ error: "Return time must be after pickup time for same-day rentals" });
     }
 
     const normalizedName = `${fullName}`.trim();
@@ -422,6 +459,8 @@ router.post("/bookings", async (req, res) => {
         car_id,
         pickup_date,
         return_date,
+        pickup_time,
+        return_time,
         driver_name,
         driver_license,
         rental_mode,
@@ -430,13 +469,15 @@ router.post("/bookings", async (req, res) => {
         total_price,
         payment_method,
         status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *`,
       [
         userId || null,
         carId,
         pickupDate,
         returnDate,
+        normalizedPickupTime,
+        normalizedReturnTime,
         normalizedName,
         rentalMode === "self_drive" ? normalizedLicense : "BOOKRIDE-DRIVER",
         rentalMode,
@@ -461,6 +502,8 @@ router.post("/bookings", async (req, res) => {
 
     const rentalResponse = {
       ...result.rows[0],
+      pickup_time: normalizeTime(result.rows[0].pickup_time),
+      return_time: normalizeTime(result.rows[0].return_time),
       total_price: Number(result.rows[0].total_price),
       driver_fee_per_day: Number(result.rows[0].driver_fee_per_day || 0),
       car: {

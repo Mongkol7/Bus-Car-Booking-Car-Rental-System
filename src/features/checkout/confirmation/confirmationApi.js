@@ -23,6 +23,13 @@ function getRentalDays(pickupDate, returnDate) {
   return Number.isFinite(diffDays) ? Math.max(1, diffDays) : 1;
 }
 
+function getDateTimeLabel(dateValue, timeValue, rentalMode = 'self_drive') {
+  if (!dateValue) return 'Not set';
+  if (rentalMode === 'with_driver') return dateValue;
+  const time = `${timeValue || ''}`.slice(0, 5);
+  return time ? `${dateValue} ${time}` : dateValue;
+}
+
 function buildFallbackBusConfirmation(responseData, payload) {
   const booking = responseData.booking || responseData;
   const passenger = payload.passengerInfo || {};
@@ -50,6 +57,7 @@ function buildFallbackRentalConfirmation(responseData, payload) {
   const rental = responseData || {};
   const car = rental.car || {};
   const paymentMethod = rental.payment_method || payload.paymentMethod || 'cash';
+  const rentalMode = rental.rental_mode || payload.rentalMode;
   const total = Number(rental.total_price || 0);
   const usesQr = paymentMethod === 'aba' || paymentMethod === 'khqr';
 
@@ -62,10 +70,10 @@ function buildFallbackRentalConfirmation(responseData, payload) {
     summary: {
       Car: car.name || 'Rental car',
       Plate: car.plate_number || 'N/A',
-      Pickup: rental.pickup_date || payload.pickupDate || 'Not set',
-      Return: rental.return_date || payload.returnDate || 'Not set',
+      Pickup: getDateTimeLabel(rental.pickup_date || payload.pickupDate, rental.pickup_time || payload.pickupTime, rentalMode),
+      Return: getDateTimeLabel(rental.return_date || payload.returnDate, rental.return_time || payload.returnTime, rentalMode),
       'Rental days': getRentalDays(rental.pickup_date || payload.pickupDate, rental.return_date || payload.returnDate),
-      Mode: (rental.rental_mode || payload.rentalMode) === 'with_driver' ? 'With driver' : 'Self-drive',
+      Mode: rentalMode === 'with_driver' ? 'With driver' : 'Self-drive',
       [usesQr ? 'Deposit paid' : 'Payment method']: usesQr ? total * 0.2 : 'Cash',
       [usesQr ? 'Remaining on pickup' : 'Pay on pickup']: usesQr ? total * 0.8 : total,
     },
