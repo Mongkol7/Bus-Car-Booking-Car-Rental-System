@@ -49,6 +49,7 @@ export default function UserApp({ role, userId, onLogout }) {
         <PageComp
           role={role}
           userId={userId}
+          isActive={page === "bookings"}
           setActive={setPage}
           onLogout={onLogout}
           bookingsTab={bookingsTab}

@@ -59,8 +59,10 @@ export default function BusSearch({
   const [fromCity, setFromCity] = useState("");
   const [toCity, setToCity] = useState("");
   const [travelDate, setTravelDate] = useState("");
+  const [returnDate, setReturnDate] = useState("");
   const [allRoutes, setAllRoutes] = useState([]);
   const [searchedRoutes, setSearchedRoutes] = useState([]);
+  const [returnRoutes, setReturnRoutes] = useState([]);
   const [lastSearch, setLastSearch] = useState(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [bookedSeats, setBookedSeats] = useState([]);
@@ -89,11 +91,122 @@ export default function BusSearch({
     [lastSearch, searchedRoutes, allRoutes],
   );
 
+  const renderRouteCards = (routes, { selectable = true, offset = 0 } = {}) =>
+    routes.map((r, i) => (
+      <div
+        key={`${selectable ? "departure" : "return"}-${r.id}`}
+        className={`route-card ticket-card scroll-animate ${selectable && selectedRoute === r.id ? "selected" : ""}`}
+        style={{
+          "--delay": `${(i + offset) * 40}ms`,
+          cursor: selectable ? "pointer" : "default",
+          opacity: selectable ? 1 : 0.92,
+        }}
+        onClick={() => {
+          if (!selectable) return;
+          if (role === "guest") {
+            setShowAuthModal(true);
+          } else {
+            setSelectedRoute(r.id);
+          }
+        }}
+      >
+        <div>
+          <div className="route-time">{r.origin}</div>
+          <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>
+            {r.depTime}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginTop: 6,
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: r.color,
+                boxShadow: `0 0 0 3px ${r.bg}`,
+              }}
+            />
+            <span style={{ fontSize: 11, color: r.color }}>{r.vehicle}</span>
+          </div>
+          <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>
+            {r.type}
+          </div>
+        </div>
+        <div className="route-arrow">
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--text-3)",
+              marginBottom: 2,
+            }}
+          >
+            {r.durationLabel}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <div
+              style={{
+                flex: 1,
+                height: "0.5px",
+                background: "var(--glass-border)",
+              }}
+            />
+            <span style={{ fontSize: 9, color: "var(--text-3)" }}>→</span>
+          </div>
+        </div>
+        <div>
+          <div className="route-time">{r.destination}</div>
+          <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>
+            {r.arrTime}
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: r.avail <= 5 ? "var(--amber)" : "var(--text-3)",
+              marginTop: 6,
+            }}
+          >
+            {r.avail} seats left
+          </div>
+        </div>
+        <div className="route-price">${r.price}</div>
+        <div
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            border: "1.5px solid",
+            borderColor:
+              selectable && selectedRoute === r.id
+                ? "var(--accent)"
+                : "var(--glass-border)",
+            background:
+              selectable && selectedRoute === r.id
+                ? "var(--accent)"
+                : "transparent",
+            flexShrink: 0,
+          }}
+        />
+      </div>
+    ));
+
   const handleSearch = async () => {
     const next = {
       from: fromCity,
       to: toCity,
       date: travelDate,
+      returnDate,
     };
     const params = new URLSearchParams({
       origin: next.from,
@@ -108,7 +221,26 @@ export default function BusSearch({
         throw new Error(data?.error || res.statusText);
       }
       const formatted = formatApiRouteRows(Array.isArray(data) ? data : []);
+      let formattedReturns = [];
+
+      if (next.returnDate) {
+        const returnParams = new URLSearchParams({
+          origin: next.to,
+          destination: next.from,
+          date: next.returnDate,
+        });
+        const returnRes = await fetch(`/api/routes?${returnParams.toString()}`);
+        const returnData = await returnRes.json();
+        if (!returnRes.ok) {
+          throw new Error(returnData?.error || returnRes.statusText);
+        }
+        formattedReturns = formatApiRouteRows(
+          Array.isArray(returnData) ? returnData : [],
+        );
+      }
+
       setSearchedRoutes(formatted);
+      setReturnRoutes(formattedReturns);
       setLastSearch(next);
       setSelectedRoute((prev) => {
         if (prev == null) return null;
@@ -117,6 +249,7 @@ export default function BusSearch({
     } catch (err) {
       console.error("Error searching routes:", err);
       setSearchedRoutes([]);
+      setReturnRoutes([]);
       setLastSearch(next);
       setSelectedRoute(null);
     } finally {
@@ -398,6 +531,7 @@ export default function BusSearch({
               setSelectedRoute(null);
               setLastSearch(null);
               setSearchedRoutes([]);
+              setReturnRoutes([]);
             }}
           >
             Book another
@@ -519,6 +653,15 @@ export default function BusSearch({
                 onChange={(e) => setTravelDate(e.target.value)}
               />
             </div>
+            <div>
+              <div className="label">Return date</div>
+              <input
+                type="date"
+                placeholder="Optional"
+                value={returnDate}
+                onChange={(e) => setReturnDate(e.target.value)}
+              />
+            </div>
             <button
               type="button"
               className="btn btn-primary"
@@ -530,7 +673,8 @@ export default function BusSearch({
           </div>
           <div ref={searchResultsRef}>
             <div className="sec-title">
-              {displayRoutes.length} trips found
+              {displayRoutes.length} departure trip
+              {displayRoutes.length === 1 ? "" : "s"} found
               {!lastSearch && allRoutes.length > 0 && (
                 <span
                   style={{
@@ -681,6 +825,22 @@ export default function BusSearch({
                 />
               </div>
             ))}
+            {lastSearch?.returnDate && returnRoutes.length > 0 && (
+              <>
+                <div className="sec-title" style={{ marginTop: 20 }}>
+                  Return Trip
+                </div>
+                <div className="page-sub" style={{ marginBottom: 12 }}>
+                  {returnRoutes.length} return trip
+                  {returnRoutes.length === 1 ? "" : "s"} found for{" "}
+                  {lastSearch.returnDate}
+                </div>
+                {renderRouteCards(returnRoutes, {
+                  selectable: false,
+                  offset: displayRoutes.length,
+                })}
+              </>
+            )}
           </div>
           <div
             style={{

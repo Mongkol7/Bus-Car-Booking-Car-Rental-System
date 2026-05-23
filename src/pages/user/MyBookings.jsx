@@ -53,6 +53,7 @@ function generateQrMatrix(seed) {
 export default function MyBookings({
   role,
   userId,
+  isActive,
   bookingsTab,
   setBookingsTab,
   bookingsRefresh,
@@ -69,9 +70,19 @@ export default function MyBookings({
   useEffect(() => {
     const cleanup = setupScrollReveal();
     return cleanup;
-  }, [tab, rentalFilter, tripFilter]);
+  }, [
+    isActive,
+    tab,
+    rentalFilter,
+    tripFilter,
+    loading,
+    error,
+    bookings.trips.length,
+    bookings.rentals.length,
+  ]);
 
   useEffect(() => {
+    if (!isActive) return;
     if (role === "guest" || !userId) return;
     const fetchBookings = async () => {
       setLoading(true);
@@ -130,7 +141,14 @@ export default function MyBookings({
       }
     };
     fetchBookings();
-  }, [role, userId, bookingsRefresh]);
+  }, [role, userId, bookingsRefresh, isActive]);
+
+  useEffect(() => {
+    if (!isActive || !setBookingsTab) return;
+    if (bookingsTab !== "trips" && bookingsTab !== "rentals") {
+      setBookingsTab("trips");
+    }
+  }, [isActive, bookingsTab, setBookingsTab]);
 
   if (role === "guest")
     return (
