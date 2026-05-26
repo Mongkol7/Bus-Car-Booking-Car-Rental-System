@@ -657,6 +657,27 @@ export default function Rentals() {
     });
   }, [driverQuery, driverStatus, drivers]);
 
+  useEffect(() => {
+    const elements = Array.from(document.querySelectorAll('.observe-animate'));
+    elements.forEach((el) => {
+      if (!el.dataset.revealed) {
+        el.dataset.revealed = 'true';
+      }
+    });
+  }, [
+    section,
+    loading,
+    driversLoading,
+    rentals.length,
+    drivers.length,
+    shown.length,
+    shownDrivers.length,
+    filter,
+    driverStatus,
+    query,
+    driverQuery
+  ]);
+
   function openEdit(rental) {
     setEditing(rental);
     setForm({
