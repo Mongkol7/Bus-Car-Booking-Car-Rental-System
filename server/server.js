@@ -3,7 +3,8 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 const TOKEN_SECRET = process.env.TOKEN_SECRET || 'bookride-dev-secret';
@@ -67,6 +68,75 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+function decodeBase64UrlJson(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), '=');
+  return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+}
+
+async function getAuthUserFromRequest(req) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token) {
+    throw Object.assign(new Error('Authentication required.'), { status: 401 });
+  }
+
+  const [header, payload, signature] = token.split('.');
+  if (!header || !payload || !signature) {
+    throw Object.assign(new Error('Invalid session token.'), { status: 401 });
+  }
+
+  const expected = crypto
+    .createHmac('sha256', TOKEN_SECRET)
+    .update(`${header}.${payload}`)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+
+  if (signature !== expected) {
+    throw Object.assign(new Error('Invalid session token.'), { status: 401 });
+  }
+
+  const decoded = decodeBase64UrlJson(payload);
+  if (!decoded.sub || (decoded.exp && decoded.exp < Math.floor(Date.now() / 1000))) {
+    throw Object.assign(new Error('Session expired.'), { status: 401 });
+  }
+
+  const session = await pool.query(
+    `SELECT id
+     FROM user_sessions
+     WHERE token_hash = $1
+       AND is_revoked = FALSE
+       AND expires_at > NOW()
+     LIMIT 1`,
+    [hashToken(token)]
+  );
+  if (!session.rowCount) {
+    throw Object.assign(new Error('Session expired.'), { status: 401 });
+  }
+
+  const user = await pool.query(
+    `SELECT
+       u.id,
+       u.first_name,
+       u.last_name,
+       u.email,
+       u.phone,
+       COALESCE(u.is_active, TRUE) AS is_active,
+       r.name AS role
+     FROM users u
+     LEFT JOIN roles r ON r.id = u.role_id
+     WHERE u.id = $1`,
+    [decoded.sub]
+  );
+  if (!user.rowCount || !user.rows[0].is_active) {
+    throw Object.assign(new Error('User account is not available.'), { status: 401 });
+  }
+
+  return user.rows[0];
+}
+
 async function createUserSession(userId, token) {
   const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
   await pool.query(
@@ -103,6 +173,218 @@ async function runUserSchemaMigration() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'user'`);
   await pool.query(`ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id INT REFERENCES roles(id) ON DELETE RESTRICT`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS booking_reference VARCHAR(40)`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_first_name VARCHAR(100)`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_last_name VARCHAR(100)`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_phone VARCHAR(30)`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_email VARCHAR(150)`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_id_number VARCHAR(80)`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS round_trip_reference VARCHAR(40)`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS trip_leg VARCHAR(20) DEFAULT 'outbound'`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS original_price DECIMAL(10,2)`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS discount_amount DECIMAL(10,2) DEFAULT 0`);
+  await pool.query(`
+    UPDATE bus_bookings
+    SET trip_leg = COALESCE(NULLIF(trip_leg, ''), 'outbound'),
+        original_price = COALESCE(original_price, total_price),
+        discount_amount = COALESCE(discount_amount, 0)
+    WHERE trip_leg IS NULL
+       OR trip_leg = ''
+       OR original_price IS NULL
+       OR discount_amount IS NULL
+  `);
+  await pool.query(`
+    UPDATE bus_bookings
+    SET booking_reference = CONCAT('BT-', LPAD(id::TEXT, 6, '0'))
+    WHERE booking_reference IS NULL OR booking_reference = ''
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes WHERE indexname = 'idx_bus_bookings_active_route_seat_unique'
+      ) AND NOT EXISTS (
+        SELECT 1
+        FROM bus_bookings
+        WHERE status <> 'cancelled'
+        GROUP BY route_id, UPPER(seat_number)
+        HAVING COUNT(*) > 1
+      ) THEN
+        CREATE UNIQUE INDEX idx_bus_bookings_active_route_seat_unique
+        ON bus_bookings (route_id, UPPER(seat_number))
+        WHERE status <> 'cancelled';
+      END IF;
+    END $$;
+  `);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS package_weight_kg DECIMAL(8,2) DEFAULT 0`);
+  await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS overweight_charge DECIMAL(10,2) DEFAULT 0`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS rental_drivers (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(150) NOT NULL,
+      license_number VARCHAR(50) UNIQUE NOT NULL,
+      phone VARCHAR(30),
+      rating NUMERIC(3,2) DEFAULT 5.00,
+      review_count INT DEFAULT 0,
+      hourly_rate DECIMAL(10,2) NOT NULL,
+      status VARCHAR(20) DEFAULT 'available' CHECK (status IN ('available', 'inactive')),
+      profile_photo TEXT,
+      background TEXT,
+      experience_years INT DEFAULT 0,
+      languages TEXT[] DEFAULT ARRAY[]::TEXT[],
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS rental_driver_reviews (
+      id SERIAL PRIMARY KEY,
+      driver_id INT REFERENCES rental_drivers(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      rating INT CHECK (rating BETWEEN 1 AND 5),
+      comment TEXT NOT NULL,
+      review_type VARCHAR(20) DEFAULT 'review' CHECK (review_type IN ('review', 'report')),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`ALTER TABLE rental_driver_reviews ADD COLUMN IF NOT EXISTS car_rental_id INT`);
+  await pool.query(`ALTER TABLE rental_driver_reviews ADD COLUMN IF NOT EXISTS admin_reply TEXT`);
+  await pool.query(`ALTER TABLE rental_driver_reviews ADD COLUMN IF NOT EXISTS admin_replied_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE rental_driver_reviews ADD COLUMN IF NOT EXISTS admin_replied_by INT REFERENCES users(id) ON DELETE SET NULL`);
+  await pool.query(`
+    INSERT INTO rental_drivers (name, license_number, phone, rating, review_count, hourly_rate, status, profile_photo, background, experience_years, languages)
+    VALUES
+      ('Sok Dara', 'DRV-1001', '+855 12 345 678', 4.90, 38, 6.50, 'available', '', 'Professional city and province driver with airport transfer experience.', 7, ARRAY['Khmer','English']),
+      ('Chan Mony', 'DRV-1002', '+855 15 456 789', 4.70, 24, 5.75, 'available', '', 'Careful long-distance driver familiar with family trips and tourism routes.', 5, ARRAY['Khmer','English']),
+      ('Vannak Lim', 'DRV-1003', '+855 17 567 890', 4.50, 18, 5.25, 'available', '', 'Flexible local driver with strong Phnom Penh and Siem Reap route knowledge.', 4, ARRAY['Khmer'])
+    ON CONFLICT (license_number) DO NOTHING
+  `);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS pickup_datetime TIMESTAMP`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS return_datetime TIMESTAMP`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS rental_hours NUMERIC(8,2)`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS hourly_charge DECIMAL(10,2)`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS returned_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS customer_phone VARCHAR(30)`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS hired_driver_id INT REFERENCES rental_drivers(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS rental_base_price DECIMAL(10,2) DEFAULT 0`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS driver_fee DECIMAL(10,2) DEFAULT 0`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_notifications (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      car_rental_id INT REFERENCES car_rentals(id) ON DELETE CASCADE,
+      bus_booking_id INT REFERENCES bus_bookings(id) ON DELETE CASCADE,
+      booking_reference VARCHAR(80),
+      type VARCHAR(50) NOT NULL,
+      title VARCHAR(150) NOT NULL,
+      message TEXT NOT NULL,
+      action_url TEXT,
+      action_type VARCHAR(50),
+      metadata JSONB DEFAULT '{}'::JSONB,
+      is_read BOOLEAN DEFAULT FALSE,
+      read_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS bus_booking_id INT REFERENCES bus_bookings(id) ON DELETE CASCADE`);
+  await pool.query(`ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS booking_reference VARCHAR(80)`);
+  await pool.query(`ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS action_url TEXT`);
+  await pool.query(`ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS action_type VARCHAR(50)`);
+  await pool.query(`ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::JSONB`);
+  await pool.query(`
+    UPDATE user_notifications
+    SET action_url = COALESCE(
+          action_url,
+          CASE
+            WHEN type LIKE 'bus_%' THEN '/bookings?tab=trips'
+            WHEN type IN ('driver_deactivated', 'driver_reactivated', 'rental_cancelled', 'rental_changed') THEN '/bookings?tab=rentals'
+            ELSE '/bookings'
+          END
+        ),
+        action_type = COALESCE(
+          action_type,
+          CASE
+            WHEN type LIKE 'bus_%' THEN 'view_trip'
+            WHEN type IN ('driver_deactivated', 'driver_reactivated', 'rental_cancelled', 'rental_changed') THEN 'view_rental'
+            ELSE 'view_booking'
+          END
+        ),
+        metadata = COALESCE(metadata, '{}'::JSONB)
+    WHERE action_url IS NULL
+       OR action_type IS NULL
+       OR metadata IS NULL
+  `);
+  await pool.query(`
+    UPDATE car_rentals
+    SET pickup_datetime = COALESCE(pickup_datetime, pickup_date + TIME '09:00:00'),
+        return_datetime = COALESCE(return_datetime, return_date + TIME '09:00:00')
+    WHERE pickup_datetime IS NULL
+       OR return_datetime IS NULL
+  `);
+  await pool.query(`
+    UPDATE car_rentals cr
+    SET rental_hours = GREATEST(1, CEIL(EXTRACT(EPOCH FROM (cr.return_datetime - cr.pickup_datetime)) / 3600.0)),
+        hourly_charge = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (cr.return_datetime - cr.pickup_datetime)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2),
+        rental_base_price = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (cr.return_datetime - cr.pickup_datetime)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2),
+        driver_fee = COALESCE(cr.driver_fee, 0),
+        total_price = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (cr.return_datetime - cr.pickup_datetime)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2)
+    FROM rental_cars rc
+    WHERE rc.id = cr.car_id
+      AND cr.pickup_datetime IS NOT NULL
+      AND cr.return_datetime IS NOT NULL
+      AND cr.return_datetime > cr.pickup_datetime
+      AND (cr.rental_hours IS NULL OR cr.hourly_charge IS NULL)
+  `);
+  await pool.query(`
+    UPDATE car_rentals
+    SET returned_at = COALESCE(returned_at, return_datetime, booked_at)
+    WHERE (status = 'completed' OR status = 'returned')
+      AND returned_at IS NULL
+  `);
+  await pool.query(`UPDATE car_rentals SET status = 'returned' WHERE status = 'completed'`);
+  await pool.query(`ALTER TABLE car_rentals DROP CONSTRAINT IF EXISTS car_rentals_status_rental_only`);
+  await pool.query(`
+    ALTER TABLE car_rentals
+    ADD CONSTRAINT car_rentals_status_rental_only
+    CHECK (status::TEXT IN ('pending', 'confirmed', 'cancelled', 'returned'))
+  `);
+  await pool.query(`
+    UPDATE transactions t
+    SET amount = bb.total_price,
+        payment_method = LOWER(bb.payment_method)::payment_method,
+        status = CASE
+          WHEN bb.status = 'cancelled'::booking_status THEN 'cancelled'
+          ELSE 'success'
+        END
+    FROM bus_bookings bb
+    WHERE t.bus_booking_id = bb.id
+      AND (
+        t.amount IS DISTINCT FROM bb.total_price
+        OR t.payment_method::TEXT IS DISTINCT FROM LOWER(bb.payment_method)
+        OR t.status IS DISTINCT FROM CASE
+          WHEN bb.status = 'cancelled'::booking_status THEN 'cancelled'
+          ELSE 'success'
+        END
+      )
+  `);
+  await pool.query(`
+    UPDATE transactions t
+    SET amount = cr.total_price,
+        payment_method = cr.payment_method,
+        status = CASE
+          WHEN cr.status = 'cancelled'::booking_status THEN 'cancelled'
+          ELSE 'success'
+        END
+    FROM car_rentals cr
+    WHERE t.car_rental_id = cr.id
+      AND (
+        t.amount IS DISTINCT FROM cr.total_price
+        OR t.payment_method IS DISTINCT FROM cr.payment_method
+        OR t.status IS DISTINCT FROM CASE
+          WHEN cr.status = 'cancelled'::booking_status THEN 'cancelled'
+          ELSE 'success'
+        END
+      )
+  `);
 
   const legacyRole = await pool.query(`
     SELECT 1
@@ -251,7 +533,7 @@ const USER_SELECT = `
     SELECT
       user_id,
       COUNT(*) AS bus_bookings_count,
-      COALESCE(SUM(total_price), 0) AS bus_total,
+      COALESCE(SUM(total_price) FILTER (WHERE status <> 'cancelled'), 0) AS bus_total,
       MAX(created_at) AS last_bus_booking_at
     FROM bus_bookings
     GROUP BY user_id
@@ -260,7 +542,7 @@ const USER_SELECT = `
     SELECT
       user_id,
       COUNT(*) AS car_rentals_count,
-      COALESCE(SUM(total_price), 0) AS rental_total,
+      COALESCE(SUM(total_price) FILTER (WHERE status <> 'cancelled'), 0) AS rental_total,
       MAX(booked_at) AS last_car_rental_at
     FROM car_rentals
     GROUP BY user_id
@@ -362,12 +644,51 @@ async function fetchDefaultRoleId(roleName = 'user') {
 }
 
 const BOOKING_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
-const RENTAL_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled', 'returned'];
+const RENTAL_STATUSES = ['pending', 'confirmed', 'cancelled', 'returned'];
 const PAYMENT_METHODS = ['aba', 'khqr', 'cash'];
 const VEHICLE_STATUSES = ['available', 'rented', 'maintenance'];
 const ROUTE_AVAILABILITY_STATUSES = ['available', 'maintenance'];
 const SEAT_MAP_CELL_TYPES = ['seat', 'empty', 'door', 'bathroom', 'driver', 'note'];
+const DRIVER_STATUSES = ['available', 'inactive'];
 const DAILY_ROUTE_WINDOW_DAYS = 30;
+
+async function syncBusBookingTransactions(bookingIds, db = pool) {
+  const ids = Array.isArray(bookingIds) ? bookingIds.map(Number).filter(Boolean) : [Number(bookingIds)].filter(Boolean);
+  if (!ids.length) return 0;
+  const result = await db.query(
+    `UPDATE transactions t
+     SET amount = bb.total_price,
+         payment_method = LOWER(bb.payment_method)::payment_method,
+         status = CASE
+           WHEN bb.status = 'cancelled'::booking_status THEN 'cancelled'
+           ELSE 'success'
+         END
+     FROM bus_bookings bb
+     WHERE t.bus_booking_id = bb.id
+       AND bb.id = ANY($1::INT[])`,
+    [ids]
+  );
+  return result.rowCount || 0;
+}
+
+async function syncRentalTransactions(rentalIds, db = pool) {
+  const ids = Array.isArray(rentalIds) ? rentalIds.map(Number).filter(Boolean) : [Number(rentalIds)].filter(Boolean);
+  if (!ids.length) return 0;
+  const result = await db.query(
+    `UPDATE transactions t
+     SET amount = cr.total_price,
+         payment_method = cr.payment_method,
+         status = CASE
+           WHEN cr.status = 'cancelled'::booking_status THEN 'cancelled'
+           ELSE 'success'
+         END
+     FROM car_rentals cr
+     WHERE t.car_rental_id = cr.id
+       AND cr.id = ANY($1::INT[])`,
+    [ids]
+  );
+  return result.rowCount || 0;
+}
 
 function normalizeText(value) {
   return String(value || '').trim();
@@ -378,11 +699,49 @@ function normalizeMoney(value) {
   return Number.isFinite(amount) ? amount : NaN;
 }
 
+function normalizeLanguages(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeText(item)).filter(Boolean);
+  }
+  return normalizeText(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function normalizeDateTime(value) {
   const raw = normalizeText(value);
   if (!raw) return null;
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function normalizeRentalDateTime(value) {
+  const raw = normalizeText(value);
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::(\d{2}))?$/);
+  if (!match) return { error: 'Pickup and return date-times must be valid.' };
+  const normalized = `${match[1]} ${match[2]}:${match[3] || '00'}`;
+  const date = new Date(raw.replace(' ', 'T'));
+  if (Number.isNaN(date.getTime())) return { error: 'Pickup and return date-times must be valid.' };
+  return {
+    value: normalized,
+    dateKey: match[1],
+    date
+  };
+}
+
+function calculateRentalPricing(pickupDateTime, returnDateTime, dailyRate, driverHourlyRate = 0) {
+  const hours = Math.max(1, Math.ceil((returnDateTime.date - pickupDateTime.date) / 3600000));
+  const hourlyRate = Number(dailyRate || 0) / 24;
+  const basePrice = Number((hours * hourlyRate).toFixed(2));
+  const driverFee = Number((hours * Number(driverHourlyRate || 0)).toFixed(2));
+  return {
+    hours,
+    hourlyRate: Number(hourlyRate.toFixed(2)),
+    basePrice,
+    driverFee,
+    totalPrice: Number((basePrice + driverFee).toFixed(2))
+  };
 }
 
 async function releaseExpiredBusMaintenance() {
@@ -414,11 +773,52 @@ function buildMonthRange(month) {
   };
 }
 
+function buildPreviousMonthRange(monthRange) {
+  const [year, month] = String(monthRange.key).split('-').map(Number);
+  const previous = new Date(year, month - 2, 1);
+  return buildMonthRange(`${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`);
+}
+
+function calculatePercent(part, total) {
+  if (!total) return 0;
+  return Number(((Number(part || 0) / Number(total || 0)) * 100).toFixed(1));
+}
+
+function calculateChange(current, previous) {
+  const currentValue = Number(current || 0);
+  const previousValue = Number(previous || 0);
+  const change = currentValue - previousValue;
+  return {
+    current: currentValue,
+    previous: previousValue,
+    change,
+    percent: previousValue ? Number(((change / previousValue) * 100).toFixed(1)) : (currentValue ? 100 : 0)
+  };
+}
+
 function formatDateKey(date) {
   if (date instanceof Date) {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
   return String(date).slice(0, 10);
+}
+
+function getCambodiaDateTimeKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Phnom_Penh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(date).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
 function buildDailySeries(monthRange, bookingRows, rentalRows) {
@@ -478,6 +878,8 @@ async function fetchAdminBookingById(bookingId) {
        bb.route_id,
        bb.seat_number,
        bb.total_price,
+       bb.package_weight_kg,
+       bb.overweight_charge,
        bb.payment_method,
        bb.status,
        bb.created_at,
@@ -490,6 +892,7 @@ async function fetchAdminBookingById(bookingId) {
        br.arrival_time,
        b.name AS bus_name,
        b.type AS bus_type,
+       c.id AS company_id,
        c.name AS company_name,
        c.theme_color AS color
      FROM bus_bookings bb
@@ -511,25 +914,387 @@ async function fetchAdminRentalById(rentalId) {
        cr.car_id,
        cr.pickup_date,
        cr.return_date,
+       COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+       COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+       COALESCE(cr.rental_hours, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') - COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00'))) / 3600.0))) AS rental_hours,
+       ROUND((rc.daily_rate / 24.0)::NUMERIC, 2) AS hourly_rate,
+       COALESCE(cr.hourly_charge, ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') - COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00'))) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2)) AS hourly_charge,
+       cr.customer_phone,
+       cr.hired_driver_id,
+       cr.rental_base_price,
+       cr.driver_fee,
        cr.driver_name,
        cr.driver_license,
        cr.total_price,
        cr.payment_method,
        cr.status,
+       cr.returned_at,
        cr.booked_at,
        CONCAT(u.first_name, ' ', u.last_name) AS user_name,
        u.email,
        u.phone,
        rc.name AS car_name,
        rc.type AS car_type,
-       rc.plate_number
+       rc.plate_number,
+       rc.daily_rate,
+       rd.name AS hired_driver_name,
+       rd.rating AS hired_driver_rating,
+       rd.hourly_rate AS hired_driver_hourly_rate
      FROM car_rentals cr
      JOIN users u ON u.id = cr.user_id
      JOIN rental_cars rc ON rc.id = cr.car_id
+     LEFT JOIN rental_drivers rd ON rd.id = cr.hired_driver_id
      WHERE cr.id = $1`,
     [rentalId]
   );
   return result.rows[0] || null;
+}
+
+async function getOptionalAuthUserFromRequest(req) {
+  try {
+    return await getAuthUserFromRequest(req);
+  } catch (error) {
+    return null;
+  }
+}
+
+function buildDriverPayload(body) {
+  const name = normalizeText(body.name);
+  const licenseNumber = normalizeText(body.license_number);
+  const phone = normalizeText(body.phone);
+  const hourlyRate = normalizeMoney(body.hourly_rate);
+  const status = normalizeText(body.status || 'available').toLowerCase();
+  const profilePhoto = normalizeText(body.profile_photo);
+  const background = normalizeText(body.background);
+  const experienceYears = Number(body.experience_years || 0);
+  const languages = normalizeLanguages(body.languages);
+
+  if (!name) return { error: 'Driver name is required.' };
+  if (!licenseNumber) return { error: 'License number is required.' };
+  if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) return { error: 'Hourly rate must be greater than zero.' };
+  if (!DRIVER_STATUSES.includes(status)) return { error: 'Invalid driver status.' };
+  if (!Number.isInteger(experienceYears) || experienceYears < 0) return { error: 'Experience years must be zero or greater.' };
+
+  return {
+    name,
+    licenseNumber,
+    phone,
+    hourlyRate,
+    status,
+    profilePhoto,
+    background,
+    experienceYears,
+    languages
+  };
+}
+
+async function createUserNotification(notification, db = pool) {
+  const metadata = notification.metadata && typeof notification.metadata === 'object' ? notification.metadata : {};
+  await db.query(
+    `INSERT INTO user_notifications (
+       user_id,
+       car_rental_id,
+       bus_booking_id,
+       booking_reference,
+       type,
+       title,
+       message,
+       action_url,
+       action_type,
+       metadata
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::JSONB)`,
+    [
+      notification.user_id,
+      notification.car_rental_id || null,
+      notification.bus_booking_id || null,
+      notification.booking_reference || null,
+      notification.type,
+      notification.title,
+      notification.message,
+      notification.action_url || null,
+      notification.action_type || null,
+      JSON.stringify(metadata)
+    ]
+  );
+}
+
+async function createBusTicketNotifications(bookingIds, options = {}, db = pool) {
+  const ids = Array.from(new Set((Array.isArray(bookingIds) ? bookingIds : [bookingIds]).map(Number).filter(Boolean)));
+  if (!ids.length) return;
+
+  const result = await db.query(
+    `SELECT
+       bb.id,
+       bb.user_id,
+       COALESCE(bb.round_trip_reference, bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS ticket_reference,
+       bb.booking_reference,
+       bb.round_trip_reference,
+       bb.seat_number,
+       br.origin,
+       br.destination,
+       br.departure_time,
+       br.arrival_time,
+       b.name AS bus_name,
+       b.plate_number,
+       c.name AS company_name
+     FROM bus_bookings bb
+     JOIN bus_routes br ON br.id = bb.route_id
+     JOIN buses b ON b.id = br.bus_id
+     LEFT JOIN companies c ON c.id = b.company_id
+     WHERE bb.id = ANY($1::INT[])`,
+    [ids]
+  );
+
+  const groups = new Map();
+  result.rows.forEach((row) => {
+    const key = `${row.user_id}-${row.ticket_reference}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  });
+
+  for (const rows of groups.values()) {
+    const first = rows[0];
+    const seats = rows.map((row) => row.seat_number).filter(Boolean).join(', ');
+    const metadata = {
+      ...(options.metadata || {}),
+      booking_ids: rows.map((row) => row.id),
+      seats,
+      departure_time: first.departure_time,
+      route: `${first.origin} -> ${first.destination}`,
+      bus_name: first.bus_name,
+      company_name: first.company_name
+    };
+    await createUserNotification({
+      user_id: first.user_id,
+      bus_booking_id: first.id,
+      booking_reference: first.ticket_reference,
+      type: options.type || 'bus_ticket_update',
+      title: options.title || 'Bus ticket update',
+      message: options.message || `${first.origin} to ${first.destination} was updated. Seats: ${seats || 'N/A'}.`,
+      action_url: options.action_url || '/bookings?tab=trips',
+      action_type: options.action_type || 'view_trip',
+      metadata
+    }, db);
+  }
+}
+
+async function createRouteCancellationNotifications(routeId, options = {}, db = pool) {
+  const result = await db.query(
+    `SELECT
+       bb.id,
+       bb.user_id,
+       COALESCE(bb.round_trip_reference, bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS ticket_reference,
+       br.origin,
+       br.destination,
+       br.departure_time,
+       b.name AS bus_name
+     FROM bus_bookings bb
+     JOIN bus_routes br ON br.id = bb.route_id
+     JOIN buses b ON b.id = br.bus_id
+     WHERE bb.route_id = $1
+       AND bb.status <> 'cancelled'`,
+    [routeId]
+  );
+
+  const groups = new Map();
+  result.rows.forEach((row) => {
+    const key = `${row.user_id}-${row.ticket_reference}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  });
+
+  for (const rows of groups.values()) {
+    const first = rows[0];
+    await createUserNotification({
+      user_id: first.user_id,
+      booking_reference: first.ticket_reference,
+      type: options.type || 'bus_trip_cancelled',
+      title: options.title || 'Trip cancelled',
+      message: options.message || `${first.origin} to ${first.destination} on ${first.bus_name} was cancelled by admin.`,
+      action_url: '/bookings?tab=trips',
+      action_type: 'view_trip',
+      metadata: {
+        route_id: routeId,
+        booking_ids: rows.map((row) => row.id),
+        departure_time: first.departure_time
+      }
+    }, db);
+  }
+}
+
+async function createDriverDeactivationNotifications(driverId, driverName, db = pool) {
+  const result = await db.query(
+    `INSERT INTO user_notifications (user_id, car_rental_id, type, title, message, action_url, action_type, metadata)
+     SELECT
+       cr.user_id,
+       cr.id,
+       'driver_deactivated',
+       'Driver update for your rental',
+       $2::TEXT,
+       '/bookings?tab=rentals',
+       'view_rental',
+       JSON_BUILD_OBJECT(
+         'rental_id', cr.id,
+         'driver_id', $1::INT,
+         'driver_name', $3::TEXT,
+         'previous_status', cr.status::TEXT,
+         'pickup_datetime', COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00'),
+         'return_datetime', COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00')
+       )::JSONB
+     FROM car_rentals cr
+     WHERE cr.hired_driver_id = $1::INT
+       AND cr.status IN ('pending', 'confirmed')
+       AND cr.user_id IS NOT NULL`,
+    [
+      driverId,
+      `Your assigned driver ${driverName} is no longer available. Admin will follow up with you about this rental.`,
+      driverName
+    ]
+  );
+  return result.rowCount || 0;
+}
+
+async function applyDriverDeactivation(driverId, driverName, db = pool) {
+  const notificationCount = await createDriverDeactivationNotifications(driverId, driverName, db);
+  const cancelled = await db.query(
+    `UPDATE car_rentals
+     SET status = 'cancelled'::booking_status
+     WHERE hired_driver_id = $1::INT
+       AND status IN ('pending', 'confirmed')
+     RETURNING id`,
+    [driverId]
+  );
+  await syncRentalTransactions(cancelled.rows.map((row) => row.id), db);
+  return {
+    notificationCount,
+    cancelledCount: cancelled.rowCount || 0
+  };
+}
+
+async function restoreDriverRentalsBeforePickup(driverId, driverName, db = pool) {
+  const eligible = await db.query(
+    `SELECT
+       cr.id,
+       cr.user_id,
+       COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+       COALESCE(NULLIF(deactivation.metadata->>'previous_status', ''), 'confirmed') AS previous_status
+     FROM car_rentals cr
+     JOIN LATERAL (
+       SELECT un.id, un.metadata, un.created_at
+       FROM user_notifications un
+       WHERE un.car_rental_id = cr.id
+         AND un.user_id = cr.user_id
+         AND un.type = 'driver_deactivated'
+       ORDER BY un.created_at DESC, un.id DESC
+       LIMIT 1
+     ) deactivation ON TRUE
+     WHERE cr.hired_driver_id = $1::INT
+       AND cr.status = 'cancelled'
+       AND cr.user_id IS NOT NULL
+       AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') > NOW() + INTERVAL '1 hour'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM user_notifications restored
+         WHERE restored.car_rental_id = cr.id
+           AND restored.user_id = cr.user_id
+           AND restored.type = 'driver_reactivated'
+           AND restored.created_at > deactivation.created_at
+       )`,
+    [driverId]
+  );
+
+  let restoredCount = 0;
+  let notificationCount = 0;
+  for (const rental of eligible.rows) {
+    const previousStatus = ['pending', 'confirmed'].includes(String(rental.previous_status || '').toLowerCase())
+      ? String(rental.previous_status).toLowerCase()
+      : 'confirmed';
+
+    await createUserNotification({
+      user_id: rental.user_id,
+      car_rental_id: rental.id,
+      type: 'driver_reactivated',
+      title: 'Driver restored for your rental',
+      message: `Your assigned driver ${driverName} is available again. Your rental has been restored.`,
+      action_url: '/bookings?tab=rentals',
+      action_type: 'view_rental',
+      metadata: {
+        rental_id: rental.id,
+        driver_id: driverId,
+        driver_name: driverName,
+        restored_status: previousStatus,
+        pickup_datetime: rental.pickup_datetime
+      }
+    }, db);
+    notificationCount += 1;
+
+    const updated = await db.query(
+      `UPDATE car_rentals
+       SET status = ($1)::booking_status
+       WHERE id = $2
+         AND status = 'cancelled'
+       RETURNING id`,
+      [previousStatus, rental.id]
+    );
+    await syncRentalTransactions(updated.rows.map((row) => row.id), db);
+    restoredCount += updated.rowCount || 0;
+  }
+
+  return { restoredCount, notificationCount };
+}
+
+function routeChangedMessage(existingRoute, updatedRoute) {
+  const changes = [];
+  if (Number(existingRoute.bus_id) !== Number(updatedRoute.bus_id)) {
+    changes.push(`bus changed from ${existingRoute.bus_name || 'the previous bus'} to ${updatedRoute.bus_name || 'the new bus'}`);
+  }
+  if (
+    new Date(existingRoute.departure_time).getTime() !== new Date(updatedRoute.departure_time).getTime() ||
+    new Date(existingRoute.arrival_time).getTime() !== new Date(updatedRoute.arrival_time).getTime()
+  ) {
+    changes.push('departure or arrival time changed');
+  }
+  if (existingRoute.origin !== updatedRoute.origin || existingRoute.destination !== updatedRoute.destination) {
+    changes.push(`route changed to ${updatedRoute.origin} to ${updatedRoute.destination}`);
+  }
+  if (Number(existingRoute.price) !== Number(updatedRoute.price)) {
+    changes.push('fare changed');
+  }
+  if (!changes.length) return `${updatedRoute.origin} to ${updatedRoute.destination} was updated by admin.`;
+  return `${updatedRoute.origin} to ${updatedRoute.destination} was updated: ${changes.join(', ')}.`;
+}
+
+async function createRouteUpdateNotifications(routeId, existingRoute, updatedRoute, db = pool) {
+  const bookingIds = (Array.isArray(existingRoute?.passengers) ? existingRoute.passengers : [])
+    .filter((passenger) => ['pending', 'confirmed'].includes(String(passenger.status || '').toLowerCase()))
+    .map((passenger) => Number(passenger.booking_id))
+    .filter(Boolean);
+  if (!bookingIds.length) return 0;
+
+  await createBusTicketNotifications(bookingIds, {
+    type: Number(existingRoute.bus_id) !== Number(updatedRoute.bus_id) ? 'bus_trip_moved' : 'bus_schedule_changed',
+    title: Number(existingRoute.bus_id) !== Number(updatedRoute.bus_id) ? 'Your trip bus changed' : 'Your trip schedule changed',
+    message: `${routeChangedMessage(existingRoute, updatedRoute)} Open My Bookings for details.`,
+    action_type: 'view_trip',
+    metadata: {
+      reason: 'admin route update',
+      route_id: routeId,
+      old_bus_id: existingRoute.bus_id,
+      new_bus_id: updatedRoute.bus_id,
+      old_bus_name: existingRoute.bus_name,
+      new_bus_name: updatedRoute.bus_name,
+      old_origin: existingRoute.origin,
+      new_origin: updatedRoute.origin,
+      old_destination: existingRoute.destination,
+      new_destination: updatedRoute.destination,
+      old_departure_time: existingRoute.departure_time,
+      new_departure_time: updatedRoute.departure_time,
+      old_arrival_time: existingRoute.arrival_time,
+      new_arrival_time: updatedRoute.arrival_time
+    }
+  }, db);
+  return bookingIds.length;
 }
 
 function formatUserRow(row) {
@@ -1093,6 +1858,21 @@ async function ensureRouteCanReceiveSeats(routeId, requiredSeats) {
   return route;
 }
 
+function routeIsMaintenanceBlocked(route) {
+  const routeBlocked =
+    route?.availability_status === 'maintenance' &&
+    route.maintenance_start &&
+    route.maintenance_end &&
+    new Date(route.departure_time) < new Date(route.maintenance_end) &&
+    new Date(route.arrival_time) > new Date(route.maintenance_start);
+  const busBlocked =
+    route?.bus_maintenance_start &&
+    route.bus_maintenance_end &&
+    new Date(route.departure_time) < new Date(route.bus_maintenance_end) &&
+    new Date(route.arrival_time) > new Date(route.bus_maintenance_start);
+  return Boolean(routeBlocked || busBlocked);
+}
+
 function getBookableSeatLabels(layout) {
   return (layout?.cells || [])
     .filter((cell) => cell.type === 'seat' && normalizeText(cell.label))
@@ -1112,6 +1892,193 @@ async function fetchRouteSeatInventory(routeId) {
   const free = labels.filter((label) => !taken.has(label));
 
   return { route, labels, taken, free, capacity: free.length };
+}
+
+async function fetchBusSeatLabels(busId) {
+  const result = await pool.query(
+    `SELECT
+       b.id,
+       b.total_seats,
+       b.maintenance_start,
+       b.maintenance_end,
+       b.seat_map_override,
+       t.layout_json AS template_layout
+     FROM buses b
+     LEFT JOIN bus_seat_map_templates t ON t.id = b.seat_map_template_id
+     WHERE b.id = $1`,
+    [busId]
+  );
+  const bus = result.rows[0];
+  if (!bus) {
+    throw Object.assign(new Error('Replacement bus not found.'), { status: 400 });
+  }
+  return getBookableSeatLabels(resolveSeatMap(bus));
+}
+
+async function fetchRouteBookedSeats(routeId) {
+  const result = await pool.query(
+    `SELECT seat_number
+     FROM bus_bookings
+     WHERE route_id = $1
+       AND status <> 'cancelled'
+     ORDER BY seat_number`,
+    [routeId]
+  );
+  return result.rows.map((row) => normalizeText(row.seat_number).toUpperCase()).filter(Boolean);
+}
+
+async function validateReplacementSchedule(sourceRoute, backup) {
+  const backupBusId = Number(backup.bus_id);
+  const departure = normalizeText(backup.departure_time || sourceRoute.departure_time);
+  const arrival = normalizeText(backup.arrival_time || sourceRoute.arrival_time);
+  const departureDate = new Date(departure);
+  const arrivalDate = new Date(arrival);
+  const sourceDepartureDate = new Date(sourceRoute.departure_time);
+
+  if (!backupBusId || !departure || !arrival) {
+    throw Object.assign(new Error('Replacement bus, departure time, and arrival time are required.'), { status: 400 });
+  }
+  if (Number.isNaN(departureDate.getTime()) || Number.isNaN(arrivalDate.getTime())) {
+    throw Object.assign(new Error('Replacement departure and arrival must be valid date/time values.'), { status: 400 });
+  }
+  if (backupBusId === Number(sourceRoute.bus_id)) {
+    throw Object.assign(new Error('Replacement bus must be different from the maintenance bus.'), { status: 400 });
+  }
+  if (formatDateKey(departure) !== formatDateKey(sourceRoute.departure_time)) {
+    throw Object.assign(new Error('Replacement schedule must depart on the same date as the affected route.'), { status: 400 });
+  }
+  if (departureDate < sourceDepartureDate) {
+    throw Object.assign(new Error('Replacement schedule must depart at the same time or later than the affected route.'), { status: 400 });
+  }
+  if (arrivalDate <= departureDate) {
+    throw Object.assign(new Error('Replacement schedule arrival must be after departure.'), { status: 400 });
+  }
+
+  const backupBus = await pool.query(
+    `SELECT maintenance_start, maintenance_end
+     FROM buses
+     WHERE id = $1`,
+    [backupBusId]
+  );
+  if (!backupBus.rowCount) {
+    throw Object.assign(new Error('Replacement bus not found.'), { status: 400 });
+  }
+  const backupBusMaintenance = backupBus.rows[0];
+  if (
+    backupBusMaintenance.maintenance_start &&
+    backupBusMaintenance.maintenance_end &&
+    departureDate < new Date(backupBusMaintenance.maintenance_end) &&
+    arrivalDate > new Date(backupBusMaintenance.maintenance_start)
+  ) {
+    throw Object.assign(new Error('Replacement bus is under maintenance during that schedule.'), { status: 409 });
+  }
+
+  const overlaps = await hasOverlappingSchedule(backupBusId, departure, arrival, sourceRoute.id);
+  if (overlaps) {
+    throw Object.assign(new Error('Replacement bus already has a trip during that time.'), { status: 409 });
+  }
+
+  return { backupBusId, departure, arrival };
+}
+
+async function buildReplacementSeatPlan(sourceRoute, backup, routeBookings, providedAssignments = null) {
+  const { backupBusId, departure, arrival } = await validateReplacementSchedule(sourceRoute, backup);
+  const labels = await fetchBusSeatLabels(backupBusId);
+  const seatLabels = new Set(labels);
+  const bookings = routeBookings.map((booking) => ({
+    ...booking,
+    old_seat_number: normalizeText(booking.seat_number).toUpperCase()
+  }));
+
+  if (bookings.length > labels.length) {
+    throw Object.assign(new Error('Replacement bus does not have enough bookable seats for every affected booking.'), { status: 409 });
+  }
+
+  const requested = new Map(
+    (Array.isArray(providedAssignments) ? providedAssignments : [])
+      .map((assignment) => [Number(assignment.booking_id), normalizeText(assignment.target_seat_number).toUpperCase()])
+      .filter(([, seat]) => seat)
+  );
+  const used = new Set();
+  const assignments = [];
+
+  if (requested.size) {
+    for (const booking of bookings) {
+      const targetSeat = requested.get(Number(booking.booking_id));
+      if (!targetSeat) {
+        throw Object.assign(new Error('Replacement seat plan is missing one or more affected bookings.'), { status: 400 });
+      }
+      if (!seatLabels.has(targetSeat)) {
+        throw Object.assign(new Error(`Replacement bus does not have seat ${targetSeat}.`), { status: 400 });
+      }
+      if (used.has(targetSeat)) {
+        throw Object.assign(new Error(`Replacement seat ${targetSeat} is assigned more than once.`), { status: 400 });
+      }
+      used.add(targetSeat);
+      assignments.push({
+        booking_id: booking.booking_id,
+        user_name: booking.user_name,
+        user_email: booking.user_email,
+        old_route_id: booking.route_id,
+        target_route_id: booking.route_id,
+        old_seat_number: booking.old_seat_number,
+        target_seat_number: targetSeat,
+        reassigned_seat: booking.old_seat_number !== targetSeat,
+        preserved_seat: booking.old_seat_number === targetSeat
+      });
+    }
+  } else {
+    const needsSeat = [];
+    for (const booking of bookings) {
+      if (seatLabels.has(booking.old_seat_number) && !used.has(booking.old_seat_number)) {
+        used.add(booking.old_seat_number);
+        assignments.push({
+          booking_id: booking.booking_id,
+          user_name: booking.user_name,
+          user_email: booking.user_email,
+          old_route_id: booking.route_id,
+          target_route_id: booking.route_id,
+          old_seat_number: booking.old_seat_number,
+          target_seat_number: booking.old_seat_number,
+          reassigned_seat: false,
+          preserved_seat: true
+        });
+      } else {
+        needsSeat.push(booking);
+      }
+    }
+
+    const freeSeats = labels.filter((label) => !used.has(label));
+    for (const booking of needsSeat) {
+      if (!freeSeats.length) {
+        throw Object.assign(new Error('Replacement bus does not have enough available seats for every affected booking.'), { status: 409 });
+      }
+      const index = Number(booking.booking_id || 0) % freeSeats.length;
+      const targetSeat = freeSeats.splice(index, 1)[0];
+      used.add(targetSeat);
+      assignments.push({
+        booking_id: booking.booking_id,
+        user_name: booking.user_name,
+        user_email: booking.user_email,
+        old_route_id: booking.route_id,
+        target_route_id: booking.route_id,
+        old_seat_number: booking.old_seat_number,
+        target_seat_number: targetSeat,
+        reassigned_seat: true,
+        preserved_seat: false
+      });
+    }
+  }
+
+  assignments.sort((a, b) => Number(a.booking_id) - Number(b.booking_id));
+  return {
+    source_route_id: sourceRoute.id,
+    route_id: sourceRoute.id,
+    bus_id: backupBusId,
+    departure_time: departure,
+    arrival_time: arrival,
+    assignments
+  };
 }
 
 async function fetchMaintenanceAffectedBookings(busId, maintenanceStart, maintenanceEnd) {
@@ -1145,27 +2112,33 @@ async function fetchMaintenanceAffectedBookings(busId, maintenanceStart, mainten
   return result.rows;
 }
 
-function groupAffectedBookings(bookings) {
-  const map = new Map();
-  bookings.forEach((booking) => {
-    if (!map.has(Number(booking.route_id))) {
-      map.set(Number(booking.route_id), {
-        id: booking.route_id,
-        bus_id: booking.bus_id,
-        origin: booking.origin,
-        destination: booking.destination,
-        departure_time: booking.departure_time,
-        arrival_time: booking.arrival_time,
-        price: booking.price,
-        booking_count: 0,
-        booked_seats: []
-      });
-    }
-    const route = map.get(Number(booking.route_id));
-    route.booking_count += 1;
-    route.booked_seats.push(booking.seat_number);
-  });
-  return Array.from(map.values());
+async function fetchMaintenanceAffectedRoutes(busId, maintenanceStart, maintenanceEnd) {
+  const cambodiaNow = getCambodiaDateTimeKey();
+  const result = await pool.query(
+    `SELECT
+       r.id,
+       r.bus_id,
+       r.origin,
+       r.destination,
+       r.departure_time,
+       r.arrival_time,
+       r.price,
+       COUNT(bb.id)::INT AS booking_count,
+       COALESCE(
+         ARRAY_AGG(bb.seat_number ORDER BY bb.seat_number) FILTER (WHERE bb.id IS NOT NULL),
+         ARRAY[]::VARCHAR[]
+       ) AS booked_seats
+     FROM bus_routes r
+     LEFT JOIN bus_bookings bb ON bb.route_id = r.id AND bb.status <> 'cancelled'
+     WHERE r.bus_id = $1
+       AND r.departure_time < $2
+       AND r.arrival_time > $3
+       AND r.departure_time > $4
+     GROUP BY r.id
+     ORDER BY r.departure_time, r.id`,
+    [busId, maintenanceEnd, maintenanceStart, cambodiaNow]
+  );
+  return result.rows;
 }
 
 async function findCompatibleRoutesWithCapacity(route) {
@@ -1240,7 +2213,36 @@ function assignBookingsToCapacities(bookings, routeCapacities) {
   return { assignments, unassigned };
 }
 
-async function buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd) {
+function expandMaintenanceReplacementRoutes(backupRoutes, affectedRoutes) {
+  const requested = Array.isArray(backupRoutes)
+    ? backupRoutes.filter((backup) => Number(backup.bus_id))
+    : [];
+  if (!requested.length) return [];
+
+  const expanded = [...requested];
+  const defaultReplacement = requested[0];
+  const coveredRouteIds = new Set(
+    requested
+      .map((backup) => Number(backup.source_route_id || backup.route_id))
+      .filter(Boolean)
+  );
+
+  for (const affectedRoute of affectedRoutes || []) {
+    if (coveredRouteIds.has(Number(affectedRoute.id))) continue;
+    expanded.push({
+      source_route_id: Number(affectedRoute.id),
+      temp_id: `auto-replacement-${affectedRoute.id}`,
+      bus_id: Number(defaultReplacement.bus_id),
+      departure_time: affectedRoute.departure_time,
+      arrival_time: affectedRoute.arrival_time
+    });
+    coveredRouteIds.add(Number(affectedRoute.id));
+  }
+
+  return expanded;
+}
+
+async function buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd, options = {}) {
   const route = await fetchAdminRouteById(routeId);
   if (!route) {
     const error = new Error('Schedule not found.');
@@ -1249,15 +2251,23 @@ async function buildMaintenanceImpactPreview(routeId, maintenanceStart, maintena
   }
 
   const affectedBookings = await fetchMaintenanceAffectedBookings(route.bus_id, maintenanceStart, maintenanceEnd);
-  const affectedRoutes = groupAffectedBookings(affectedBookings);
+  const affectedRoutes = await fetchMaintenanceAffectedRoutes(route.bus_id, maintenanceStart, maintenanceEnd);
   const routeOptions = {};
   const backupCandidates = {};
+  const replacementSeatPlans = {};
+  const backupRoutes = expandMaintenanceReplacementRoutes(options.backup_routes, affectedRoutes);
+  const selectedAssignments = Array.isArray(options.assignments) ? options.assignments : [];
+  const selectedBookingIds = new Set(selectedAssignments.map((assignment) => Number(assignment.booking_id)).filter(Boolean));
+  const affectedRouteIds = new Set(affectedRoutes.map((affectedRoute) => Number(affectedRoute.id)));
   const allAssignments = [];
   const allUnassigned = [];
 
   for (const affectedRoute of affectedRoutes) {
     const routeBookings = affectedBookings.filter((booking) => Number(booking.route_id) === Number(affectedRoute.id));
-    const options = await findCompatibleRoutesWithCapacity(affectedRoute);
+    const unresolvedRouteBookings = routeBookings.filter((booking) => !selectedBookingIds.has(Number(booking.booking_id)));
+    const selectedBackup = backupRoutes.find((backup) => Number(backup.source_route_id || backup.route_id) === Number(affectedRoute.id));
+    const options = (await findCompatibleRoutesWithCapacity(affectedRoute))
+      .filter((option) => !affectedRouteIds.has(Number(option.id)));
     const split = assignBookingsToCapacities(routeBookings, options);
     routeOptions[affectedRoute.id] = options;
     backupCandidates[affectedRoute.id] = await fetchBackupBusCandidates(
@@ -1265,6 +2275,14 @@ async function buildMaintenanceImpactPreview(routeId, maintenanceStart, maintena
       affectedRoute.departure_time,
       affectedRoute.arrival_time
     );
+    if (selectedBackup?.bus_id) {
+      replacementSeatPlans[affectedRoute.id] = await buildReplacementSeatPlan(
+        affectedRoute,
+        selectedBackup,
+        unresolvedRouteBookings,
+        selectedBackup.replacement_seat_plan || selectedBackup.seat_plan
+      );
+    }
     allAssignments.push(...split.assignments);
     allUnassigned.push(...split.unassigned);
   }
@@ -1277,6 +2295,7 @@ async function buildMaintenanceImpactPreview(routeId, maintenanceStart, maintena
     affected_bookings: affectedBookings,
     compatible_routes: routeOptions,
     backup_bus_candidates: backupCandidates,
+    replacement_seat_plans: replacementSeatPlans,
     auto_plan: {
       assignments: allAssignments,
       unassigned_bookings: allUnassigned
@@ -1323,46 +2342,416 @@ async function createBackupRouteForRecovery(sourceRoute, backup) {
   return created.rows[0].id;
 }
 
-async function applyMaintenanceImpactPlan(routeId, maintenanceStart, maintenanceEnd, plan = {}) {
-  const preview = await buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd);
-  if (!preview.affected_bookings.length) return { preview, assignments: [] };
+async function replaceRouteBusForMaintenanceRecovery(sourceRoute, backup, routeBookings) {
+  const seatPlan = await buildReplacementSeatPlan(
+    sourceRoute,
+    backup,
+    routeBookings,
+    backup.replacement_seat_plan || backup.seat_plan
+  );
 
-  const sourceRouteById = new Map(preview.affected_routes.map((route) => [Number(route.id), route]));
-  const createdRouteIds = new Map();
-  const backupRoutes = Array.isArray(plan.backup_routes) ? plan.backup_routes : [];
+  await pool.query(
+    `UPDATE bus_routes
+     SET bus_id = $1,
+         departure_time = $2,
+         arrival_time = $3,
+         service_date = $4,
+         is_generated = FALSE,
+         availability_status = 'available',
+         maintenance_start = NULL,
+         maintenance_end = NULL
+     WHERE id = $5`,
+    [seatPlan.bus_id, seatPlan.departure_time, seatPlan.arrival_time, formatDateKey(seatPlan.departure_time), sourceRoute.id]
+  );
 
-  for (const backup of backupRoutes) {
-    const sourceRoute = sourceRouteById.get(Number(backup.source_route_id || backup.route_id));
-    if (!sourceRoute) {
-      throw Object.assign(new Error('Backup route source is invalid.'), { status: 400 });
-    }
-    const createdId = await createBackupRouteForRecovery(sourceRoute, backup);
-    if (backup.temp_id) createdRouteIds.set(String(backup.temp_id), createdId);
+  for (const assignment of seatPlan.assignments) {
+    await pool.query(
+      `UPDATE bus_bookings
+       SET seat_number = $1
+       WHERE id = $2
+         AND route_id = $3
+         AND status <> 'cancelled'`,
+      [assignment.target_seat_number, assignment.booking_id, sourceRoute.id]
+    );
+    await pool.query(
+      `INSERT INTO booking_recovery_events (booking_id, old_route_id, new_route_id, old_seat_number, new_seat_number, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        assignment.booking_id,
+        sourceRoute.id,
+        sourceRoute.id,
+        assignment.old_seat_number,
+        assignment.target_seat_number,
+        assignment.reassigned_seat ? 'maintenance replacement bus and seat swap' : 'maintenance replacement bus'
+      ]
+    );
   }
 
-  let assignments = Array.isArray(plan.assignments) ? plan.assignments : preview.auto_plan.assignments;
-  const assignedIds = new Set(assignments.map((assignment) => Number(assignment.booking_id)));
-  const missingBookings = preview.affected_bookings.filter((booking) => !assignedIds.has(Number(booking.booking_id)));
+  await createBusTicketNotifications(
+    seatPlan.assignments.map((assignment) => assignment.booking_id),
+    {
+      type: 'bus_maintenance_moved',
+      title: 'Your bus was changed',
+      message: 'Your trip was moved to another bus because of maintenance. Review your updated ticket. You can cancel until 30 minutes before departure.',
+      action_type: 'cancel_moved_trip',
+      metadata: { reason: 'maintenance replacement bus', route_id: sourceRoute.id }
+    }
+  );
 
-  if (missingBookings.length && createdRouteIds.size) {
-    const backupCapacities = [];
-    for (const [tempId, routeIdForBackup] of createdRouteIds.entries()) {
-      const inventory = await fetchRouteSeatInventory(routeIdForBackup);
-      if (!inventory) continue;
-      backupCapacities.push({
-        id: routeIdForBackup,
-        temp_id: tempId,
-        free_seats: inventory.free
+  return { routeId: sourceRoute.id, seatPlan };
+}
+
+async function buildOriginalBusSeatRestorePlan(routeId, originalBusId) {
+  const labels = await fetchBusSeatLabels(originalBusId);
+  const labelSet = new Set(labels);
+  const bookings = await pool.query(
+    `SELECT
+       bb.id AS booking_id,
+       bb.seat_number AS current_seat_number,
+       latest.old_seat_number AS original_seat_number
+     FROM bus_bookings bb
+     LEFT JOIN LATERAL (
+       SELECT bre.old_seat_number
+       FROM booking_recovery_events bre
+       WHERE bre.booking_id = bb.id
+         AND bre.old_route_id = $1
+         AND bre.new_route_id = $1
+         AND bre.reason IN ('maintenance replacement bus', 'maintenance replacement bus and seat swap')
+       ORDER BY bre.created_at DESC, bre.id DESC
+       LIMIT 1
+     ) latest ON TRUE
+     WHERE bb.route_id = $1
+       AND bb.status <> 'cancelled'
+     ORDER BY bb.id`,
+    [routeId]
+  );
+
+  if (bookings.rows.length > labels.length) {
+    throw Object.assign(new Error('Original bus does not have enough bookable seats to restore every passenger.'), { status: 409 });
+  }
+
+  const assignments = [];
+  const needsSeat = [];
+  const used = new Set();
+
+  for (const booking of bookings.rows) {
+    const currentSeat = normalizeText(booking.current_seat_number).toUpperCase();
+    const originalSeat = normalizeText(booking.original_seat_number).toUpperCase();
+    const preferredSeat = originalSeat || currentSeat;
+    if (preferredSeat && labelSet.has(preferredSeat) && !used.has(preferredSeat)) {
+      used.add(preferredSeat);
+      assignments.push({
+        booking_id: booking.booking_id,
+        old_seat_number: currentSeat,
+        new_seat_number: preferredSeat
+      });
+    } else {
+      needsSeat.push({ booking_id: booking.booking_id, old_seat_number: currentSeat });
+    }
+  }
+
+  const freeSeats = labels.filter((label) => !used.has(label));
+  for (const booking of needsSeat) {
+    if (!freeSeats.length) {
+      throw Object.assign(new Error('Original bus does not have enough available seats to restore every passenger.'), { status: 409 });
+    }
+    const index = Number(booking.booking_id || 0) % freeSeats.length;
+    const targetSeat = freeSeats.splice(index, 1)[0];
+    used.add(targetSeat);
+    assignments.push({
+      booking_id: booking.booking_id,
+      old_seat_number: booking.old_seat_number,
+      new_seat_number: targetSeat
+    });
+  }
+
+  assignments.sort((a, b) => Number(a.booking_id) - Number(b.booking_id));
+  return assignments;
+}
+
+async function restoreTemporaryBusReplacements(originalBusId) {
+  if (!originalBusId) return [];
+
+  const cambodiaNow = getCambodiaDateTimeKey();
+  const temporaryRoutes = await pool.query(
+    `SELECT
+       r.id,
+       r.bus_id AS temporary_bus_id,
+       r.daily_template_id,
+       r.departure_time,
+       r.arrival_time,
+       r.service_date,
+       t.bus_id AS original_bus_id
+     FROM bus_routes r
+     JOIN daily_route_templates t ON t.id = r.daily_template_id
+     WHERE t.bus_id = $1
+       AND r.bus_id <> t.bus_id
+       AND COALESCE(r.is_generated, FALSE) = FALSE
+       AND r.departure_time > $2
+     ORDER BY r.departure_time, r.id`,
+    [originalBusId, cambodiaNow]
+  );
+
+  const restoredRouteIds = [];
+  for (const route of temporaryRoutes.rows) {
+    const overlaps = await hasOverlappingSchedule(originalBusId, route.departure_time, route.arrival_time, route.id);
+    if (overlaps) {
+      throw Object.assign(new Error(`Original bus already has another trip during replacement route #${route.id}.`), { status: 409 });
+    }
+
+    const assignments = await buildOriginalBusSeatRestorePlan(route.id, originalBusId);
+    for (const assignment of assignments) {
+      await pool.query(
+        `UPDATE bus_bookings
+         SET seat_number = $1
+         WHERE id = $2
+           AND route_id = $3
+           AND status <> 'cancelled'`,
+        [assignment.new_seat_number, assignment.booking_id, route.id]
+      );
+      await pool.query(
+        `INSERT INTO booking_recovery_events (booking_id, old_route_id, new_route_id, old_seat_number, new_seat_number, reason)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          assignment.booking_id,
+          route.id,
+          route.id,
+          assignment.old_seat_number,
+          assignment.new_seat_number,
+          'maintenance original bus restored'
+        ]
+      );
+    }
+
+    await pool.query(
+      `UPDATE bus_routes
+       SET bus_id = $1,
+           is_generated = TRUE,
+           availability_status = 'available',
+           maintenance_start = NULL,
+           maintenance_end = NULL
+       WHERE id = $2`,
+      [originalBusId, route.id]
+    );
+    restoredRouteIds.push(Number(route.id));
+  }
+
+  return restoredRouteIds;
+}
+
+async function restoreSplitBookingsForAvailableBus(originalBusId) {
+  if (!originalBusId) return [];
+
+  const cambodiaNow = getCambodiaDateTimeKey();
+  const result = await pool.query(
+    `SELECT DISTINCT ON (bb.id)
+       bb.id AS booking_id,
+       bb.route_id AS current_route_id,
+       bb.seat_number AS current_seat_number,
+       bre.old_route_id,
+       bre.new_route_id,
+       bre.old_seat_number,
+       bre.new_seat_number,
+       old_route.bus_id AS original_bus_id,
+       old_route.departure_time AS original_departure_time,
+       new_route.departure_time AS current_departure_time
+     FROM booking_recovery_events bre
+     JOIN bus_bookings bb ON bb.id = bre.booking_id
+     JOIN bus_routes old_route ON old_route.id = bre.old_route_id
+     JOIN bus_routes new_route ON new_route.id = bre.new_route_id
+     WHERE bre.reason = 'maintenance'
+       AND old_route.bus_id = $1
+       AND bb.route_id = bre.new_route_id
+       AND bb.status <> 'cancelled'
+       AND old_route.departure_time > $2
+       AND new_route.departure_time > $2
+       AND NOT EXISTS (
+         SELECT 1
+         FROM booking_recovery_events restored
+         WHERE restored.booking_id = bb.id
+           AND restored.reason = 'maintenance split restored'
+           AND restored.new_route_id = bre.old_route_id
+           AND restored.old_route_id = bre.new_route_id
+           AND restored.created_at > bre.created_at
+       )
+     ORDER BY bb.id, bre.created_at DESC, bre.id DESC`,
+    [originalBusId, cambodiaNow]
+  );
+
+  const byRoute = new Map();
+  result.rows.forEach((row) => {
+    const routeId = Number(row.old_route_id);
+    if (!byRoute.has(routeId)) byRoute.set(routeId, []);
+    byRoute.get(routeId).push(row);
+  });
+
+  const restoredBookingIds = [];
+  for (const [routeId, rows] of byRoute.entries()) {
+    const inventory = await fetchRouteSeatInventory(routeId);
+    if (!inventory) {
+      throw Object.assign(new Error(`Original route #${routeId} was not found for split restore.`), { status: 409 });
+    }
+
+    const taken = new Set(
+      Array.from(inventory.taken)
+        .map((seat) => normalizeText(seat).toUpperCase())
+        .filter(Boolean)
+    );
+    const labels = inventory.labels.map((seat) => normalizeText(seat).toUpperCase()).filter(Boolean);
+    const assignments = [];
+
+    for (const row of rows) {
+      const currentSeat = normalizeText(row.current_seat_number).toUpperCase();
+      const oldSeat = normalizeText(row.old_seat_number).toUpperCase();
+      let targetSeat = oldSeat && labels.includes(oldSeat) && !taken.has(oldSeat)
+        ? oldSeat
+        : '';
+
+      if (!targetSeat) {
+        targetSeat = labels.find((seat) => !taken.has(seat));
+      }
+      if (!targetSeat) {
+        const details = rows.map((item) => `booking #${item.booking_id}`).join(', ');
+        throw Object.assign(new Error(`Original route #${routeId} does not have enough seats to restore ${details}.`), { status: 409 });
+      }
+
+      taken.add(targetSeat);
+      assignments.push({
+        booking_id: row.booking_id,
+        current_route_id: row.current_route_id,
+        current_seat_number: currentSeat,
+        target_seat_number: targetSeat
       });
     }
-    assignments = assignments.concat(assignBookingsToCapacities(missingBookings, backupCapacities).assignments);
+
+    for (const assignment of assignments) {
+      await pool.query(
+        `UPDATE bus_bookings
+         SET route_id = $1,
+             seat_number = $2
+         WHERE id = $3
+           AND status <> 'cancelled'`,
+        [routeId, assignment.target_seat_number, assignment.booking_id]
+      );
+      await pool.query(
+        `INSERT INTO booking_recovery_events (booking_id, old_route_id, new_route_id, old_seat_number, new_seat_number, reason)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          assignment.booking_id,
+          assignment.current_route_id,
+          routeId,
+          assignment.current_seat_number,
+          assignment.target_seat_number,
+          'maintenance split restored'
+        ]
+      );
+      restoredBookingIds.push(Number(assignment.booking_id));
+    }
   }
 
-  const finalAssignedIds = new Set(assignments.map((assignment) => Number(assignment.booking_id)));
-  const stillMissing = preview.affected_bookings.filter((booking) => !finalAssignedIds.has(Number(booking.booking_id)));
-  if (stillMissing.length) {
-    throw Object.assign(new Error('Every affected booking needs a target route and seat before saving maintenance.'), { status: 400 });
+  return restoredBookingIds;
+}
+
+async function clearFutureRouteMaintenanceForBus(busId) {
+  if (!busId) return;
+  const cambodiaNow = getCambodiaDateTimeKey();
+  await pool.query(
+    `UPDATE bus_routes
+     SET availability_status = 'available',
+         maintenance_start = NULL,
+         maintenance_end = NULL
+     WHERE bus_id = $1
+       AND availability_status = 'maintenance'
+       AND departure_time > $2`,
+    [busId, cambodiaNow]
+  );
+}
+
+async function restoreRouteToDailyTemplate(routeId) {
+  const route = await fetchAdminRouteById(routeId);
+  if (!route) {
+    throw Object.assign(new Error('Schedule not found.'), { status: 404 });
   }
+  if (!route.daily_template_id) {
+    throw Object.assign(new Error('Only schedules linked to a daily template can be reverted.'), { status: 400 });
+  }
+
+  const template = await fetchDailyRouteTemplateById(route.daily_template_id);
+  if (!template) {
+    throw Object.assign(new Error('Original daily template not found.'), { status: 400 });
+  }
+
+  const serviceDate = formatDateKey(route.service_date || route.departure_time);
+  const times = buildTemplateDateTimes(template, serviceDate);
+  const overlaps = await hasOverlappingSchedule(template.bus_id, times.departure_time, times.arrival_time, routeId);
+  if (overlaps) {
+    throw Object.assign(new Error('Original bus already has another trip during this daily schedule time.'), { status: 409 });
+  }
+
+  const assignments = await buildOriginalBusSeatRestorePlan(routeId, template.bus_id);
+  for (const assignment of assignments) {
+    await pool.query(
+      `UPDATE bus_bookings
+       SET seat_number = $1
+       WHERE id = $2
+         AND route_id = $3
+         AND status <> 'cancelled'`,
+      [assignment.new_seat_number, assignment.booking_id, routeId]
+    );
+    await pool.query(
+      `INSERT INTO booking_recovery_events (booking_id, old_route_id, new_route_id, old_seat_number, new_seat_number, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        assignment.booking_id,
+        routeId,
+        routeId,
+        assignment.old_seat_number,
+        assignment.new_seat_number,
+        'daily schedule reverted'
+      ]
+    );
+  }
+
+  await pool.query(
+    `UPDATE bus_routes
+     SET bus_id = $1,
+         origin = $2,
+         destination = $3,
+         departure_time = $4,
+         arrival_time = $5,
+         price = $6,
+         service_date = $7,
+         is_generated = TRUE,
+         availability_status = 'available',
+         maintenance_start = NULL,
+         maintenance_end = NULL
+     WHERE id = $8`,
+    [
+      template.bus_id,
+      template.origin,
+      template.destination,
+      times.departure_time,
+      times.arrival_time,
+      template.price,
+      serviceDate,
+      routeId
+    ]
+  );
+
+  return fetchAdminRouteById(routeId);
+}
+
+async function applyMaintenanceImpactPlan(routeId, maintenanceStart, maintenanceEnd, plan = {}) {
+  const preview = await buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd);
+  if (!preview.affected_routes.length) return { preview, assignments: [], replacedRouteIds: [], replacementSeatPlans: {} };
+
+  const sourceRouteById = new Map(preview.affected_routes.map((route) => [Number(route.id), route]));
+  const replacedRouteIds = new Set();
+  const replacedBookingIds = new Set();
+  const replacementSeatPlans = {};
+
+  const assignments = Array.isArray(plan.assignments) ? plan.assignments : [];
+  const assignedIds = new Set();
 
   for (const assignment of assignments) {
     const booking = preview.affected_bookings.find((item) => Number(item.booking_id) === Number(assignment.booking_id));
@@ -1370,7 +2759,7 @@ async function applyMaintenanceImpactPlan(routeId, maintenanceStart, maintenance
       throw Object.assign(new Error('Recovery assignment references an invalid booking.'), { status: 400 });
     }
 
-    const targetRouteId = createdRouteIds.get(String(assignment.target_temp_id)) || Number(assignment.target_route_id);
+    const targetRouteId = Number(assignment.target_route_id);
     const targetSeat = normalizeText(assignment.target_seat_number).toUpperCase();
     if (!targetRouteId || !targetSeat) {
       throw Object.assign(new Error('Every assignment needs a target route and seat.'), { status: 400 });
@@ -1406,9 +2795,90 @@ async function applyMaintenanceImpactPlan(routeId, maintenanceStart, maintenance
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [booking.booking_id, booking.route_id, targetRouteId, booking.seat_number, targetSeat, 'maintenance']
     );
+    await createBusTicketNotifications(booking.booking_id, {
+      type: 'bus_maintenance_moved',
+      title: 'Your trip was moved',
+      message: 'Your trip was moved to another schedule because of maintenance. Review your updated ticket. You can cancel until 30 minutes before departure.',
+      action_type: 'cancel_moved_trip',
+      metadata: {
+        reason: 'maintenance',
+        old_route_id: booking.route_id,
+        new_route_id: targetRouteId,
+        old_seat_number: booking.seat_number,
+        new_seat_number: targetSeat
+      }
+    });
+    assignedIds.add(Number(booking.booking_id));
   }
 
-  return { preview, assignments };
+  const missingBookings = preview.affected_bookings.filter((booking) => !assignedIds.has(Number(booking.booking_id)));
+  const backupRoutes = expandMaintenanceReplacementRoutes(plan.backup_routes, preview.affected_routes)
+    .filter((backup) => missingBookings.some((booking) => Number(booking.route_id) === Number(backup.source_route_id || backup.route_id)));
+
+  for (const backup of backupRoutes) {
+    const sourceRoute = sourceRouteById.get(Number(backup.source_route_id || backup.route_id));
+    if (!sourceRoute) {
+      throw Object.assign(new Error('Backup route source is invalid.'), { status: 400 });
+    }
+    const routeBookings = missingBookings.filter((booking) => Number(booking.route_id) === Number(sourceRoute.id));
+    if (!routeBookings.length) continue;
+    const replacement = await replaceRouteBusForMaintenanceRecovery(sourceRoute, backup, routeBookings);
+    replacedRouteIds.add(Number(replacement.routeId));
+    replacementSeatPlans[sourceRoute.id] = replacement.seatPlan;
+    replacement.seatPlan.assignments.forEach((assignment) => replacedBookingIds.add(Number(assignment.booking_id)));
+  }
+
+  const stillMissing = preview.affected_bookings.filter((booking) => (
+    !assignedIds.has(Number(booking.booking_id)) &&
+    !replacedBookingIds.has(Number(booking.booking_id))
+  ));
+  if (stillMissing.length) {
+    const details = stillMissing
+      .map((booking) => `booking #${booking.booking_id} on schedule #${booking.route_id}`)
+      .join(', ');
+    throw Object.assign(new Error(`Every affected booking needs a target route and seat before saving maintenance. Missing: ${details}.`), { status: 400 });
+  }
+
+  return { preview, assignments, replacedRouteIds: Array.from(replacedRouteIds), replacementSeatPlans };
+}
+
+async function syncFutureRoutesForBusMaintenance(busId, maintenanceStart, maintenanceEnd, excludeRouteIds = []) {
+  const excluded = Array.from(new Set(excludeRouteIds.map(Number).filter(Boolean)));
+  const cambodiaNow = getCambodiaDateTimeKey();
+  const values = [busId, maintenanceEnd, maintenanceStart, cambodiaNow];
+  let exclusionClause = '';
+
+  if (excluded.length) {
+    values.push(excluded);
+    exclusionClause = `AND NOT (id = ANY($5::int[]))`;
+  }
+
+  await pool.query(
+    `UPDATE bus_routes
+     SET availability_status = 'maintenance',
+         maintenance_start = $3,
+         maintenance_end = $2
+     WHERE bus_id = $1
+       AND departure_time < $2
+       AND arrival_time > $3
+       AND departure_time > $4
+       ${exclusionClause}`,
+    values
+  );
+}
+
+async function clearRouteMaintenanceWindow(busId, maintenanceStart, maintenanceEnd) {
+  await pool.query(
+    `UPDATE bus_routes
+     SET availability_status = 'available',
+         maintenance_start = NULL,
+         maintenance_end = NULL
+     WHERE bus_id = $1
+       AND availability_status = 'maintenance'
+       AND maintenance_start = $2
+       AND maintenance_end = $3`,
+    [busId, maintenanceStart, maintenanceEnd]
+  );
 }
 
 async function syncBusMaintenanceFromRoute(busId, status, maintenanceStart, maintenanceEnd, previousRoute = null) {
@@ -1421,6 +2891,7 @@ async function syncBusMaintenanceFromRoute(busId, status, maintenanceStart, main
        WHERE id = $3`,
       [maintenanceStart, maintenanceEnd, busId]
     );
+    await syncFutureRoutesForBusMaintenance(busId, maintenanceStart, maintenanceEnd);
     return;
   }
 
@@ -1436,10 +2907,12 @@ async function syncBusMaintenanceFromRoute(busId, status, maintenanceStart, main
          AND maintenance_end = $3`,
       [previousRoute.bus_id, previousRoute.maintenance_start, previousRoute.maintenance_end]
     );
+    await clearRouteMaintenanceWindow(previousRoute.bus_id, previousRoute.maintenance_start, previousRoute.maintenance_end);
   }
 }
 
 async function findMaintenanceRecoveryOptions(route) {
+  const cambodiaNow = getCambodiaDateTimeKey();
   const result = await pool.query(
     `SELECT
        r.id,
@@ -1459,8 +2932,8 @@ async function findMaintenanceRecoveryOptions(route) {
      WHERE r.id <> $1
        AND r.origin = $2
        AND r.destination = $3
-       AND r.departure_time::date = $4::date
        AND r.departure_time >= $4
+       AND r.departure_time > $5
        AND NOT (
          COALESCE(r.availability_status, 'available') = 'maintenance'
          AND r.maintenance_start IS NOT NULL
@@ -1477,7 +2950,7 @@ async function findMaintenanceRecoveryOptions(route) {
      GROUP BY r.id, b.id
      ORDER BY r.departure_time
      LIMIT 12`,
-    [route.id, route.origin, route.destination, route.departure_time]
+    [route.id, route.origin, route.destination, route.departure_time, cambodiaNow]
   );
   return result.rows;
 }
@@ -1712,7 +3185,27 @@ async function fetchAdminVehicles() {
          rc.status,
          COALESCE(rc.photos, ARRAY[]::TEXT[]) AS photos,
          rc.created_at,
-         COUNT(cr.id)::INT AS rental_count
+         COUNT(cr.id)::INT AS rental_count,
+         COALESCE(
+           (
+             SELECT JSON_AGG(rental_window ORDER BY rental_window.pickup_datetime ASC, rental_window.id ASC)
+             FROM (
+               SELECT
+                 active_cr.id,
+                 active_cr.status,
+                 COALESCE(active_cr.pickup_datetime, active_cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+                 COALESCE(active_cr.return_datetime, active_cr.return_date + TIME '09:00:00') AS return_datetime,
+                 CONCAT(u.first_name, ' ', u.last_name) AS customer_name
+               FROM car_rentals active_cr
+               LEFT JOIN users u ON u.id = active_cr.user_id
+               WHERE active_cr.car_id = rc.id
+                 AND active_cr.status IN ('pending', 'confirmed')
+               ORDER BY COALESCE(active_cr.pickup_datetime, active_cr.pickup_date + TIME '09:00:00') ASC, active_cr.id ASC
+               LIMIT 8
+             ) rental_window
+           ),
+           '[]'::JSON
+         ) AS rental_windows
        FROM rental_cars rc
        LEFT JOIN car_rentals cr ON cr.car_id = rc.id
        GROUP BY rc.id
@@ -1785,7 +3278,27 @@ async function fetchAdminRentalCarById(carId) {
        rc.status,
        COALESCE(rc.photos, ARRAY[]::TEXT[]) AS photos,
        rc.created_at,
-       COUNT(cr.id)::INT AS rental_count
+       COUNT(cr.id)::INT AS rental_count,
+       COALESCE(
+         (
+           SELECT JSON_AGG(rental_window ORDER BY rental_window.pickup_datetime ASC, rental_window.id ASC)
+           FROM (
+             SELECT
+               active_cr.id,
+               active_cr.status,
+               COALESCE(active_cr.pickup_datetime, active_cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+               COALESCE(active_cr.return_datetime, active_cr.return_date + TIME '09:00:00') AS return_datetime,
+               CONCAT(u.first_name, ' ', u.last_name) AS customer_name
+             FROM car_rentals active_cr
+             LEFT JOIN users u ON u.id = active_cr.user_id
+             WHERE active_cr.car_id = rc.id
+               AND active_cr.status IN ('pending', 'confirmed')
+             ORDER BY COALESCE(active_cr.pickup_datetime, active_cr.pickup_date + TIME '09:00:00') ASC, active_cr.id ASC
+             LIMIT 8
+           ) rental_window
+         ),
+         '[]'::JSON
+       ) AS rental_windows
      FROM rental_cars rc
      LEFT JOIN car_rentals cr ON cr.car_id = rc.id
      WHERE rc.id = $1
@@ -2101,11 +3614,584 @@ async function createSeatMapTemplate({ companyId, vehicleType, name, layout, sea
   return { id: result.rows[0].id };
 }
 
+app.get('/api/rental-drivers', async (req, res) => {
+  const pickupInput = normalizeText(req.query.pickup_datetime);
+  const returnInput = normalizeText(req.query.return_datetime);
+  const pickupDateTime = pickupInput ? normalizeRentalDateTime(pickupInput) : null;
+  const returnDateTime = returnInput ? normalizeRentalDateTime(returnInput) : null;
+
+  if (pickupDateTime?.error) return res.status(400).json({ error: pickupDateTime.error });
+  if (returnDateTime?.error) return res.status(400).json({ error: returnDateTime.error });
+  if (pickupDateTime && returnDateTime && returnDateTime.date <= pickupDateTime.date) {
+    return res.status(400).json({ error: 'Return date-time must be after pickup date-time.' });
+  }
+
+  try {
+    const params = [];
+    let availabilityFilter = '';
+    if (pickupDateTime && returnDateTime) {
+      params.push(returnDateTime.value, pickupDateTime.value);
+      availabilityFilter = `
+        AND NOT EXISTS (
+          SELECT 1
+          FROM car_rentals cr
+          WHERE cr.hired_driver_id = rd.id
+            AND cr.status IN ('pending', 'confirmed')
+            AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') < ($1)::TIMESTAMP
+            AND COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') > ($2)::TIMESTAMP
+        )
+      `;
+    }
+
+    const result = await pool.query(
+      `SELECT
+         rd.id,
+         rd.name,
+         rd.license_number,
+         rd.phone,
+         rd.rating,
+         rd.review_count,
+         rd.hourly_rate,
+         rd.status,
+         rd.profile_photo,
+         rd.background,
+         rd.experience_years,
+         COALESCE(rd.languages, ARRAY[]::TEXT[]) AS languages,
+         (
+           SELECT rdr.comment
+           FROM rental_driver_reviews rdr
+           WHERE rdr.driver_id = rd.id
+             AND rdr.review_type = 'review'
+         ORDER BY rdr.created_at DESC, rdr.id DESC
+          LIMIT 1
+        ) AS latest_comment,
+        COALESCE(
+          (
+            SELECT JSON_AGG(review_row ORDER BY review_row.created_at DESC, review_row.id DESC)
+            FROM (
+              SELECT
+                rdr.id,
+                rdr.rating,
+                rdr.comment,
+                rdr.created_at,
+                CONCAT(u.first_name, ' ', u.last_name) AS user_name
+              FROM rental_driver_reviews rdr
+              LEFT JOIN users u ON u.id = rdr.user_id
+              WHERE rdr.driver_id = rd.id
+                AND rdr.review_type = 'review'
+              ORDER BY rdr.created_at DESC, rdr.id DESC
+              LIMIT 8
+            ) review_row
+          ),
+          '[]'::JSON
+        ) AS reviews
+       FROM rental_drivers rd
+       WHERE rd.status = 'available'
+       ${availabilityFilter}
+       ORDER BY rd.rating DESC, rd.review_count DESC, rd.hourly_rate DESC, rd.name ASC`,
+      params
+    );
+
+    res.json({ drivers: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/rental-drivers/:id/reviews', async (req, res) => {
+  res.status(410).json({ error: 'Driver reviews must be submitted from a returned rental ticket.' });
+});
+
+app.post('/api/rental-drivers/:id/reports', async (req, res) => {
+  res.status(410).json({ error: 'Driver reports must be submitted from a returned rental ticket.' });
+});
+
+async function refreshDriverRating(driverId) {
+  await pool.query(
+    `UPDATE rental_drivers rd
+     SET rating = stats.rating,
+         review_count = stats.review_count
+     FROM (
+       SELECT driver_id, ROUND(AVG(rating)::NUMERIC, 2) AS rating, COUNT(*)::INT AS review_count
+       FROM rental_driver_reviews
+       WHERE driver_id = $1
+         AND review_type = 'review'
+         AND rating IS NOT NULL
+       GROUP BY driver_id
+     ) stats
+     WHERE rd.id = stats.driver_id`,
+    [driverId]
+  );
+}
+
+async function fetchUserRentalForFeedback(rentalId, userId) {
+  const result = await pool.query(
+    `SELECT
+       cr.id,
+       cr.user_id,
+       cr.hired_driver_id,
+       cr.status,
+       rd.id AS driver_id
+     FROM car_rentals cr
+     LEFT JOIN rental_drivers rd ON rd.id = cr.hired_driver_id
+     WHERE cr.id = $1
+       AND cr.user_id = $2`,
+    [rentalId, userId]
+  );
+  return result.rows[0] || null;
+}
+
+app.get('/api/my/rentals', async (req, res) => {
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const result = await pool.query(
+      `SELECT
+         cr.id,
+         cr.user_id,
+         cr.car_id,
+         cr.pickup_date,
+         cr.return_date,
+         COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+         COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+         COALESCE(cr.rental_hours, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') - COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00'))) / 3600.0))) AS rental_hours,
+         ROUND((rc.daily_rate / 24.0)::NUMERIC, 2) AS hourly_rate,
+         COALESCE(cr.hourly_charge, ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') - COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00'))) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2)) AS hourly_charge,
+         cr.customer_phone,
+         cr.hired_driver_id,
+         cr.rental_base_price,
+         cr.driver_fee,
+         cr.driver_name,
+         cr.driver_license,
+         cr.total_price,
+         cr.payment_method,
+         cr.status,
+         cr.returned_at,
+         cr.booked_at,
+         rc.name AS car_name,
+         rc.type AS car_type,
+         rc.plate_number,
+         rc.daily_rate,
+         rd.name AS hired_driver_name,
+         rd.rating AS hired_driver_rating,
+         rd.review_count AS hired_driver_review_count,
+         rd.hourly_rate AS hired_driver_hourly_rate,
+         rd.phone AS hired_driver_phone,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', rdr.id,
+             'rating', rdr.rating,
+             'comment', rdr.comment,
+             'created_at', rdr.created_at,
+             'admin_reply', rdr.admin_reply,
+             'admin_replied_at', rdr.admin_replied_at
+           )
+           FROM rental_driver_reviews rdr
+           WHERE rdr.car_rental_id = cr.id
+             AND rdr.user_id = cr.user_id
+             AND rdr.review_type = 'review'
+           ORDER BY rdr.created_at DESC, rdr.id DESC
+           LIMIT 1
+         ) AS my_driver_review,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', rdr.id,
+             'comment', rdr.comment,
+             'created_at', rdr.created_at,
+             'admin_reply', rdr.admin_reply,
+             'admin_replied_at', rdr.admin_replied_at
+           )
+           FROM rental_driver_reviews rdr
+           WHERE rdr.car_rental_id = cr.id
+             AND rdr.user_id = cr.user_id
+             AND rdr.review_type = 'report'
+           ORDER BY rdr.created_at DESC, rdr.id DESC
+           LIMIT 1
+         ) AS my_driver_report,
+         COALESCE(
+           (
+             SELECT JSON_AGG(notification_row ORDER BY notification_row.created_at DESC, notification_row.id DESC)
+             FROM (
+               SELECT
+                 un.id,
+                 un.type,
+                 un.title,
+                 un.message,
+                 un.is_read,
+                 un.created_at
+               FROM user_notifications un
+               WHERE un.car_rental_id = cr.id
+                 AND un.user_id = cr.user_id
+               ORDER BY un.created_at DESC, un.id DESC
+             ) notification_row
+           ),
+           '[]'::JSON
+         ) AS notifications
+       FROM car_rentals cr
+       JOIN rental_cars rc ON rc.id = cr.car_id
+       LEFT JOIN rental_drivers rd ON rd.id = cr.hired_driver_id
+       WHERE cr.user_id = $1
+       ORDER BY cr.booked_at DESC, cr.id DESC`,
+      [user.id]
+    );
+    res.json({ rentals: result.rows });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get('/api/my/notifications', async (req, res) => {
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const result = await pool.query(
+      `SELECT
+         id,
+         user_id,
+         car_rental_id,
+         bus_booking_id,
+         booking_reference,
+         type,
+         title,
+         message,
+         action_url,
+         action_type,
+         COALESCE(metadata, '{}'::JSONB) AS metadata,
+         is_read,
+         read_at,
+         created_at
+       FROM user_notifications
+       WHERE user_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT 30`,
+      [user.id]
+    );
+    const unread = await pool.query(
+      `SELECT COUNT(*)::INT AS count
+       FROM user_notifications
+       WHERE user_id = $1
+         AND is_read = FALSE`,
+      [user.id]
+    );
+    res.json({ notifications: result.rows, unread_count: Number(unread.rows[0].count || 0) });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put('/api/my/notifications/read-all', async (req, res) => {
+  try {
+    const user = await getAuthUserFromRequest(req);
+    await pool.query(
+      `UPDATE user_notifications
+       SET is_read = TRUE,
+           read_at = COALESCE(read_at, NOW())
+       WHERE user_id = $1
+         AND is_read = FALSE`,
+      [user.id]
+    );
+    res.json({ message: 'Notifications marked as read.' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put('/api/my/notifications/:id/read', async (req, res) => {
+  const notificationId = Number(req.params.id);
+  if (!notificationId) return res.status(400).json({ error: 'Invalid notification id.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const result = await pool.query(
+      `UPDATE user_notifications
+       SET is_read = TRUE,
+           read_at = COALESCE(read_at, NOW())
+       WHERE id = $1
+         AND user_id = $2
+       RETURNING id`,
+      [notificationId, user.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Notification not found.' });
+    res.json({ id: notificationId, message: 'Notification marked as read.' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put('/api/my/rentals/:id/notifications/read', async (req, res) => {
+  const rentalId = Number(req.params.id);
+  if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    await pool.query(
+      `UPDATE user_notifications
+       SET is_read = TRUE,
+           read_at = COALESCE(read_at, NOW())
+       WHERE user_id = $1
+         AND car_rental_id = $2
+         AND is_read = FALSE`,
+      [user.id, rentalId]
+    );
+    res.json({ message: 'Notifications marked as read.' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/my/rentals/:id/cancel', async (req, res) => {
+  const rentalId = Number(req.params.id);
+  if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const existing = await pool.query(
+      `SELECT
+         id,
+         status,
+         COALESCE(pickup_datetime, pickup_date + TIME '09:00:00') AS pickup_datetime
+       FROM car_rentals
+       WHERE id = $1
+         AND user_id = $2`,
+      [rentalId, user.id]
+    );
+
+    if (!existing.rowCount) return res.status(404).json({ error: 'Rental ticket not found.' });
+    const rental = existing.rows[0];
+    if (!['pending', 'confirmed'].includes(String(rental.status || '').toLowerCase())) {
+      return res.status(400).json({ error: 'Only pending or confirmed rentals can be cancelled.' });
+    }
+
+    const cancelable = await pool.query(
+      `UPDATE car_rentals
+       SET status = 'cancelled',
+           returned_at = NULL
+       WHERE id = $1
+         AND user_id = $2
+         AND status IN ('pending', 'confirmed')
+         AND COALESCE(pickup_datetime, pickup_date + TIME '09:00:00')::DATE > CURRENT_DATE
+       RETURNING id`,
+      [rentalId, user.id]
+    );
+
+    if (!cancelable.rowCount) {
+      return res.status(400).json({ error: 'Rentals can only be cancelled before the pickup date.' });
+    }
+    await syncRentalTransactions(cancelable.rows.map((row) => row.id));
+
+    res.json({ id: rentalId, message: 'Rental cancelled successfully.' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/my/rentals/:id/driver-review', async (req, res) => {
+  const rentalId = Number(req.params.id);
+  const rating = Number(req.body.rating);
+  const comment = normalizeText(req.body.comment);
+  if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) return res.status(400).json({ error: 'Rating must be between 1 and 5.' });
+  if (!comment) return res.status(400).json({ error: 'Review comment is required.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const rental = await fetchUserRentalForFeedback(rentalId, user.id);
+    if (!rental) return res.status(404).json({ error: 'Rental ticket not found.' });
+    if (!rental.hired_driver_id) return res.status(400).json({ error: 'This rental does not have a hired driver.' });
+    if (rental.status !== 'returned') return res.status(400).json({ error: 'You can review the driver after the rental is returned.' });
+
+    await pool.query(
+      `INSERT INTO rental_driver_reviews (driver_id, user_id, car_rental_id, rating, comment, review_type)
+       VALUES ($1, $2, $3, $4, $5, 'review')`,
+      [rental.hired_driver_id, user.id, rentalId, rating, comment]
+    );
+    await refreshDriverRating(rental.hired_driver_id);
+
+    res.status(201).json({ message: 'Review saved successfully.' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/my/rentals/:id/driver-report', async (req, res) => {
+  const rentalId = Number(req.params.id);
+  const comment = normalizeText(req.body.comment || req.body.report);
+  if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
+  if (!comment) return res.status(400).json({ error: 'Report detail is required.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const rental = await fetchUserRentalForFeedback(rentalId, user.id);
+    if (!rental) return res.status(404).json({ error: 'Rental ticket not found.' });
+    if (!rental.hired_driver_id) return res.status(400).json({ error: 'This rental does not have a hired driver.' });
+    if (rental.status !== 'returned') return res.status(400).json({ error: 'You can report the driver after the rental is returned.' });
+
+    await pool.query(
+      `INSERT INTO rental_driver_reviews (driver_id, user_id, car_rental_id, comment, review_type)
+       VALUES ($1, $2, $3, $4, 'report')`,
+      [rental.hired_driver_id, user.id, rentalId, comment]
+    );
+
+    res.status(201).json({ message: 'Report submitted successfully.' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/rentals', async (req, res) => {
+  const carId = Number(req.body.car_id);
+  const pickupDateTime = normalizeRentalDateTime(req.body.pickup_datetime);
+  const returnDateTime = normalizeRentalDateTime(req.body.return_datetime);
+  const paymentMethod = normalizeText(req.body.payment_method).toLowerCase();
+  const needDriver = Boolean(req.body.need_driver);
+  const hiredDriverId = needDriver ? Number(req.body.hired_driver_id) : null;
+  const customerPhone = normalizeText(req.body.customer_phone);
+  let driverName = normalizeText(req.body.driver_name);
+  let driverLicense = normalizeText(req.body.driver_license);
+
+  if (!carId) return res.status(400).json({ error: 'Car is required.' });
+  if (pickupDateTime.error) return res.status(400).json({ error: pickupDateTime.error });
+  if (returnDateTime.error) return res.status(400).json({ error: returnDateTime.error });
+  if (returnDateTime.date <= pickupDateTime.date) return res.status(400).json({ error: 'Return date-time must be after pickup date-time.' });
+  if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const car = await pool.query(
+      `SELECT id, name, daily_rate, status
+       FROM rental_cars
+       WHERE id = $1`,
+      [carId]
+    );
+    if (!car.rowCount) return res.status(404).json({ error: 'Rental car not found.' });
+    if (car.rows[0].status !== 'available') return res.status(400).json({ error: 'Selected car is not available.' });
+
+    const carConflict = await pool.query(
+      `SELECT id
+       FROM car_rentals
+       WHERE car_id = $1
+         AND status IN ('pending', 'confirmed')
+         AND COALESCE(pickup_datetime, pickup_date + TIME '09:00:00') < ($2)::TIMESTAMP
+         AND COALESCE(return_datetime, return_date + TIME '09:00:00') > ($3)::TIMESTAMP
+       LIMIT 1`,
+      [carId, returnDateTime.value, pickupDateTime.value]
+    );
+    if (carConflict.rowCount) return res.status(409).json({ error: 'Selected car already has a rental during that time.' });
+
+    let hiredDriver = null;
+    if (needDriver) {
+      if (!hiredDriverId) return res.status(400).json({ error: 'Please choose a driver.' });
+      const driver = await pool.query(
+        `SELECT id, name, license_number, hourly_rate, status
+         FROM rental_drivers
+         WHERE id = $1`,
+        [hiredDriverId]
+      );
+      if (!driver.rowCount) return res.status(404).json({ error: 'Driver not found.' });
+      hiredDriver = driver.rows[0];
+      if (hiredDriver.status !== 'available') return res.status(400).json({ error: 'Selected driver is not available.' });
+
+      const driverConflict = await pool.query(
+        `SELECT id
+         FROM car_rentals
+         WHERE hired_driver_id = $1
+           AND status IN ('pending', 'confirmed')
+           AND COALESCE(pickup_datetime, pickup_date + TIME '09:00:00') < ($2)::TIMESTAMP
+           AND COALESCE(return_datetime, return_date + TIME '09:00:00') > ($3)::TIMESTAMP
+         LIMIT 1`,
+        [hiredDriverId, returnDateTime.value, pickupDateTime.value]
+      );
+      if (driverConflict.rowCount) return res.status(409).json({ error: 'Selected driver already has a rental during that time.' });
+
+      driverName = hiredDriver.name;
+      driverLicense = hiredDriver.license_number;
+    } else if (!driverName || !driverLicense) {
+      return res.status(400).json({ error: 'Driver name and license are required.' });
+    }
+
+    const pricing = calculateRentalPricing(pickupDateTime, returnDateTime, car.rows[0].daily_rate, hiredDriver?.hourly_rate || 0);
+    const result = await pool.query(
+      `INSERT INTO car_rentals (
+         user_id,
+         car_id,
+         pickup_date,
+         return_date,
+         pickup_datetime,
+         return_datetime,
+         rental_hours,
+         hourly_charge,
+         customer_phone,
+         hired_driver_id,
+         rental_base_price,
+         driver_fee,
+         driver_name,
+         driver_license,
+         total_price,
+         payment_method,
+         status
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, ($16)::payment_method, 'pending')
+       RETURNING id`,
+      [
+        user.id,
+        carId,
+        pickupDateTime.dateKey,
+        returnDateTime.dateKey,
+        pickupDateTime.value,
+        returnDateTime.value,
+        pricing.hours,
+        pricing.basePrice,
+        customerPhone || user.phone || '',
+        hiredDriverId || null,
+        pricing.basePrice,
+        pricing.driverFee,
+        driverName,
+        driverLicense,
+        pricing.totalPrice,
+        paymentMethod
+      ]
+    );
+
+    await pool.query(
+      `INSERT INTO transactions (user_id, car_rental_id, amount, payment_method, status)
+       VALUES ($1, $2, $3, ($4)::payment_method, 'success')`,
+      [user.id, result.rows[0].id, pricing.totalPrice, paymentMethod]
+    );
+
+    res.status(201).json({
+      rental: await fetchAdminRentalById(result.rows[0].id),
+      pricing
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // 1. Fetch all Rental Cars
 app.get('/api/cars', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT * FROM rental_cars
+      SELECT
+        rc.*,
+        COALESCE(rc.photos, ARRAY[]::TEXT[]) AS photos,
+        COALESCE(
+          (
+            SELECT JSON_AGG(rental_window ORDER BY rental_window.pickup_datetime ASC, rental_window.id ASC)
+            FROM (
+              SELECT
+                cr.id,
+                cr.status,
+                COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+                COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime
+              FROM car_rentals cr
+              WHERE cr.car_id = rc.id
+                AND cr.status IN ('pending', 'confirmed')
+              ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC
+              LIMIT 8
+            ) rental_window
+          ),
+          '[]'::JSON
+        ) AS rental_windows
+      FROM rental_cars rc
+      ORDER BY rc.name
     `);
     res.json(result.rows);
   } catch (err) {
@@ -2142,6 +4228,7 @@ app.get('/api/routes', async (req, res) => {
       LEFT JOIN bus_seat_map_templates t ON t.id = b.seat_map_template_id
       LEFT JOIN companies c ON b.company_id = c.id
       LEFT JOIN bus_bookings bb ON bb.route_id = r.id AND bb.status <> 'cancelled'
+      WHERE r.departure_time >= NOW()
       GROUP BY r.id, b.id, t.id, c.id
       ORDER BY r.departure_time ASC
     `);
@@ -2768,6 +4855,17 @@ app.put('/api/admin/buses/:id', async (req, res) => {
       }
     }
 
+    if (
+      existing.status === 'maintenance' &&
+      payload.status !== 'maintenance' &&
+      existing.maintenance_start &&
+      existing.maintenance_end
+    ) {
+      await restoreSplitBookingsForAvailableBus(busId);
+      await restoreTemporaryBusReplacements(busId);
+      await clearFutureRouteMaintenanceForBus(busId);
+    }
+
     await pool.query(
       `UPDATE buses
        SET company_id = $1,
@@ -3019,8 +5117,22 @@ app.post('/api/admin/routes/:id/maintenance-preview', async (req, res) => {
       return res.status(400).json({ error: 'Maintenance duration must overlap this scheduled trip.' });
     }
 
-    const preview = await buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd);
+    const preview = await buildMaintenanceImpactPreview(routeId, maintenanceStart, maintenanceEnd, {
+      backup_routes: Array.isArray(req.body?.backup_routes) ? req.body.backup_routes : []
+    });
     res.json(preview);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/routes/:id/revert-daily', async (req, res) => {
+  const routeId = Number(req.params.id);
+  if (!routeId) return res.status(400).json({ error: 'Invalid schedule id.' });
+
+  try {
+    const route = await restoreRouteToDailyTemplate(routeId);
+    res.json(route);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
@@ -3049,20 +5161,22 @@ app.put('/api/admin/routes/:id', async (req, res) => {
       return res.status(400).json({ error: 'Assigned vehicle does not exist.' });
     }
 
+    let maintenanceRecoveryResult = null;
+
     if (payload.availability_status === 'maintenance') {
       const recoveryPlan = req.body?.maintenance_recovery_plan;
       if (recoveryPlan) {
-        await applyMaintenanceImpactPlan(routeId, payload.maintenance_start, payload.maintenance_end, recoveryPlan);
-      }
-
-      const preview = await buildMaintenanceImpactPreview(routeId, payload.maintenance_start, payload.maintenance_end);
-      if (preview.affected_bookings.length) {
-        return res.status(409).json({
-          error: 'This maintenance window affects booked passengers. Preview the impact and confirm a recovery plan before saving.',
-          code: 'ROUTE_MAINTENANCE_BOOKING_CONFLICT',
-          preview,
-          affected_routes: preview.affected_routes
-        });
+        maintenanceRecoveryResult = await applyMaintenanceImpactPlan(routeId, payload.maintenance_start, payload.maintenance_end, recoveryPlan);
+      } else {
+        const preview = await buildMaintenanceImpactPreview(routeId, payload.maintenance_start, payload.maintenance_end);
+        if (preview.affected_bookings.length) {
+          return res.status(409).json({
+            error: 'This maintenance window affects booked passengers. Preview the impact and confirm a recovery plan before saving.',
+            code: 'ROUTE_MAINTENANCE_BOOKING_CONFLICT',
+            preview,
+            affected_routes: preview.affected_routes
+          });
+        }
       }
     }
 
@@ -3128,33 +5242,39 @@ app.put('/api/admin/routes/:id', async (req, res) => {
       existing
     );
 
-    await pool.query(
-      `UPDATE bus_routes
-       SET bus_id = $1,
-           origin = $2,
-           destination = $3,
-           departure_time = $4,
-           arrival_time = $5,
-           price = $6,
-           availability_status = $7,
-           maintenance_start = $8,
-           maintenance_end = $9
-       WHERE id = $10`,
-      [
-        payload.bus_id,
-        payload.origin,
-        payload.destination,
-        payload.departure_time,
-        payload.arrival_time,
-        payload.price,
-        payload.availability_status,
-        payload.maintenance_start,
-        payload.maintenance_end,
-        routeId
-      ]
-    );
+    const replacedRouteIds = new Set((maintenanceRecoveryResult?.replacedRouteIds || []).map(Number));
+    if (!replacedRouteIds.has(routeId)) {
+      await pool.query(
+        `UPDATE bus_routes
+         SET bus_id = $1,
+             origin = $2,
+             destination = $3,
+             departure_time = $4,
+             arrival_time = $5,
+             price = $6,
+             availability_status = $7,
+             maintenance_start = $8,
+             maintenance_end = $9
+         WHERE id = $10`,
+        [
+          payload.bus_id,
+          payload.origin,
+          payload.destination,
+          payload.departure_time,
+          payload.arrival_time,
+          payload.price,
+          payload.availability_status,
+          payload.maintenance_start,
+          payload.maintenance_end,
+          routeId
+        ]
+      );
+    }
 
     const route = await fetchAdminRouteById(routeId);
+    if (coreChanged && route) {
+      await createRouteUpdateNotifications(routeId, existing, route);
+    }
     res.json(route);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, code: err.code, routes: err.routes });
@@ -3168,6 +5288,7 @@ app.delete('/api/admin/routes/:id', async (req, res) => {
   }
 
   try {
+    await createRouteCancellationNotifications(routeId);
     const result = await pool.query(`DELETE FROM bus_routes WHERE id = $1 RETURNING id`, [routeId]);
     if (!result.rowCount) {
       return res.status(404).json({ error: 'Schedule not found.' });
@@ -3623,6 +5744,8 @@ app.get('/api/admin/bookings', async (req, res) => {
          bb.route_id,
          bb.seat_number,
          bb.total_price,
+         bb.package_weight_kg,
+         bb.overweight_charge,
          bb.payment_method,
          bb.status,
          bb.created_at,
@@ -3635,6 +5758,7 @@ app.get('/api/admin/bookings', async (req, res) => {
          br.arrival_time,
          b.name AS bus_name,
          b.type AS bus_type,
+         c.id AS company_id,
          c.name AS company_name,
          c.theme_color AS color
        FROM bus_bookings bb
@@ -3653,29 +5777,53 @@ app.get('/api/admin/bookings', async (req, res) => {
 app.put('/api/admin/bookings/:id', async (req, res) => {
   const bookingId = Number(req.params.id);
   const seatNumber = normalizeText(req.body.seat_number);
-  const totalPrice = normalizeMoney(req.body.total_price);
+  const packageWeightKg = normalizeMoney(req.body.package_weight_kg ?? 0);
   const paymentMethod = normalizeText(req.body.payment_method).toLowerCase();
   const status = normalizeText(req.body.status).toLowerCase();
 
   if (!bookingId) return res.status(400).json({ error: 'Invalid booking id.' });
   if (!seatNumber) return res.status(400).json({ error: 'Seat number is required.' });
-  if (!Number.isFinite(totalPrice) || totalPrice <= 0) return res.status(400).json({ error: 'Total price must be greater than zero.' });
+  if (!Number.isFinite(packageWeightKg) || packageWeightKg < 0) return res.status(400).json({ error: 'Package weight must be zero or greater.' });
   if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
   if (!BOOKING_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid booking status.' });
 
   try {
     const existing = await fetchAdminBookingById(bookingId);
     if (!existing) return res.status(404).json({ error: 'Booking not found.' });
+    const currentTotal = Number(existing.total_price || 0);
+    const currentOverweightCharge = Number(existing.overweight_charge || 0);
+    const baseBookingPrice = Math.max(currentTotal - currentOverweightCharge, 0);
+    const packageWeightForUpdate = status === 'cancelled'
+      ? Number(existing.package_weight_kg || 0)
+      : packageWeightKg;
+    const overweightKg = Math.max(packageWeightForUpdate - 20, 0);
+    const overweightCharge = overweightKg * 0.5;
+    const totalPrice = baseBookingPrice + overweightCharge;
+
+    if (!Number.isFinite(totalPrice) || totalPrice <= 0) return res.status(400).json({ error: 'Total price must be greater than zero.' });
 
     await pool.query(
       `UPDATE bus_bookings
        SET seat_number = $1,
            total_price = $2,
-           payment_method = $3,
-           status = $4
-       WHERE id = $5`,
-      [seatNumber, totalPrice.toFixed(2), paymentMethod, status, bookingId]
+           package_weight_kg = $3,
+           overweight_charge = $4,
+           payment_method = $5,
+           status = $6
+       WHERE id = $7`,
+      [seatNumber, totalPrice.toFixed(2), packageWeightForUpdate.toFixed(2), overweightCharge.toFixed(2), paymentMethod, status, bookingId]
     );
+    await syncBusBookingTransactions(bookingId);
+
+    if (existing.status !== 'cancelled' && status === 'cancelled') {
+      await createBusTicketNotifications(bookingId, {
+        type: 'bus_ticket_cancelled',
+        title: 'Your bus ticket was cancelled',
+        message: `${existing.origin} to ${existing.destination} was cancelled by admin. Open My Bookings for details.`,
+        action_type: 'view_trip',
+        metadata: { reason: 'admin booking status cancelled' }
+      });
+    }
 
     res.json(await fetchAdminBookingById(bookingId));
   } catch (err) {
@@ -3688,9 +5836,300 @@ app.delete('/api/admin/bookings/:id', async (req, res) => {
   if (!bookingId) return res.status(400).json({ error: 'Invalid booking id.' });
 
   try {
+    const existing = await fetchAdminBookingById(bookingId);
+    if (!existing) return res.status(404).json({ error: 'Booking not found.' });
+    await createUserNotification({
+      user_id: existing.user_id,
+      booking_reference: existing.booking_reference || `BT-${String(existing.id).padStart(6, '0')}`,
+      type: 'bus_ticket_cancelled',
+      title: 'Your bus ticket was removed',
+      message: `${existing.origin} to ${existing.destination} was removed by admin. Open My Bookings for details.`,
+      action_url: '/bookings?tab=trips',
+      action_type: 'view_trip',
+      metadata: {
+        booking_id: existing.id,
+        route_id: existing.route_id,
+        departure_time: existing.departure_time
+      }
+    });
     const result = await pool.query(`DELETE FROM bus_bookings WHERE id = $1 RETURNING id`, [bookingId]);
     if (!result.rowCount) return res.status(404).json({ error: 'Booking not found.' });
     res.json({ id: bookingId, message: 'Booking deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/rental-drivers', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         rd.id,
+         rd.name,
+         rd.license_number,
+         rd.phone,
+         rd.rating,
+         rd.review_count,
+         rd.hourly_rate,
+         rd.status,
+         rd.profile_photo,
+         rd.background,
+         rd.experience_years,
+         COALESCE(rd.languages, ARRAY[]::TEXT[]) AS languages,
+         rd.created_at,
+         (SELECT COUNT(*)::INT FROM car_rentals cr WHERE cr.hired_driver_id = rd.id AND cr.status IN ('pending', 'confirmed')) AS active_rentals,
+         (SELECT COUNT(*)::INT FROM car_rentals cr WHERE cr.hired_driver_id = rd.id) AS total_rentals,
+         (SELECT COUNT(*)::INT FROM rental_driver_reviews rdr WHERE rdr.driver_id = rd.id AND rdr.review_type = 'review') AS reviews_count,
+         (SELECT COUNT(*)::INT FROM rental_driver_reviews rdr WHERE rdr.driver_id = rd.id AND rdr.review_type = 'report') AS reports_count,
+         COALESCE(
+           (
+             SELECT JSON_AGG(active_rental_row ORDER BY active_rental_row.pickup_datetime ASC, active_rental_row.id ASC)
+             FROM (
+               SELECT
+                 cr.id,
+                 cr.status,
+                 COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+                 COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+                 cr.total_price,
+                 cr.driver_fee,
+                 CONCAT(u.first_name, ' ', u.last_name) AS customer_name,
+                 u.email AS customer_email,
+                 u.phone AS customer_phone,
+                 rc.name AS car_name,
+                 rc.plate_number
+               FROM car_rentals cr
+               JOIN users u ON u.id = cr.user_id
+               JOIN rental_cars rc ON rc.id = cr.car_id
+               WHERE cr.hired_driver_id = rd.id
+                 AND cr.status IN ('pending', 'confirmed')
+               ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC
+               LIMIT 8
+             ) active_rental_row
+           ),
+           '[]'::JSON
+         ) AS active_rental_details
+       FROM rental_drivers rd
+       ORDER BY rd.status ASC, rd.rating DESC, rd.name ASC`
+    );
+    res.json({ drivers: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/rental-drivers', async (req, res) => {
+  const payload = buildDriverPayload(req.body);
+  if (payload.error) return res.status(400).json({ error: payload.error });
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO rental_drivers (name, license_number, phone, hourly_rate, status, profile_photo, background, experience_years, languages)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        payload.name,
+        payload.licenseNumber,
+        payload.phone,
+        payload.hourlyRate,
+        payload.status,
+        payload.profilePhoto,
+        payload.background,
+        payload.experienceYears,
+        payload.languages
+      ]
+    );
+    res.status(201).json({ driver: result.rows[0] });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'License number already exists.' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/rental-drivers/:id', async (req, res) => {
+  const driverId = Number(req.params.id);
+  const payload = buildDriverPayload(req.body);
+  if (!driverId) return res.status(400).json({ error: 'Invalid driver id.' });
+  if (payload.error) return res.status(400).json({ error: payload.error });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query(
+      `SELECT id, name, status
+       FROM rental_drivers
+       WHERE id = $1
+       FOR UPDATE`,
+      [driverId]
+    );
+    if (!existing.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Driver not found.' });
+    }
+
+    const result = await client.query(
+      `UPDATE rental_drivers
+       SET name = $1,
+           license_number = $2,
+           phone = $3,
+           hourly_rate = $4,
+           status = $5,
+           profile_photo = $6,
+           background = $7,
+           experience_years = $8,
+           languages = $9
+       WHERE id = $10
+       RETURNING *`,
+      [
+        payload.name,
+        payload.licenseNumber,
+        payload.phone,
+        payload.hourlyRate,
+        payload.status,
+        payload.profilePhoto,
+        payload.background,
+        payload.experienceYears,
+        payload.languages,
+        driverId
+      ]
+    );
+
+    let notificationCount = 0;
+    let cancelledRentalCount = 0;
+    let restoredRentalCount = 0;
+    if (result.rows[0].status === 'inactive') {
+      const deactivation = await applyDriverDeactivation(driverId, result.rows[0].name, client);
+      notificationCount = deactivation.notificationCount;
+      cancelledRentalCount = deactivation.cancelledCount;
+    } else if (existing.rows[0].status === 'inactive' && result.rows[0].status === 'available') {
+      const restoration = await restoreDriverRentalsBeforePickup(driverId, result.rows[0].name, client);
+      notificationCount = restoration.notificationCount;
+      restoredRentalCount = restoration.restoredCount;
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      driver: result.rows[0],
+      notification_count: notificationCount,
+      cancelled_rental_count: cancelledRentalCount,
+      restored_rental_count: restoredRentalCount
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') return res.status(409).json({ error: 'License number already exists.' });
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/admin/rental-drivers/:id', async (req, res) => {
+  const driverId = Number(req.params.id);
+  if (!driverId) return res.status(400).json({ error: 'Invalid driver id.' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const driver = await client.query(`SELECT id, name, status FROM rental_drivers WHERE id = $1 FOR UPDATE`, [driverId]);
+    if (!driver.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Driver not found.' });
+    }
+
+    const usage = await client.query(
+      `SELECT
+         (SELECT COUNT(*)::INT FROM car_rentals WHERE hired_driver_id = $1) AS rentals_count,
+         (SELECT COUNT(*)::INT FROM rental_driver_reviews WHERE driver_id = $1) AS feedback_count`,
+      [driverId]
+    );
+    const hasHistory = Number(usage.rows[0].rentals_count || 0) > 0 || Number(usage.rows[0].feedback_count || 0) > 0;
+
+    if (!hasHistory) {
+      await client.query(`DELETE FROM rental_drivers WHERE id = $1`, [driverId]);
+      await client.query('COMMIT');
+      return res.json({ id: driverId, action: 'deleted', message: 'Driver deleted successfully.' });
+    }
+
+    await client.query(`UPDATE rental_drivers SET status = 'inactive' WHERE id = $1`, [driverId]);
+    const deactivation = await applyDriverDeactivation(driverId, driver.rows[0].name, client);
+
+    await client.query('COMMIT');
+    res.json({
+      id: driverId,
+      action: 'deactivated',
+      notification_count: deactivation.notificationCount,
+      cancelled_rental_count: deactivation.cancelledCount,
+      message: 'Driver deactivated because rental or feedback history exists.'
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/admin/rental-drivers/:id/feedback', async (req, res) => {
+  const driverId = Number(req.params.id);
+  const type = normalizeText(req.query.type || 'review').toLowerCase();
+  if (!driverId) return res.status(400).json({ error: 'Invalid driver id.' });
+  if (!['review', 'report'].includes(type)) return res.status(400).json({ error: 'Invalid feedback type.' });
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         rdr.id,
+         rdr.driver_id,
+         rdr.user_id,
+         rdr.car_rental_id,
+         rdr.rating,
+         rdr.comment,
+         rdr.review_type,
+         rdr.admin_reply,
+         rdr.admin_replied_at,
+         rdr.created_at,
+         CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+         u.email AS user_email,
+         cr.status AS rental_status,
+         cr.pickup_datetime,
+         cr.return_datetime,
+         rc.name AS car_name,
+         rc.plate_number,
+         admin.email AS admin_email
+       FROM rental_driver_reviews rdr
+       LEFT JOIN users u ON u.id = rdr.user_id
+       LEFT JOIN car_rentals cr ON cr.id = rdr.car_rental_id
+       LEFT JOIN rental_cars rc ON rc.id = cr.car_id
+       LEFT JOIN users admin ON admin.id = rdr.admin_replied_by
+       WHERE rdr.driver_id = $1
+         AND rdr.review_type = $2
+       ORDER BY rdr.created_at DESC, rdr.id DESC`,
+      [driverId, type]
+    );
+    res.json({ feedback: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/rental-driver-feedback/:id/reply', async (req, res) => {
+  const feedbackId = Number(req.params.id);
+  const reply = normalizeText(req.body.admin_reply || req.body.reply);
+  if (!feedbackId) return res.status(400).json({ error: 'Invalid feedback id.' });
+  if (!reply) return res.status(400).json({ error: 'Reply is required.' });
+
+  try {
+    const admin = await getOptionalAuthUserFromRequest(req);
+    const result = await pool.query(
+      `UPDATE rental_driver_reviews
+       SET admin_reply = $1,
+           admin_replied_at = NOW(),
+           admin_replied_by = $2
+       WHERE id = $3
+       RETURNING id, admin_reply, admin_replied_at`,
+      [reply, admin?.id || null, feedbackId]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Feedback not found.' });
+    res.json({ feedback: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3705,21 +6144,42 @@ app.get('/api/admin/rentals', async (req, res) => {
          cr.car_id,
          cr.pickup_date,
          cr.return_date,
+         COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+         COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+         COALESCE(cr.rental_hours, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') - COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00'))) / 3600.0))) AS rental_hours,
+         ROUND((rc.daily_rate / 24.0)::NUMERIC, 2) AS hourly_rate,
+         COALESCE(cr.hourly_charge, ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') - COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00'))) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2)) AS hourly_charge,
+         cr.customer_phone,
+         cr.hired_driver_id,
+         cr.rental_base_price,
+         cr.driver_fee,
          cr.driver_name,
          cr.driver_license,
          cr.total_price,
          cr.payment_method,
          cr.status,
+         cr.returned_at,
          cr.booked_at,
          CONCAT(u.first_name, ' ', u.last_name) AS user_name,
          u.email,
          u.phone,
          rc.name AS car_name,
          rc.type AS car_type,
-         rc.plate_number
+         rc.plate_number,
+         rc.daily_rate,
+         rd.name AS hired_driver_name,
+         rd.license_number AS hired_driver_license_number,
+         rd.phone AS hired_driver_phone,
+         rd.rating AS hired_driver_rating,
+         rd.review_count AS hired_driver_review_count,
+         rd.hourly_rate AS hired_driver_hourly_rate,
+         rd.background AS hired_driver_background,
+         rd.experience_years AS hired_driver_experience_years,
+         rd.languages AS hired_driver_languages
        FROM car_rentals cr
        JOIN users u ON u.id = cr.user_id
        JOIN rental_cars rc ON rc.id = cr.car_id
+       LEFT JOIN rental_drivers rd ON rd.id = cr.hired_driver_id
        ORDER BY cr.booked_at DESC, cr.id DESC`
     );
     res.json({ rentals: result.rows });
@@ -3730,21 +6190,20 @@ app.get('/api/admin/rentals', async (req, res) => {
 
 app.put('/api/admin/rentals/:id', async (req, res) => {
   const rentalId = Number(req.params.id);
-  const pickupDate = normalizeText(req.body.pickup_date);
-  const returnDate = normalizeText(req.body.return_date);
+  const pickupInput = req.body.pickup_datetime || (req.body.pickup_date ? `${normalizeText(req.body.pickup_date)}T09:00` : '');
+  const returnInput = req.body.return_datetime || (req.body.return_date ? `${normalizeText(req.body.return_date)}T09:00` : '');
+  const pickupDateTime = normalizeRentalDateTime(pickupInput);
+  const returnDateTime = normalizeRentalDateTime(returnInput);
   const driverName = normalizeText(req.body.driver_name);
   const driverLicense = normalizeText(req.body.driver_license);
-  const totalPrice = normalizeMoney(req.body.total_price);
   const paymentMethod = normalizeText(req.body.payment_method).toLowerCase();
   const status = normalizeText(req.body.status).toLowerCase();
-  const pickup = new Date(`${pickupDate}T00:00:00`);
-  const dropoff = new Date(`${returnDate}T00:00:00`);
 
   if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
-  if (Number.isNaN(pickup.getTime()) || Number.isNaN(dropoff.getTime())) return res.status(400).json({ error: 'Pickup and return dates must be valid.' });
-  if (dropoff <= pickup) return res.status(400).json({ error: 'Return date must be after pickup date.' });
+  if (pickupDateTime.error) return res.status(400).json({ error: pickupDateTime.error });
+  if (returnDateTime.error) return res.status(400).json({ error: returnDateTime.error });
+  if (returnDateTime.date <= pickupDateTime.date) return res.status(400).json({ error: 'Return date-time must be after pickup date-time.' });
   if (!driverName || !driverLicense) return res.status(400).json({ error: 'Driver name and license are required.' });
-  if (!Number.isFinite(totalPrice) || totalPrice <= 0) return res.status(400).json({ error: 'Total price must be greater than zero.' });
   if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
   if (!RENTAL_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid rental status.' });
 
@@ -3756,16 +6215,79 @@ app.put('/api/admin/rentals/:id', async (req, res) => {
       `UPDATE car_rentals
        SET pickup_date = $1,
            return_date = $2,
-           driver_name = $3,
-           driver_license = $4,
-           total_price = $5,
-           payment_method = $6,
-           status = $7
-       WHERE id = $8`,
-      [pickupDate, returnDate, driverName, driverLicense, totalPrice.toFixed(2), paymentMethod, status, rentalId]
+           pickup_datetime = $3,
+           return_datetime = $4,
+           rental_hours = GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)),
+           hourly_charge = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2),
+           rental_base_price = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2),
+           driver_fee = CASE
+             WHEN car_rentals.hired_driver_id IS NULL THEN 0
+             ELSE ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * COALESCE((SELECT hourly_rate FROM rental_drivers WHERE id = car_rentals.hired_driver_id), 0))::NUMERIC, 2)
+           END,
+           total_price = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2) + CASE
+             WHEN car_rentals.hired_driver_id IS NULL THEN 0
+             ELSE ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * COALESCE((SELECT hourly_rate FROM rental_drivers WHERE id = car_rentals.hired_driver_id), 0))::NUMERIC, 2)
+           END,
+           driver_name = $5,
+           driver_license = $6,
+           payment_method = ($7)::payment_method,
+           status = ($8)::booking_status,
+           returned_at = CASE
+             WHEN ($8)::booking_status = 'returned'::booking_status AND car_rentals.status <> 'returned'::booking_status THEN NOW()
+             WHEN ($8)::booking_status = 'returned'::booking_status THEN COALESCE(car_rentals.returned_at, NOW())
+             ELSE NULL
+           END
+        FROM rental_cars rc
+       WHERE car_rentals.id = $9
+         AND rc.id = car_rentals.car_id`,
+      [
+        pickupDateTime.dateKey,
+        returnDateTime.dateKey,
+        pickupDateTime.value,
+        returnDateTime.value,
+        driverName,
+        driverLicense,
+        paymentMethod,
+        status,
+        rentalId
+      ]
     );
+    await syncRentalTransactions(rentalId);
 
-    res.json(await fetchAdminRentalById(rentalId));
+    const updated = await fetchAdminRentalById(rentalId);
+    const pickupChanged = new Date(existing.pickup_datetime).getTime() !== new Date(updated.pickup_datetime).getTime();
+    const returnChanged = new Date(existing.return_datetime).getTime() !== new Date(updated.return_datetime).getTime();
+    if (existing.status !== 'cancelled' && updated.status === 'cancelled') {
+      await createUserNotification({
+        user_id: updated.user_id,
+        car_rental_id: updated.id,
+        type: 'rental_cancelled',
+        title: 'Your rental was cancelled',
+        message: `${updated.car_name} rental was cancelled by admin.`,
+        action_url: '/bookings?tab=rentals',
+        action_type: 'view_rental',
+        metadata: { rental_id: updated.id, car_name: updated.car_name }
+      });
+    } else if ((pickupChanged || returnChanged) && updated.status !== 'cancelled') {
+      await createUserNotification({
+        user_id: updated.user_id,
+        car_rental_id: updated.id,
+        type: 'rental_changed',
+        title: 'Your rental schedule changed',
+        message: `${updated.car_name} rental pickup or return time was updated by admin.`,
+        action_url: '/bookings?tab=rentals',
+        action_type: 'view_rental',
+        metadata: {
+          rental_id: updated.id,
+          old_pickup_datetime: existing.pickup_datetime,
+          old_return_datetime: existing.return_datetime,
+          pickup_datetime: updated.pickup_datetime,
+          return_datetime: updated.return_datetime
+        }
+      });
+    }
+
+    res.json(updated);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -3776,6 +6298,17 @@ app.delete('/api/admin/rentals/:id', async (req, res) => {
   if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
 
   try {
+    const existing = await fetchAdminRentalById(rentalId);
+    if (!existing) return res.status(404).json({ error: 'Rental not found.' });
+    await createUserNotification({
+      user_id: existing.user_id,
+      type: 'rental_cancelled',
+      title: 'Your rental was removed',
+      message: `${existing.car_name} rental was removed by admin.`,
+      action_url: '/bookings?tab=rentals',
+      action_type: 'view_rental',
+      metadata: { rental_id: existing.id, car_name: existing.car_name }
+    });
     const result = await pool.query(`DELETE FROM car_rentals WHERE id = $1 RETURNING id`, [rentalId]);
     if (!result.rowCount) return res.status(404).json({ error: 'Rental not found.' });
     res.json({ id: rentalId, message: 'Rental deleted successfully.' });
@@ -3787,6 +6320,8 @@ app.delete('/api/admin/rentals/:id', async (req, res) => {
 app.get('/api/admin/reports', async (req, res) => {
   const monthRange = buildMonthRange(req.query.month);
   const params = [monthRange.start, monthRange.end];
+  const previousRange = buildPreviousMonthRange(monthRange);
+  const previousParams = [previousRange.start, previousRange.end];
 
   try {
     const [
@@ -3794,16 +6329,40 @@ app.get('/api/admin/reports', async (req, res) => {
       rentalRevenue,
       bookingDaily,
       rentalDaily,
+      previousBookingRevenue,
+      previousRentalRevenue,
+      bookingCancellations,
+      rentalCancellations,
+      activeCustomers,
+      newCustomers,
       topRoutes,
       topCars,
       topCompanies,
       topCustomers,
-      paymentMix
+      paymentMix,
+      bookingDetails,
+      rentalDetails,
+      customerDetails,
+      paymentDetails
     ] = await Promise.all([
       pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2`, params),
       pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2`, params),
       pool.query(`SELECT created_at::DATE AS day, COALESCE(SUM(total_price), 0) AS revenue FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2 GROUP BY created_at::DATE ORDER BY day`, params),
       pool.query(`SELECT booked_at::DATE AS day, COALESCE(SUM(total_price), 0) AS revenue FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2 GROUP BY booked_at::DATE ORDER BY day`, params),
+      pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2`, previousParams),
+      pool.query(`SELECT COALESCE(SUM(total_price), 0) AS revenue, COUNT(*)::INT AS count FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2`, previousParams),
+      pool.query(`SELECT COUNT(*)::INT AS count FROM bus_bookings WHERE status = 'cancelled' AND created_at >= $1 AND created_at < $2`, params),
+      pool.query(`SELECT COUNT(*)::INT AS count FROM car_rentals WHERE status = 'cancelled' AND booked_at >= $1 AND booked_at < $2`, params),
+      pool.query(
+        `SELECT COUNT(DISTINCT user_id)::INT AS count
+         FROM (
+           SELECT user_id FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2
+           UNION
+           SELECT user_id FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2
+         ) active_users`,
+        params
+      ),
+      pool.query(`SELECT COUNT(*)::INT AS count FROM users WHERE created_at >= $1 AND created_at < $2`, params),
       pool.query(
         `SELECT br.origin, br.destination, COUNT(*)::INT AS count, COALESCE(SUM(bb.total_price), 0) AS revenue
          FROM bus_bookings bb
@@ -3864,27 +6423,161 @@ app.get('/api/admin/reports', async (req, res) => {
          GROUP BY payment_method
          ORDER BY count DESC`,
         params
+      ),
+      pool.query(
+        `SELECT
+           br.origin,
+           br.destination,
+           COALESCE(c.name, 'Unknown company') AS company_name,
+           c.theme_color AS color,
+           COUNT(bb.id) FILTER (WHERE bb.status <> 'cancelled')::INT AS count,
+           COALESCE(SUM(bb.total_price) FILTER (WHERE bb.status <> 'cancelled'), 0) AS revenue,
+           COALESCE(AVG(bb.total_price) FILTER (WHERE bb.status <> 'cancelled'), 0) AS average_fare,
+           COUNT(bb.id) FILTER (WHERE bb.status = 'cancelled')::INT AS cancelled_count,
+           COUNT(bb.id)::INT AS total_records
+         FROM bus_bookings bb
+         JOIN bus_routes br ON br.id = bb.route_id
+         JOIN buses b ON b.id = br.bus_id
+         LEFT JOIN companies c ON c.id = b.company_id
+         WHERE bb.created_at >= $1 AND bb.created_at < $2
+         GROUP BY br.origin, br.destination, COALESCE(c.name, 'Unknown company'), c.theme_color
+         ORDER BY revenue DESC, count DESC, cancelled_count DESC
+         LIMIT 12`,
+        params
+      ),
+      pool.query(
+        `SELECT
+           rc.name,
+           rc.type,
+           COUNT(cr.id) FILTER (WHERE cr.status <> 'cancelled')::INT AS count,
+           COALESCE(SUM(cr.total_price) FILTER (WHERE cr.status <> 'cancelled'), 0) AS revenue,
+           COALESCE(AVG(cr.total_price) FILTER (WHERE cr.status <> 'cancelled'), 0) AS average_rental_value,
+           COUNT(cr.id) FILTER (WHERE cr.status = 'cancelled')::INT AS cancelled_count,
+           COUNT(cr.id) FILTER (WHERE cr.status = 'returned')::INT AS returned_count,
+           COUNT(cr.id)::INT AS total_records
+         FROM car_rentals cr
+         JOIN rental_cars rc ON rc.id = cr.car_id
+         WHERE cr.booked_at >= $1 AND cr.booked_at < $2
+         GROUP BY rc.name, rc.type
+         ORDER BY revenue DESC, count DESC, cancelled_count DESC
+         LIMIT 12`,
+        params
+      ),
+      pool.query(
+        `SELECT
+           user_name,
+           email,
+           COUNT(*)::INT AS transaction_count,
+           COUNT(*) FILTER (WHERE activity_type = 'booking')::INT AS booking_count,
+           COUNT(*) FILTER (WHERE activity_type = 'rental')::INT AS rental_count,
+           COALESCE(SUM(total_spent), 0) AS spend,
+           MAX(activity_at) AS last_activity
+         FROM (
+           SELECT CONCAT(u.first_name, ' ', u.last_name) AS user_name, u.email, bb.total_price AS total_spent, bb.created_at AS activity_at, 'booking' AS activity_type
+           FROM bus_bookings bb
+           JOIN users u ON u.id = bb.user_id
+           WHERE bb.status <> 'cancelled' AND bb.created_at >= $1 AND bb.created_at < $2
+           UNION ALL
+           SELECT CONCAT(u.first_name, ' ', u.last_name) AS user_name, u.email, cr.total_price AS total_spent, cr.booked_at AS activity_at, 'rental' AS activity_type
+           FROM car_rentals cr
+           JOIN users u ON u.id = cr.user_id
+           WHERE cr.status <> 'cancelled' AND cr.booked_at >= $1 AND cr.booked_at < $2
+         ) activity
+         GROUP BY user_name, email
+         ORDER BY spend DESC, transaction_count DESC
+         LIMIT 12`,
+        params
+      ),
+      pool.query(
+        `SELECT
+           COALESCE(payment_method, 'unknown') AS payment_method,
+           COUNT(*)::INT AS count,
+           COALESCE(SUM(amount), 0) AS revenue
+         FROM (
+           SELECT payment_method, total_price AS amount FROM bus_bookings WHERE status <> 'cancelled' AND created_at >= $1 AND created_at < $2
+           UNION ALL
+           SELECT payment_method::TEXT AS payment_method, total_price AS amount FROM car_rentals WHERE status <> 'cancelled' AND booked_at >= $1 AND booked_at < $2
+         ) payments
+         GROUP BY COALESCE(payment_method, 'unknown')
+         ORDER BY revenue DESC, count DESC`,
+        params
       )
     ]);
 
     const bookingRevenueValue = Number(bookingRevenue.rows[0].revenue || 0);
     const rentalRevenueValue = Number(rentalRevenue.rows[0].revenue || 0);
     const transactionCount = Number(bookingRevenue.rows[0].count || 0) + Number(rentalRevenue.rows[0].count || 0);
+    const previousBookingRevenueValue = Number(previousBookingRevenue.rows[0].revenue || 0);
+    const previousRentalRevenueValue = Number(previousRentalRevenue.rows[0].revenue || 0);
+    const previousTransactionCount = Number(previousBookingRevenue.rows[0].count || 0) + Number(previousRentalRevenue.rows[0].count || 0);
+    const totalRevenue = bookingRevenueValue + rentalRevenueValue;
+    const previousTotalRevenue = previousBookingRevenueValue + previousRentalRevenueValue;
+    const daily = buildDailySeries(monthRange, bookingDaily.rows, rentalDaily.rows);
+    const bestRevenueDay = daily.reduce((best, day) => {
+      const revenue = Number(day.booking_revenue || 0) + Number(day.rental_revenue || 0);
+      return revenue > Number(best.revenue || 0) ? { date: day.date, label: day.label, revenue } : best;
+    }, { date: null, label: 'No revenue', revenue: 0 });
+    const cancellationCount = Number(bookingCancellations.rows[0].count || 0) + Number(rentalCancellations.rows[0].count || 0);
+    const totalRecords = transactionCount + cancellationCount;
+    const paymentRevenueTotal = paymentDetails.rows.reduce((sum, payment) => sum + Number(payment.revenue || 0), 0);
+    const paymentCountTotal = paymentDetails.rows.reduce((sum, payment) => sum + Number(payment.count || 0), 0);
+
+    const bookingDetailRows = bookingDetails.rows.map((row) => ({
+      ...row,
+      cancellation_rate: calculatePercent(row.cancelled_count, row.total_records)
+    }));
+    const rentalDetailRows = rentalDetails.rows.map((row) => ({
+      ...row,
+      cancellation_rate: calculatePercent(row.cancelled_count, row.total_records)
+    }));
+    const paymentDetailRows = paymentDetails.rows.map((row) => ({
+      ...row,
+      count_share: calculatePercent(row.count, paymentCountTotal),
+      revenue_share: calculatePercent(row.revenue, paymentRevenueTotal)
+    }));
 
     res.json({
       month: monthRange.key,
       metrics: {
-        total_revenue: bookingRevenueValue + rentalRevenueValue,
+        total_revenue: totalRevenue,
         booking_revenue: bookingRevenueValue,
         rental_revenue: rentalRevenueValue,
-        transactions: transactionCount
+        transactions: transactionCount,
+        average_transaction_value: transactionCount ? Number((totalRevenue / transactionCount).toFixed(2)) : 0,
+        cancellation_rate: calculatePercent(cancellationCount, totalRecords)
       },
-      daily: buildDailySeries(monthRange, bookingDaily.rows, rentalDaily.rows),
+      comparison: {
+        month: previousRange.key,
+        total_revenue: calculateChange(totalRevenue, previousTotalRevenue),
+        booking_revenue: calculateChange(bookingRevenueValue, previousBookingRevenueValue),
+        rental_revenue: calculateChange(rentalRevenueValue, previousRentalRevenueValue),
+        transactions: calculateChange(transactionCount, previousTransactionCount)
+      },
+      summary: {
+        average_transaction_value: transactionCount ? Number((totalRevenue / transactionCount).toFixed(2)) : 0,
+        active_customers: Number(activeCustomers.rows[0].count || 0),
+        new_customers: Number(newCustomers.rows[0].count || 0),
+        cancellation_count: cancellationCount,
+        cancellation_rate: calculatePercent(cancellationCount, totalRecords),
+        best_revenue_day: bestRevenueDay,
+        revenue_source_split: {
+          booking_percent: calculatePercent(bookingRevenueValue, totalRevenue),
+          rental_percent: calculatePercent(rentalRevenueValue, totalRevenue)
+        }
+      },
+      daily,
       top_routes: topRoutes.rows,
       top_cars: topCars.rows,
       top_companies: topCompanies.rows,
       top_customers: topCustomers.rows,
-      payment_mix: paymentMix.rows
+      payment_mix: paymentMix.rows,
+      details: {
+        bookings: bookingDetailRows,
+        rentals: rentalDetailRows,
+        customers: customerDetails.rows,
+        companies: topCompanies.rows,
+        payments: paymentDetailRows
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3984,14 +6677,585 @@ app.post('/api/auth/logout', async (req, res) => {
   }
 });
 
+app.get('/api/my/profile', async (req, res) => {
+  try {
+    const authUser = await getAuthUserFromRequest(req);
+    const userResult = await pool.query(
+      `SELECT
+         u.id,
+         u.first_name,
+         u.last_name,
+         u.email,
+         u.phone,
+         u.national_id,
+         u.created_at,
+         COALESCE(u.is_active, TRUE) AS is_active,
+         COALESCE(r.name, u.role, 'user') AS role,
+         COALESCE(r.label, INITCAP(COALESCE(r.name, u.role, 'user'))) AS role_label
+       FROM users u
+       LEFT JOIN roles r ON r.id = u.role_id
+       WHERE u.id = $1`,
+      [authUser.id]
+    );
+
+    if (!userResult.rowCount) return res.status(404).json({ error: 'Profile not found.' });
+
+    const statsResult = await pool.query(
+      `WITH trip_tickets AS (
+         SELECT DISTINCT COALESCE(round_trip_reference, booking_reference, CONCAT('BT-', LPAD(id::TEXT, 6, '0'))) AS ticket_reference
+         FROM bus_bookings
+         WHERE user_id = $1
+           AND status <> 'cancelled'
+       ),
+       route_counts AS (
+         SELECT
+           br.origin,
+           br.destination,
+           COUNT(*)::INT AS count
+         FROM bus_bookings bb
+         JOIN bus_routes br ON br.id = bb.route_id
+         WHERE bb.user_id = $1
+           AND bb.status <> 'cancelled'
+         GROUP BY br.origin, br.destination
+         ORDER BY count DESC, br.origin, br.destination
+         LIMIT 1
+       )
+       SELECT
+         (SELECT COUNT(*)::INT FROM trip_tickets) AS total_trips,
+         (SELECT COUNT(*)::INT FROM car_rentals WHERE user_id = $1 AND status <> 'cancelled') AS total_rentals,
+         (SELECT COUNT(*)::INT FROM bus_bookings WHERE user_id = $1 AND status = 'cancelled') AS cancelled_tickets,
+         (SELECT COUNT(*)::INT FROM car_rentals WHERE user_id = $1 AND status = 'cancelled') AS cancelled_rentals,
+         COALESCE((SELECT CONCAT(origin, ' -> ', destination) FROM route_counts), 'No trips yet') AS favourite_route`,
+      [authUser.id]
+    );
+
+    res.json({
+      user: userResult.rows[0],
+      stats: statsResult.rows[0] || {
+        total_trips: 0,
+        total_rentals: 0,
+        cancelled_tickets: 0,
+        cancelled_rentals: 0,
+        favourite_route: 'No trips yet'
+      }
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put('/api/my/profile', async (req, res) => {
+  const firstName = normalizeText(req.body.first_name);
+  const lastName = normalizeText(req.body.last_name);
+  const email = normalizeText(req.body.email).toLowerCase();
+  const phone = normalizeText(req.body.phone);
+  const nationalId = normalizeText(req.body.national_id) || null;
+
+  if (!firstName || !lastName || !email || !phone) {
+    return res.status(400).json({ error: 'First name, last name, email, and phone are required.' });
+  }
+
+  try {
+    const authUser = await getAuthUserFromRequest(req);
+    const duplicate = await pool.query(
+      `SELECT id, email, phone
+       FROM users
+       WHERE id <> $1
+         AND (LOWER(email) = LOWER($2) OR phone = $3)
+       LIMIT 1`,
+      [authUser.id, email, phone]
+    );
+
+    if (duplicate.rowCount) {
+      const row = duplicate.rows[0];
+      return res.status(400).json({
+        error: String(row.email || '').toLowerCase() === email ? 'Email is already used by another account.' : 'Phone is already used by another account.'
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE users
+       SET first_name = $1,
+           last_name = $2,
+           email = $3,
+           phone = $4,
+           national_id = $5
+       WHERE id = $6
+       RETURNING id, first_name, last_name, email, phone, national_id, role, is_active, created_at`,
+      [firstName, lastName, email, phone, nationalId, authUser.id]
+    );
+
+    res.json({ user: result.rows[0], message: 'Profile updated successfully.' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put('/api/my/profile/password', async (req, res) => {
+  const currentPassword = String(req.body.current_password || '');
+  const newPassword = String(req.body.new_password || '');
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required.' });
+  }
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+  }
+
+  try {
+    const authUser = await getAuthUserFromRequest(req);
+    const result = await pool.query(`SELECT password_hash FROM users WHERE id = $1`, [authUser.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Profile not found.' });
+
+    const isMatch = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
+    if (!isMatch) return res.status(400).json({ error: 'Current password is incorrect.' });
+
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(newPassword, salt);
+    await pool.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, authUser.id]);
+    res.json({ message: 'Password updated successfully.' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get('/api/my/bookings/trips', async (req, res) => {
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const result = await pool.query(
+      `SELECT
+         bb.id,
+         COALESCE(bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS booking_reference,
+         bb.round_trip_reference,
+         COALESCE(bb.trip_leg, 'outbound') AS trip_leg,
+         bb.user_id,
+         bb.route_id,
+         bb.seat_number,
+         bb.total_price,
+         COALESCE(bb.original_price, bb.total_price) AS original_price,
+         COALESCE(bb.discount_amount, 0) AS discount_amount,
+         bb.payment_method,
+         bb.status,
+         bb.created_at,
+         bb.passenger_first_name,
+         bb.passenger_last_name,
+         bb.passenger_phone,
+         bb.passenger_email,
+         bb.passenger_id_number,
+         r.origin,
+         r.destination,
+         r.departure_time,
+         r.arrival_time,
+         r.price,
+         r.daily_template_id,
+         r.service_date,
+         COALESCE(r.is_generated, FALSE) AS is_generated,
+         b.name AS bus_name,
+         b.type AS bus_type,
+         b.plate_number,
+         c.name AS company_name,
+         c.theme_color AS color,
+         c.theme_bg AS bg
+       FROM bus_bookings bb
+       JOIN bus_routes r ON r.id = bb.route_id
+       JOIN buses b ON b.id = r.bus_id
+       LEFT JOIN companies c ON c.id = b.company_id
+       WHERE bb.user_id = $1
+       ORDER BY bb.created_at DESC, bb.id DESC`,
+      [user.id]
+    );
+
+    const statusRank = { confirmed: 4, pending: 3, completed: 2, cancelled: 1 };
+    const tickets = new Map();
+
+    result.rows.forEach((row) => {
+      const groupKey = row.round_trip_reference || row.booking_reference || `BT-${String(row.id).padStart(6, '0')}`;
+      if (!tickets.has(groupKey)) {
+        tickets.set(groupKey, {
+          ticket_reference: groupKey,
+          round_trip_reference: row.round_trip_reference,
+          is_round_trip: Boolean(row.round_trip_reference),
+          first_booking_id: row.id,
+          booking_reference: row.booking_reference,
+          status: row.status,
+          status_rank: statusRank[row.status] || 0,
+          created_at: row.created_at,
+          latest_created_at: row.created_at,
+          passenger_first_name: row.passenger_first_name,
+          passenger_last_name: row.passenger_last_name,
+          passenger_phone: row.passenger_phone,
+          passenger_email: row.passenger_email,
+          passenger_id_number: row.passenger_id_number,
+          payment_method: row.payment_method,
+          subtotal_amount: 0,
+          discount_amount: 0,
+          total_amount: 0,
+          legs: []
+        });
+      }
+
+      const ticket = tickets.get(groupKey);
+      ticket.status_rank = Math.max(ticket.status_rank, statusRank[row.status] || 0);
+      ticket.status = Object.keys(statusRank).find((key) => statusRank[key] === ticket.status_rank) || ticket.status;
+      if (new Date(row.created_at) > new Date(ticket.latest_created_at)) ticket.latest_created_at = row.created_at;
+      ticket.subtotal_amount += Number(row.original_price || row.total_price || 0);
+      ticket.discount_amount += Number(row.discount_amount || 0);
+      ticket.total_amount += Number(row.total_price || 0);
+
+      const legKey = `${row.trip_leg || 'outbound'}-${row.booking_reference || row.route_id}`;
+      let leg = ticket.legs.find((item) => item.leg_key === legKey);
+      if (!leg) {
+        leg = {
+          leg_key: legKey,
+          booking_reference: row.booking_reference,
+          leg_type: row.trip_leg || 'outbound',
+          route_id: row.route_id,
+          seats: [],
+          booking_ids: [],
+          total_amount: 0,
+          subtotal_amount: 0,
+          discount_amount: 0,
+          payment_method: row.payment_method,
+          status: row.status,
+          origin: row.origin,
+          destination: row.destination,
+          departure_time: row.departure_time,
+          arrival_time: row.arrival_time,
+          price: row.price,
+          daily_template_id: row.daily_template_id,
+          service_date: row.service_date,
+          is_generated: row.is_generated,
+          bus_name: row.bus_name,
+          bus_type: row.bus_type,
+          plate_number: row.plate_number,
+          company_name: row.company_name,
+          color: row.color,
+          bg: row.bg
+        };
+        ticket.legs.push(leg);
+      }
+
+      leg.seats.push(row.seat_number);
+      leg.booking_ids.push(row.id);
+      leg.subtotal_amount += Number(row.original_price || row.total_price || 0);
+      leg.discount_amount += Number(row.discount_amount || 0);
+      leg.total_amount += Number(row.total_price || 0);
+    });
+
+    const trips = Array.from(tickets.values())
+      .map((ticket) => ({
+        ...ticket,
+        subtotal_amount: Number(ticket.subtotal_amount.toFixed(2)),
+        discount_amount: Number(ticket.discount_amount.toFixed(2)),
+        total_amount: Number(ticket.total_amount.toFixed(2)),
+        legs: ticket.legs
+          .map((leg) => ({
+            ...leg,
+            subtotal_amount: Number(leg.subtotal_amount.toFixed(2)),
+            discount_amount: Number(leg.discount_amount.toFixed(2)),
+            total_amount: Number(leg.total_amount.toFixed(2))
+          }))
+          .sort((a, b) => (a.leg_type === 'outbound' ? -1 : 1) - (b.leg_type === 'outbound' ? -1 : 1))
+      }))
+      .sort((a, b) => new Date(b.latest_created_at) - new Date(a.latest_created_at));
+
+    res.json({ trips });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/my/bookings/trips/:reference/cancel', async (req, res) => {
+  const reference = normalizeText(req.params.reference);
+  if (!reference) return res.status(400).json({ error: 'Ticket reference is required.' });
+
+  const client = await pool.connect();
+  try {
+    const user = await getAuthUserFromRequest(req);
+    await client.query('BEGIN');
+
+    const ticketResult = await client.query(
+      `SELECT
+         bb.id,
+         bb.status,
+         bb.booking_reference,
+         bb.round_trip_reference,
+         r.departure_time
+       FROM bus_bookings bb
+       JOIN bus_routes r ON r.id = bb.route_id
+       WHERE bb.user_id = $1
+         AND (
+           bb.booking_reference = $2
+           OR bb.round_trip_reference = $2
+           OR CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0')) = $2
+         )
+       FOR UPDATE OF bb`,
+      [user.id, reference]
+    );
+
+    if (!ticketResult.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Ticket not found.' });
+    }
+
+    const rows = ticketResult.rows;
+    const activeRows = rows.filter((row) => ['pending', 'confirmed'].includes(String(row.status || '').toLowerCase()));
+    if (activeRows.length !== rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Only pending or confirmed tickets can be cancelled.' });
+    }
+
+    const earliestDeparture = rows.reduce((earliest, row) => {
+      const departure = new Date(row.departure_time);
+      if (Number.isNaN(departure.getTime())) return earliest;
+      return !earliest || departure < earliest ? departure : earliest;
+    }, null);
+    const bookingIds = activeRows.map((row) => row.id);
+    const movedResult = await client.query(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM booking_recovery_events
+         WHERE booking_id = ANY($1::INT[])
+           AND reason ILIKE 'maintenance%'
+       ) AS moved_due_to_maintenance`,
+      [bookingIds]
+    );
+    const movedDueToMaintenance = Boolean(movedResult.rows[0]?.moved_due_to_maintenance);
+    const cancellationCutoff = new Date(Date.now() + (movedDueToMaintenance ? 30 : 120) * 60 * 1000);
+
+    if (!earliestDeparture || earliestDeparture <= cancellationCutoff) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: movedDueToMaintenance
+          ? 'Moved maintenance tickets can only be cancelled more than 30 minutes before departure.'
+          : 'Tickets can only be cancelled more than 2 hours before departure.'
+      });
+    }
+
+    const cancelResult = await client.query(
+      `UPDATE bus_bookings
+       SET status = 'cancelled'
+       WHERE user_id = $1
+         AND id = ANY($2::INT[])
+       RETURNING id`,
+      [user.id, bookingIds]
+    );
+
+    await client.query(
+      `UPDATE transactions
+       SET status = 'cancelled'
+       WHERE user_id = $1
+         AND bus_booking_id = ANY($2::INT[])`,
+      [user.id, bookingIds]
+    );
+
+    await client.query('COMMIT');
+    res.json({
+      message: 'Ticket cancelled successfully.',
+      cancelled_count: cancelResult.rowCount
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(err.status || 500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // 5. Create a Bus Booking
 app.post('/api/bookings/bus', async (req, res) => {
-  const { user_id, route_id, seat_number, total_price, payment_method } = req.body;
+  const rawLegs = Array.isArray(req.body.legs) && req.body.legs.length
+    ? req.body.legs
+    : [{
+      route_id: req.body.route_id,
+      seat_numbers: req.body.seat_numbers || (req.body.seat_number ? [req.body.seat_number] : []),
+      leg_type: 'outbound'
+    }];
+  const paymentMethod = normalizeText(req.body.payment_method).toLowerCase();
+  const passenger = req.body.passenger || {};
+  const passengerFirstName = normalizeText(passenger.first_name || req.body.first_name);
+  const passengerLastName = normalizeText(passenger.last_name || req.body.last_name);
+  const passengerPhone = normalizeText(passenger.phone || req.body.phone);
+  const passengerEmail = normalizeText(passenger.email || req.body.email);
+  const passengerIdNumber = normalizeText(passenger.id_number || req.body.id_number);
+  const legs = rawLegs.map((leg) => ({
+    route_id: Number(leg.route_id),
+    leg_type: normalizeText(leg.leg_type || 'outbound').toLowerCase(),
+    seat_numbers: (Array.isArray(leg.seat_numbers) ? leg.seat_numbers : [])
+      .map((seat) => normalizeText(seat).toUpperCase())
+      .filter(Boolean)
+  }));
+  const isRoundTrip = legs.length === 2;
+
+  if (!legs.length || legs.length > 2) return res.status(400).json({ error: 'One-way bookings need one leg, and round trips need two legs.' });
+  if (isRoundTrip && new Set(legs.map((leg) => leg.leg_type)).size !== 2) return res.status(400).json({ error: 'Round trips require outbound and return legs.' });
+  if (isRoundTrip && (!legs.some((leg) => leg.leg_type === 'outbound') || !legs.some((leg) => leg.leg_type === 'return'))) {
+    return res.status(400).json({ error: 'Round trips require outbound and return legs.' });
+  }
+  if (legs.some((leg) => !leg.route_id)) return res.status(400).json({ error: 'Route is required.' });
+  if (legs.some((leg) => !['outbound', 'return'].includes(leg.leg_type))) return res.status(400).json({ error: 'Invalid trip leg.' });
+  if (legs.some((leg) => !leg.seat_numbers.length)) return res.status(400).json({ error: 'At least one seat is required for every leg.' });
+  if (legs.some((leg) => new Set(leg.seat_numbers).size !== leg.seat_numbers.length)) return res.status(400).json({ error: 'Duplicate seats are not allowed.' });
+  if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
+  if (!passengerFirstName || !passengerLastName || !passengerPhone || !passengerEmail || !passengerIdNumber) {
+    return res.status(400).json({ error: 'Passenger name, phone, email, and ID/passport are required.' });
+  }
+
+  const client = await pool.connect();
   try {
-    // Note: This requires inserting into bus_seats and bus_bookings
-    res.status(201).json({ message: 'Booking created successfully', route_id, seat_number });
+    const user = await getAuthUserFromRequest(req);
+    await releaseExpiredBusMaintenance();
+    await generateDailyRoutes();
+    await client.query('BEGIN');
+
+    const fail = (status, message) => {
+      const error = new Error(message);
+      error.status = status;
+      throw error;
+    };
+    const routeByLeg = {};
+
+    for (const leg of legs) {
+      const routeResult = await client.query(
+        `SELECT
+           r.*,
+           b.total_seats,
+           b.maintenance_start AS bus_maintenance_start,
+           b.maintenance_end AS bus_maintenance_end,
+           b.seat_map_override,
+           t.layout_json AS template_layout,
+           c.name AS company_name,
+           c.theme_color AS color,
+           c.theme_bg AS bg
+         FROM bus_routes r
+         JOIN buses b ON b.id = r.bus_id
+         LEFT JOIN bus_seat_map_templates t ON t.id = b.seat_map_template_id
+         LEFT JOIN companies c ON c.id = b.company_id
+         WHERE r.id = $1
+         FOR UPDATE OF r`,
+        [leg.route_id]
+      );
+      const route = routeResult.rows[0];
+      if (!route) fail(404, 'Route not found.');
+      if (new Date(route.departure_time) < new Date()) fail(409, 'This trip already departed and cannot be booked.');
+      if (routeIsMaintenanceBlocked(route)) fail(409, 'This trip is under maintenance and cannot be booked.');
+
+      const seatMap = resolveSeatMap(route);
+      const canonicalSeatByKey = new Map(
+        (seatMap.cells || [])
+          .filter((cell) => cell.type === 'seat' && normalizeText(cell.label))
+          .map((cell) => [normalizeText(cell.label).toUpperCase(), normalizeText(cell.label)])
+      );
+      const missingSeats = leg.seat_numbers.filter((seat) => !canonicalSeatByKey.has(seat));
+      if (missingSeats.length) fail(400, `These seats do not exist on this bus: ${missingSeats.join(', ')}.`);
+
+      const booked = await client.query(
+        `SELECT seat_number
+         FROM bus_bookings
+         WHERE route_id = $1
+           AND status <> 'cancelled'
+           AND UPPER(seat_number) = ANY($2::TEXT[])`,
+        [leg.route_id, leg.seat_numbers]
+      );
+      if (booked.rowCount) fail(409, `These seats are already booked: ${booked.rows.map((row) => row.seat_number).join(', ')}.`);
+
+      routeByLeg[leg.leg_type] = { route, canonicalSeatByKey };
+    }
+
+    if (isRoundTrip) {
+      const outbound = routeByLeg.outbound?.route;
+      const returning = routeByLeg.return?.route;
+      if (!outbound || !returning) fail(400, 'Round trips require outbound and return legs.');
+      if (outbound.origin !== returning.destination || outbound.destination !== returning.origin) {
+        fail(400, 'Return trip must use the reverse destination of the outbound trip.');
+      }
+      if (new Date(returning.departure_time) <= new Date(outbound.departure_time)) {
+        fail(400, 'Coming back trip must depart after the outbound trip.');
+      }
+    }
+
+    const roundTripReference = isRoundTrip ? `RT-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}` : null;
+    const discountRate = isRoundTrip ? 0.05 : 0;
+    const inserted = [];
+
+    for (const leg of legs) {
+      const { route, canonicalSeatByKey } = routeByLeg[leg.leg_type];
+      const bookingReference = isRoundTrip
+        ? `${roundTripReference}-${leg.leg_type === 'return' ? 'RET' : 'OUT'}`
+        : `BT-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+      const originalPrice = Number(route.price || 0);
+      const discountAmount = Number((originalPrice * discountRate).toFixed(2));
+      const discountedPrice = Number((originalPrice - discountAmount).toFixed(2));
+
+      for (const seat of leg.seat_numbers) {
+        const seatLabel = canonicalSeatByKey.get(seat);
+        const insertResult = await client.query(
+          `INSERT INTO bus_bookings (
+             user_id,
+             route_id,
+             booking_reference,
+             round_trip_reference,
+             trip_leg,
+             seat_number,
+             original_price,
+             discount_amount,
+             total_price,
+             passenger_first_name,
+             passenger_last_name,
+             passenger_phone,
+             passenger_email,
+             passenger_id_number,
+             payment_method,
+             status
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'confirmed')
+           RETURNING id, route_id, booking_reference, round_trip_reference, trip_leg, seat_number, original_price, discount_amount, total_price`,
+          [
+            user.id,
+            leg.route_id,
+            bookingReference,
+            roundTripReference,
+            leg.leg_type,
+            seatLabel,
+            originalPrice,
+            discountAmount,
+            discountedPrice,
+            passengerFirstName,
+            passengerLastName,
+            passengerPhone,
+            passengerEmail,
+            passengerIdNumber,
+            paymentMethod
+          ]
+        );
+        const booking = insertResult.rows[0];
+        inserted.push(booking);
+        await client.query(
+          `INSERT INTO transactions (user_id, bus_booking_id, amount, payment_method, status)
+           VALUES ($1, $2, $3, ($4)::payment_method, 'success')`,
+          [user.id, booking.id, discountedPrice, paymentMethod]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({
+      message: 'Booking created successfully.',
+      round_trip_reference: roundTripReference,
+      booking_reference: inserted[0]?.booking_reference,
+      bookings: inserted,
+      subtotal_price: Number(inserted.reduce((sum, booking) => sum + Number(booking.original_price || 0), 0).toFixed(2)),
+      discount_amount: Number(inserted.reduce((sum, booking) => sum + Number(booking.discount_amount || 0), 0).toFixed(2)),
+      total_price: Number(inserted.reduce((sum, booking) => sum + Number(booking.total_price || 0), 0).toFixed(2))
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    await client.query('ROLLBACK').catch(() => {});
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'One or more selected seats were just booked. Please choose another seat.' });
+    }
+    res.status(err.status || 500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 

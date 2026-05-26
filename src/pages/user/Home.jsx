@@ -1,14 +1,150 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { setupScrollReveal, getCompanyMeta } from '../../utils/sharedUser';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { carModels } from '../../data/transportData';
-import Footer from '../../components/Footer';
-import { Icon, icons, setupScrollReveal, NAV, companyMeta, getCompanyMeta } from '../../utils/sharedUser';
+function formatDateTime(value) {
+  if (!value) return 'Not set';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not set';
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+function formatStatus(status) {
+  return String(status || 'pending')
+    .split('_')
+    .map((part) => part ? part[0].toUpperCase() + part.slice(1) : '')
+    .join(' ');
+}
+
+function statusBadge(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'confirmed') return 'badge-green';
+  if (normalized === 'returned' || normalized === 'completed') return 'badge-purple';
+  if (normalized === 'cancelled') return 'badge-red';
+  return 'badge-amber';
+}
+
+function buildTripActivity(row) {
+  const legs = Array.isArray(row.legs) && row.legs.length ? row.legs : [row];
+  const outbound = legs.find((leg) => leg.leg_type === 'outbound') || legs[0] || {};
+  const returning = legs.find((leg) => leg.leg_type === 'return');
+  const seats = legs.flatMap((leg) => Array.isArray(leg.seats) ? leg.seats : []).filter(Boolean);
+  const company = outbound.company_name || row.company_name || 'Unknown company';
+  const companyColor = outbound.color || row.color || getCompanyMeta(company).color;
+
+  return {
+    id: `trip-${row.ticket_reference || row.booking_reference || row.first_booking_id}`,
+    type: 'ticket',
+    route: returning
+      ? `${outbound.origin || 'Origin'} -> ${outbound.destination || 'Destination'} round trip`
+      : `${outbound.origin || row.origin || 'Origin'} -> ${outbound.destination || row.destination || 'Destination'}`,
+    company,
+    color: companyColor,
+    date: formatDateTime(outbound.departure_time || row.departure_time),
+    seatLabel: seats.length ? seats.join(', ') : 'No seats',
+    status: formatStatus(row.status),
+    statusKey: row.status,
+    createdAt: row.latest_created_at || row.created_at || outbound.departure_time || row.departure_time,
+    targetTab: 'trips'
+  };
+}
+
+function buildRentalActivity(row) {
+  return {
+    id: `rental-${row.id}`,
+    type: 'rental',
+    route: row.car_name || 'Rental car',
+    date: `${formatDateTime(row.pickup_datetime)} to ${formatDateTime(row.return_datetime)}`,
+    seatLabel: `${Number(row.rental_hours || 0)} hour${Number(row.rental_hours || 0) === 1 ? '' : 's'}`,
+    status: formatStatus(row.status),
+    statusKey: row.status,
+    createdAt: row.booked_at || row.pickup_datetime,
+    targetTab: 'rentals'
+  };
+}
 
 export default function Home({
   role,
-  setActive
+  setActive,
+  setBookingsTab
 }) {
+  const { token, user } = useAuth();
+  const [recentTrips, setRecentTrips] = useState([]);
+  const [recentRentals, setRecentRentals] = useState([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState('');
+
+  useEffect(() => {
+    if (role === 'guest' || !token) {
+      setRecentTrips([]);
+      setRecentRentals([]);
+      setActivityError('');
+      setActivityLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    async function loadRecentActivity() {
+      setActivityLoading(true);
+      setActivityError('');
+      try {
+        const [tripsResponse, rentalsResponse] = await Promise.all([
+          fetch('/api/my/bookings/trips', {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: controller.signal
+          }),
+          fetch('/api/my/rentals', {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: controller.signal
+          })
+        ]);
+
+        const tripsData = await tripsResponse.json().catch(() => ({}));
+        const rentalsData = await rentalsResponse.json().catch(() => ({}));
+        if (!tripsResponse.ok) throw new Error(tripsData.error || 'Unable to load recent trips.');
+        if (!rentalsResponse.ok) throw new Error(rentalsData.error || 'Unable to load recent rentals.');
+
+        setRecentTrips((Array.isArray(tripsData.trips) ? tripsData.trips : []).map(buildTripActivity));
+        setRecentRentals((Array.isArray(rentalsData.rentals) ? rentalsData.rentals : []).map(buildRentalActivity));
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          setRecentTrips([]);
+          setRecentRentals([]);
+          setActivityError(error.message || 'Unable to load recent activity.');
+        }
+      } finally {
+        if (!controller.signal.aborted) setActivityLoading(false);
+      }
+    }
+
+    loadRecentActivity();
+    return () => controller.abort();
+  }, [role, token]);
+
+  const recentActivity = useMemo(() => {
+    return [...recentTrips, ...recentRentals]
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      .slice(0, 4);
+  }, [recentTrips, recentRentals]);
+
+  useEffect(() => {
+    const cleanup = setupScrollReveal({
+      threshold: 0.05,
+      rootMargin: '0px 0px 18% 0px'
+    });
+    return cleanup;
+  }, [recentActivity, activityLoading, activityError]);
+
+  function openActivity(item) {
+    if (setBookingsTab) setBookingsTab(item.targetTab);
+    setActive('bookings');
+  }
+
   return <div>
       <div className="hero">
         <div className="page hero-content">
@@ -22,17 +158,15 @@ export default function Home({
           </div>
 
           {/* ── EARTH SURFACE + CAR ── */}
-          <div className="earth-wrap" style={{
-          marginTop: 36
-        }}>
+          <div className="earth-wrap" style={{ marginTop: 36 }}>
             {/* Earth curve + glow */}
             <svg viewBox="0 0 1440 140" preserveAspectRatio="none" style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            width: '100%',
-            height: '100%'
-          }} xmlns="http://www.w3.org/2000/svg">
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              width: '100%',
+              height: '100%'
+            }} xmlns="http://www.w3.org/2000/svg">
               <defs>
                 <radialGradient id="earthGlow" cx="50%" cy="0%" r="70%">
                   <stop offset="0%" stopColor="rgba(79,142,247,0.22)" />
@@ -57,17 +191,17 @@ export default function Home({
 
             {/* Car on the arc */}
             <div style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            pointerEvents: 'none'
-          }}>
-              <svg viewBox="0 0 1440 140" preserveAspectRatio="none" style={{
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
               width: '100%',
-              height: '100%'
-            }} xmlns="http://www.w3.org/2000/svg">
+              height: '100%',
+              pointerEvents: 'none'
+            }}>
+              <svg viewBox="0 0 1440 140" preserveAspectRatio="none" style={{
+                width: '100%',
+                height: '100%'
+              }} xmlns="http://www.w3.org/2000/svg">
                 <defs>
                   <path id="carPath" d="M0,140 Q720,-60 1440,140" />
                 </defs>
@@ -99,39 +233,23 @@ export default function Home({
           <div className="service-grid">
             <div className="service-card" onClick={() => setActive('search')}>
               <div className="hero-emoji">🚌</div>
-              <div style={{
-              fontWeight: 600,
-              marginBottom: 4
-            }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
                 Bus seat booking
               </div>
-              <div style={{
-              fontSize: 12,
-              color: 'var(--text-2)'
-            }}>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
                 Search routes, pick seats and pay.
               </div>
-              <button className="btn btn-primary btn-sm" style={{
-              marginTop: 16
-            }}>
+              <button className="btn btn-primary btn-sm" style={{ marginTop: 16 }}>
                 Book now
               </button>
             </div>
             <div className="service-card" onClick={() => setActive('cars')}>
               <div className="hero-emoji">🚗</div>
-              <div style={{
-              fontWeight: 600,
-              marginBottom: 4
-            }}>Car rental</div>
-              <div style={{
-              fontSize: 12,
-              color: 'var(--text-2)'
-            }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Car rental</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
                 Browse sedans and SUVs for rent.
               </div>
-              <button className="btn btn-primary btn-sm" style={{
-              marginTop: 16
-            }}>
+              <button className="btn btn-primary btn-sm" style={{ marginTop: 16 }}>
                 Browse cars
               </button>
             </div>
@@ -139,44 +257,42 @@ export default function Home({
         </div>
       </div>
 
-      <div className="page">
-        <div className="sec-title">Recent activity</div>
-        {role === 'guest' ? <div className="card scroll-animate" style={{
-        textAlign: 'center',
-        padding: '32px'
-      }}>
-            <p style={{
-          color: 'var(--text-3)',
-          fontSize: '13px'
-        }}>
-              No recent activity. Sign in to track your trips.
-            </p>
-          </div> : [{
-        type: 'ticket',
-        route: 'Phnom Penh → Siem Reap',
-        company: 'Mekong Express',
-        date: 'Apr 5, 06:00',
-        seat: 'A12',
-        status: 'Confirmed'
-      }, {
-        type: 'rental',
-        route: 'Toyota Camry rental',
-        date: 'Mar 28 – Apr 3',
-        seat: '3 days',
-        status: 'Returned'
-      }].map((b, i) => <div key={i} className="booking-item ticket-card scroll-animate" style={{
-        '--delay': `${i * 40}ms`
-      }}>
-              <div className="booking-header">
-                <div>
-                  <span className={`badge ${b.type === 'ticket' ? 'badge-blue' : 'badge-purple'}`} style={{
-              marginBottom: 6,
-              fontSize: 9
-            }}>
-                    {b.type === 'ticket' ? 'BUS TICKET' : 'CAR RENTAL'}
-                  </span>
-                  <div className="booking-route">{b.route}</div>
-                  {b.type === 'ticket' && <div style={{
+    <div className="page">
+      <div className="sec-title">Recent activity{user?.first_name ? ` for ${user.first_name}` : ''}</div>
+
+      {role === 'guest' ? <div className="card scroll-animate" style={{ textAlign: 'center', padding: '32px' }}>
+        <p style={{ color: 'var(--text-3)', fontSize: 13 }}>
+          No recent activity. Sign in to track your trips.
+        </p>
+      </div> : null}
+
+      {role !== 'guest' && activityLoading ? <div className="card scroll-animate">
+        <div className="page-sub">Loading your latest trips and rentals...</div>
+      </div> : null}
+
+      {role !== 'guest' && activityError ? <div className="card scroll-animate" style={{ borderColor: 'rgba(248,113,113,0.35)' }}>
+        <div className="page-sub" style={{ color: 'var(--red)' }}>{activityError}</div>
+      </div> : null}
+
+      {role !== 'guest' && !activityLoading && !activityError && !recentActivity.length ? <div className="card scroll-animate" style={{ textAlign: 'center', padding: '32px' }}>
+        <p style={{ color: 'var(--text-3)', fontSize: 13 }}>
+          No recent activity yet. Book a trip or rent a car to see it here.
+        </p>
+      </div> : null}
+
+      {role !== 'guest' && !activityLoading && !activityError && recentActivity.map((item, index) => <div
+        key={item.id}
+        className="booking-item ticket-card scroll-animate quick-scroll-animate"
+        style={{ '--delay': `${index * 15}ms`, cursor: 'pointer' }}
+        onClick={() => openActivity(item)}
+      >
+        <div className="booking-header">
+          <div>
+            <span className={`badge ${item.type === 'ticket' ? 'badge-blue' : 'badge-purple'}`} style={{ marginBottom: 6, fontSize: 9 }}>
+              {item.type === 'ticket' ? 'BUS TICKET' : 'CAR RENTAL'}
+            </span>
+            <div className="booking-route">{item.route}</div>
+            {item.type === 'ticket' ? <div style={{
               fontSize: 11,
               color: 'var(--text-2)',
               display: 'flex',
@@ -184,41 +300,30 @@ export default function Home({
               gap: 6,
               marginTop: 2
             }}>
-                      <span style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                background: getCompanyMeta(b.company).color
-              }} />
-                      <span style={{
-                color: getCompanyMeta(b.company).color
-              }}>
-                        {b.company}
-                      </span>
-                    </div>}
-                </div>
-                <span className={`badge ${b.status === 'Confirmed' ? 'badge-green' : 'badge-purple'}`}>
-                  {b.status}
-                </span>
-              </div>
-              <div className="booking-meta">
-                <div className="booking-meta-item">
-                  Date<span>{b.date}</span>
-                </div>
-                <div className="booking-meta-item">
-                  {b.type === 'ticket' ? 'Seat' : 'Duration'}
-                  <span>{b.seat}</span>
-                </div>
-                {b.type === 'ticket' && <div className="booking-meta-item">
-                    Bus
-                    <span style={{
-              color: getCompanyMeta(b.company).color
-            }}>
-                      {b.company}
-                    </span>
-                  </div>}
-              </div>
-            </div>)}
-      </div>
-    </div>;
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: item.color }} />
+              <span style={{ color: item.color }}>{item.company}</span>
+            </div> : null}
+          </div>
+          <span className={`badge ${statusBadge(item.statusKey)}`}>
+            {item.status}
+          </span>
+        </div>
+
+        <div className="booking-meta">
+          <div className="booking-meta-item">
+            Date<span>{item.date}</span>
+          </div>
+          <div className="booking-meta-item">
+            {item.type === 'ticket' ? 'Seat' : 'Duration'}
+            <span>{item.seatLabel}</span>
+          </div>
+          {item.type === 'ticket' ? <div className="booking-meta-item">
+            Company<span style={{ color: item.color }}>{item.company}</span>
+          </div> : <div className="booking-meta-item">
+            Type<span>Rental</span>
+          </div>}
+        </div>
+      </div>)}
+    </div>
+  </div>;
 }

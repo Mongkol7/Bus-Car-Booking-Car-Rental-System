@@ -91,6 +91,62 @@ function formatDateTime(value) {
   });
 }
 
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return 'now';
+  const totalMinutes = Math.max(1, Math.ceil(ms / 60000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes && !days) parts.push(`${minutes}m`);
+  return parts.join(' ') || 'now';
+}
+
+function getRentalCarAvailability(car, now = new Date()) {
+  const rawStatus = String(car?.status || 'available').toLowerCase();
+  if (rawStatus === 'maintenance') {
+    return { status: 'maintenance', label: 'Maintenance', badgeClass: 'badge-amber', note: 'Temporarily unavailable', noteColor: 'var(--amber)' };
+  }
+
+  const rentals = (Array.isArray(car?.rental_windows) ? car.rental_windows : [])
+    .map((rental) => ({
+      ...rental,
+      pickupDate: new Date(rental.pickup_datetime),
+      returnDate: new Date(rental.return_datetime)
+    }))
+    .filter((rental) => !Number.isNaN(rental.pickupDate.getTime()) && !Number.isNaN(rental.returnDate.getTime()))
+    .sort((a, b) => a.pickupDate - b.pickupDate);
+
+  const currentRental = rentals.find((rental) => rental.pickupDate <= now && rental.returnDate > now);
+  if (currentRental || rawStatus === 'rented') {
+    const returnDate = currentRental?.returnDate;
+    return {
+      status: 'rented',
+      label: 'Rented',
+      badgeClass: 'badge-blue',
+      note: returnDate ? `Free in ${formatDuration(returnDate - now)}` : 'Currently unavailable',
+      noteColor: 'var(--accent)',
+      rental: currentRental
+    };
+  }
+
+  const nextRental = rentals.find((rental) => rental.pickupDate > now);
+  if (nextRental) {
+    return {
+      status: 'available',
+      label: 'Available',
+      badgeClass: 'badge-green',
+      note: `Available for ${formatDuration(nextRental.pickupDate - now)}`,
+      noteColor: 'var(--amber)',
+      rental: nextRental
+    };
+  }
+
+  return { status: 'available', label: 'Available', badgeClass: 'badge-green', note: 'No booking scheduled', noteColor: 'var(--green)' };
+}
+
 function formatMaintenanceWindow(bus) {
   if (bus?.status !== 'maintenance') return '';
   const start = formatDateTime(bus.maintenance_start);
@@ -867,8 +923,9 @@ export default function Vehicles() {
   const filteredCars = useMemo(() => {
     const term = query.trim().toLowerCase();
     return cars.filter((car) => {
-      const matchesStatus = statusFilter === 'all' || car.status === statusFilter;
-      const text = [car.name, car.type, car.plate_number, car.transmission, car.status].join(' ').toLowerCase();
+      const availability = getRentalCarAvailability(car);
+      const matchesStatus = statusFilter === 'all' || availability.status === statusFilter;
+      const text = [car.name, car.type, car.plate_number, car.transmission, car.status, availability.label, availability.note].join(' ').toLowerCase();
       return matchesStatus && (!term || text.includes(term));
     });
   }, [cars, query, statusFilter]);
@@ -986,14 +1043,15 @@ export default function Vehicles() {
   }
 
   async function saveBus(recoveryPlan = null) {
+    const safeRecoveryPlan = recoveryPlan && !recoveryPlan.nativeEvent ? recoveryPlan : null;
     setSaving(true);
     setVehicleError('');
     setMaintenanceRecoveryError('');
     try {
       const endpoint = editingBus ? `/api/admin/buses/${editingBus.id}` : '/api/admin/buses';
       const method = editingBus ? 'PUT' : 'POST';
-      const payload = recoveryPlan
-        ? { ...busForm, maintenance_recovery_plan: recoveryPlan }
+      const payload = safeRecoveryPlan
+        ? { ...busForm, maintenance_recovery_plan: safeRecoveryPlan }
         : busForm;
       await parseJsonResponse(await fetch(endpoint, {
         method,
@@ -1014,7 +1072,7 @@ export default function Vehicles() {
         setMaintenanceRecoveryError('');
         return;
       }
-      if (recoveryPlan) {
+      if (safeRecoveryPlan) {
         setMaintenanceRecoveryError(error.message || 'Unable to resolve maintenance bookings.');
         return;
       }
@@ -1358,6 +1416,7 @@ export default function Vehicles() {
           <div className="car-grid">
             {filteredCars.map((car, index) => {
               const photo = Array.isArray(car.photos) ? car.photos[0] : '';
+              const availability = getRentalCarAvailability(car);
               return (
                 <div key={car.id} className="car-card observe-animate" style={{ '--delay': `${index * 40}ms` }}>
                   <div className="car-img" style={photo ? { backgroundImage: `url(${photo})`, backgroundSize: 'cover', backgroundPosition: 'center' } : { display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -1366,11 +1425,20 @@ export default function Vehicles() {
                   <div style={{ padding: 14 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 4 }}>
                       <div className="car-name">{car.name}</div>
-                      <span className={`badge ${statusBadge(car.status)}`}>{titleCase(car.status)}</span>
+                      <div style={{ textAlign: 'right' }}>
+                        <span className={`badge ${availability.badgeClass}`}>{availability.label}</span>
+                        <div style={{ fontSize: 10.5, color: availability.noteColor, fontWeight: 700, marginTop: 4 }}>{availability.note}</div>
+                      </div>
                     </div>
                     <div className="car-type">
                       {car.type} - {car.plate_number} - {car.total_seats} seats - {car.transmission || 'No transmission'}
                     </div>
+                    {availability.rental ? (
+                      <div className="td-muted" style={{ fontSize: 11, marginTop: 6 }}>
+                        {availability.status === 'rented' ? 'Current' : 'Next'} rental #{availability.rental.id}
+                        {availability.rental.customer_name ? ` - ${availability.rental.customer_name}` : ''}
+                      </div>
+                    ) : null}
                     <div className="car-meta">
                       <div className="car-price">
                         {formatMoney(car.daily_rate)}

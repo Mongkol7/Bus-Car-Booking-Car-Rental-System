@@ -110,6 +110,22 @@ function formatDateTime(value) {
   });
 }
 
+function getScheduleParts(value) {
+  if (!value) return { date: '--', time: '' };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { date: '--', time: '' };
+  return {
+    date: date.toLocaleDateString([], {
+      month: 'short',
+      day: 'numeric'
+    }),
+    time: date.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  };
+}
+
 function formatDateInput(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -149,6 +165,55 @@ function normalizePassengers(value) {
   return [];
 }
 
+function buildSelectedSplitPlan(routes, bookings, compatibleRoutes, selectedSplits) {
+  const capacityState = new Map();
+  const assignments = [];
+  const assignedIds = new Set();
+
+  routes.forEach(route => {
+    const selectedIds = (selectedSplits?.[route.id] || []).map(Number);
+    const routeBookings = bookings.filter(booking => Number(booking.route_id) === Number(route.id));
+    const selectedOptions = selectedIds
+      .map(id => (compatibleRoutes?.[route.id] || []).find(option => Number(option.id) === id))
+      .filter(Boolean);
+
+    routeBookings.forEach(booking => {
+      const oldSeat = String(booking.seat_number || '').trim().toUpperCase();
+      let target = selectedOptions.find(option => {
+        if (!capacityState.has(Number(option.id))) {
+          capacityState.set(Number(option.id), [...(option.free_seats || [])]);
+        }
+        return capacityState.get(Number(option.id)).includes(oldSeat);
+      });
+      let seat = oldSeat;
+
+      if (!target) {
+        target = selectedOptions.find(option => {
+          if (!capacityState.has(Number(option.id))) {
+            capacityState.set(Number(option.id), [...(option.free_seats || [])]);
+          }
+          return capacityState.get(Number(option.id)).length > 0;
+        });
+        seat = target ? capacityState.get(Number(target.id))[0] : '';
+      }
+
+      if (!target || !seat) return;
+      capacityState.set(Number(target.id), capacityState.get(Number(target.id)).filter(item => item !== seat));
+      assignments.push({
+        booking_id: booking.booking_id,
+        old_route_id: booking.route_id,
+        old_seat_number: booking.seat_number,
+        target_route_id: target.id,
+        target_seat_number: seat,
+        reassigned_seat: oldSeat !== seat
+      });
+      assignedIds.add(Number(booking.booking_id));
+    });
+  });
+
+  return { assignments, assignedIds };
+}
+
 async function parseJsonResponse(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -170,6 +235,7 @@ function RouteFormModal({
   formError,
   onChange,
   onPreviewMaintenance,
+  onRevertDailySchedule,
   onClose,
   onSubmit,
   buses,
@@ -185,6 +251,7 @@ function RouteFormModal({
     : '--';
   const passengers = normalizePassengers(editingRoute?.passengers);
   const passengerTotal = Number(editingRoute?.booking_count || passengers.length || 0);
+  const canRevertDailySchedule = editing && editingRoute?.daily_template_id;
 
   return (
     <div className="modal-overlay">
@@ -197,6 +264,20 @@ function RouteFormModal({
         <div className="modal-text" style={{ marginBottom: 18 }}>
           Assign a bus, set travel times, and manage the fare for this scheduled trip.
         </div>
+
+        {canRevertDailySchedule ? (
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: 'var(--glass)', border: '0.5px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+            <div>
+              <div className="sec-sub">Daily schedule</div>
+              <div className="td-muted" style={{ fontSize: 12 }}>
+                Template #{editingRoute.daily_template_id} - {editingRoute.route_type === 'daily' ? 'Daily' : 'Manual'}
+              </div>
+            </div>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onRevertDailySchedule} disabled={saving}>
+              Revert to Daily
+            </button>
+          </div>
+        ) : null}
 
         {formError ? (
           <div
@@ -691,12 +772,16 @@ function DailyRouteTemplateModal({
   );
 }
 
-function RouteMaintenanceRecoveryModal({ conflict, saving, error, onBackupChange, onClose, onSubmit }) {
+function RouteMaintenanceRecoveryModal({ conflict, saving, error, onSplitToggle, onBackupChange, onClose, onSubmit }) {
   const preview = conflict?.preview || {};
   const routes = preview.affected_routes || [];
   const bookings = preview.affected_bookings || [];
-  const assignments = preview.auto_plan?.assignments || [];
-  const unassigned = preview.auto_plan?.unassigned_bookings || [];
+  const selectedSplits = conflict?.selected_splits || {};
+  const splitPlan = useMemo(
+    () => buildSelectedSplitPlan(routes, bookings, preview.compatible_routes || {}, selectedSplits),
+    [routes, bookings, preview.compatible_routes, selectedSplits]
+  );
+  const assignments = splitPlan.assignments;
   const backups = conflict?.backup_routes || {};
 
   return (
@@ -704,7 +789,7 @@ function RouteMaintenanceRecoveryModal({ conflict, saving, error, onBackupChange
       <div className="modal-card" style={{ maxWidth: 980, textAlign: 'left' }} onClick={event => event.stopPropagation()}>
         <div className="modal-title">Maintenance impact</div>
         <div className="modal-text" style={{ marginBottom: 18 }}>
-          Review affected bookings, existing route capacity, and the auto-split plan before saving maintenance.
+          Select existing route capacity for splits, then add a backup bus for any passengers left unresolved.
         </div>
 
         {error ? (
@@ -717,10 +802,16 @@ function RouteMaintenanceRecoveryModal({ conflict, saving, error, onBackupChange
           {routes.map(route => {
             const routeBookings = bookings.filter(booking => Number(booking.route_id) === Number(route.id));
             const routeAssignments = assignments.filter(assignment => Number(assignment.old_route_id) === Number(route.id));
-            const routeUnassigned = unassigned.filter(booking => Number(booking.route_id) === Number(route.id));
             const backup = backups[route.id] || {};
             const compatibleRoutes = preview.compatible_routes?.[route.id] || [];
             const backupCandidates = preview.backup_bus_candidates?.[route.id] || [];
+            const replacementPlan = preview.replacement_seat_plans?.[route.id];
+            const replacementBookingIds = new Set((replacementPlan?.assignments || []).map(assignment => Number(assignment.booking_id)));
+            const routeUnresolved = routeBookings.filter(booking => (
+              !splitPlan.assignedIds.has(Number(booking.booking_id)) &&
+              !replacementBookingIds.has(Number(booking.booking_id))
+            ));
+            const selectedRouteIds = (selectedSplits?.[route.id] || []).map(Number);
             const routeDayKey = getLocalDateKey(route.departure_time);
             const backupDepartureValue = backup.departure_time || formatDateInput(route.departure_time);
             const backupArrivalValue = backup.arrival_time || formatDateInput(route.arrival_time);
@@ -736,26 +827,41 @@ function RouteMaintenanceRecoveryModal({ conflict, saving, error, onBackupChange
                       {formatDateTime(route.departure_time)} - {formatDateTime(route.arrival_time)} - {route.booking_count} booking(s)
                     </div>
                   </div>
-                  <span className="badge badge-amber">Seats {(route.booked_seats || []).join(', ')}</span>
+                  <span className="badge badge-amber">
+                    {route.booking_count ? `Seats ${(route.booked_seats || []).join(', ')}` : 'No passengers'}
+                  </span>
                 </div>
 
                 <div style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
                   <div>
                     <div className="sec-sub">Existing route capacity</div>
                     <div className="td-muted" style={{ fontSize: 12 }}>
-                      Same route, same date, and same-or-later departure within the day.
+                      Same route, same direction, same-or-later departure, and not departed yet.
                     </div>
                   </div>
-                  {compatibleRoutes.length ? compatibleRoutes.map(option => (
-                    <div key={option.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
-                      <span>#{option.id} {option.bus_name} - {formatDateTime(option.departure_time)} to {formatDateTime(option.arrival_time)}</span>
-                      <span className="badge badge-green">{option.free_seat_count} free</span>
-                    </div>
-                  )) : <div className="td-muted" style={{ fontSize: 12 }}>No same-day route capacity has free seats.</div>}
+                  {compatibleRoutes.length ? compatibleRoutes.map(option => {
+                    const optionDeparture = getScheduleParts(option.departure_time);
+                    const selected = selectedRouteIds.includes(Number(option.id));
+                    return (
+                      <div key={option.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, alignItems: 'center' }}>
+                        <span>
+                          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>#{option.id} {option.bus_name} - {optionDeparture.date}</span>
+                          {optionDeparture.time ? <span style={{ color: 'var(--amber)', fontWeight: 600 }}>, {optionDeparture.time}</span> : null}
+                          <span className="td-muted"> to {formatDateTime(option.arrival_time)}</span>
+                        </span>
+                        <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                          <span className="badge badge-green">{option.free_seat_count} free</span>
+                          <button type="button" className={`btn ${selected ? 'btn-danger' : 'btn-ghost'} btn-sm`} onClick={() => onSplitToggle(route.id, option.id)} disabled={saving}>
+                            {selected ? 'Remove' : 'Select'}
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  }) : <div className="td-muted" style={{ fontSize: 12 }}>No future same-direction route capacity has free seats.</div>}
                 </div>
 
                 <div style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
-                  <div className="sec-sub">Auto split preview</div>
+                  <div className="sec-sub">Selected split plan</div>
                   {routeAssignments.length ? routeAssignments.map(assignment => {
                     const booking = routeBookings.find(item => Number(item.booking_id) === Number(assignment.booking_id));
                     return (
@@ -764,8 +870,8 @@ function RouteMaintenanceRecoveryModal({ conflict, saving, error, onBackupChange
                         <span className="badge badge-blue">Route #{assignment.target_route_id} seat {assignment.target_seat_number}</span>
                       </div>
                     );
-                  }) : <div className="td-muted" style={{ fontSize: 12 }}>No existing seats assigned yet.</div>}
-                  {routeUnassigned.length ? <div className="td-muted" style={{ fontSize: 12, color: 'var(--amber)' }}>{routeUnassigned.length} booking(s) need backup route capacity.</div> : null}
+                  }) : <div className="td-muted" style={{ fontSize: 12 }}>Select an existing route to split passengers.</div>}
+                  {routeUnresolved.length ? <div className="td-muted" style={{ fontSize: 12, color: 'var(--amber)' }}>{routeUnresolved.length} passenger(s) still need backup bus or more split capacity.</div> : null}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: showBackupForm ? 10 : 0 }}>
@@ -777,29 +883,63 @@ function RouteMaintenanceRecoveryModal({ conflict, saving, error, onBackupChange
                       : { show_form: true, departure_time: backupDepartureValue, arrival_time: backupArrivalValue })}
                     disabled={saving}
                   >
-                    {showBackupForm ? 'Remove new schedule' : 'Add new schedule'}
+                    {showBackupForm ? 'Remove backup bus' : 'Add backup bus'}
                   </button>
                 </div>
 
                 {showBackupForm ? (
-                  <div className="form-row">
-                    <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
-                      Backup bus
-                      <select value={backup.bus_id || ''} onChange={event => onBackupChange(route.id, { bus_id: event.target.value })} disabled={saving}>
-                        <option value="">Select backup bus</option>
-                        {backupCandidates.map(bus => (
-                          <option key={bus.id} value={bus.id}>{bus.name} - {bus.type} ({bus.plate_number})</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
-                      Backup departure
-                      <input type="datetime-local" min={formatDateInput(route.departure_time)} max={latestSameDayDeparture} value={backupDepartureValue} onChange={event => onBackupChange(route.id, { departure_time: event.target.value })} disabled={saving} />
-                    </label>
-                    <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
-                      Backup arrival
-                      <input type="datetime-local" min={backupDepartureValue} value={backupArrivalValue} onChange={event => onBackupChange(route.id, { arrival_time: event.target.value })} disabled={saving} />
-                    </label>
+                  <div>
+                    <div className="form-row">
+                      <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
+                        Replacement bus
+                        <select value={backup.bus_id || ''} onChange={event => onBackupChange(route.id, { bus_id: event.target.value })} disabled={saving}>
+                          <option value="">Select replacement bus</option>
+                          {backupCandidates.map(bus => (
+                            <option key={bus.id} value={bus.id}>{bus.name} - {bus.type} ({bus.plate_number})</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
+                        Replacement departure
+                        <input type="datetime-local" min={formatDateInput(route.departure_time)} max={latestSameDayDeparture} value={backupDepartureValue} onChange={event => onBackupChange(route.id, { departure_time: event.target.value })} disabled={saving} />
+                      </label>
+                      <label style={{ display: 'grid', gap: 6, color: 'var(--text-3)', fontSize: 12 }}>
+                        Replacement arrival
+                        <input type="datetime-local" min={backupDepartureValue} value={backupArrivalValue} onChange={event => onBackupChange(route.id, { arrival_time: event.target.value })} disabled={saving} />
+                      </label>
+                    </div>
+                    <div className="td-muted" style={{ fontSize: 12, marginTop: -4 }}>
+                      Selecting a backup bus also fills uncovered affected schedules with their own trip times.
+                    </div>
+                  </div>
+                ) : null}
+
+                {showBackupForm ? (
+                  <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+                    <div className="sec-sub">Replacement seat preview</div>
+                    <div className="td-muted" style={{ fontSize: 12 }}>
+                      Amber seat swaps mean the old seat is unavailable on the replacement bus and the shown new seat will be saved.
+                    </div>
+                    {!backup.bus_id ? (
+                      <div className="td-muted" style={{ fontSize: 12 }}>Select a backup bus to preview replacement seats.</div>
+                    ) : replacementPlan?.assignments?.length ? replacementPlan.assignments.map(assignment => {
+                      const passenger = assignment.user_name || assignment.user_email || `Booking #${assignment.booking_id}`;
+                      const changed = Boolean(assignment.reassigned_seat);
+                      return (
+                        <div key={assignment.booking_id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
+                          <span>{passenger}</span>
+                          <span className={changed ? 'badge badge-amber' : 'badge badge-green'}>
+                            {assignment.old_seat_number} {'->'} {assignment.target_seat_number}
+                          </span>
+                        </div>
+                      );
+                    }) : replacementPlan ? (
+                      <div className="td-muted" style={{ fontSize: 12, color: 'var(--green)' }}>
+                        No booked passengers; this schedule will use the selected replacement bus.
+                      </div>
+                    ) : (
+                      <div className="td-muted" style={{ fontSize: 12 }}>Replacement seats will appear after the preview refreshes.</div>
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -809,7 +949,7 @@ function RouteMaintenanceRecoveryModal({ conflict, saving, error, onBackupChange
 
         <div className="modal-btns" style={{ marginTop: 18 }}>
           <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className="btn btn-primary" onClick={onSubmit} disabled={saving}>{saving ? 'Saving...' : 'Confirm split and save'}</button>
+          <button className="btn btn-primary" onClick={onSubmit} disabled={saving}>{saving ? 'Saving...' : 'Confirm recovery and save'}</button>
         </div>
       </div>
     </div>
@@ -1370,7 +1510,8 @@ export default function Routes() {
       if (error.code === 'ROUTE_MAINTENANCE_BOOKING_CONFLICT') {
         setMaintenanceConflict({
           preview: error.preview || { affected_routes: error.routes || [] },
-          backup_routes: {}
+          backup_routes: {},
+          selected_splits: {}
         });
         setMaintenanceRecoveryError('');
         return;
@@ -1388,7 +1529,71 @@ export default function Routes() {
     }
   }
 
-  async function previewMaintenanceImpact() {
+  async function handleRevertDailySchedule() {
+    if (!editingId) return;
+
+    setSaving(true);
+    setFormError('');
+    setMaintenanceRecoveryError('');
+    try {
+      await parseJsonResponse(await fetch(`/api/admin/routes/${editingId}/revert-daily`, {
+        method: 'POST'
+      }));
+      setModalOpen(false);
+      setEditingId(null);
+      setForm(EMPTY_FORM);
+      setMaintenanceConflict(null);
+      await loadRoutes(false);
+    } catch (error) {
+      setFormError(error.message || 'Unable to revert schedule.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function buildMaintenanceBackupRoutes(backupsMap, preview = maintenanceConflict?.preview || {}, includeSeatPlan = true) {
+    const routes = Object.entries(backupsMap || {})
+      .filter(([, value]) => value.bus_id)
+      .map(([routeId, value]) => ({
+        source_route_id: Number(routeId),
+        temp_id: `backup-${routeId}`,
+        bus_id: Number(value.bus_id),
+        departure_time: value.departure_time,
+        arrival_time: value.arrival_time,
+        replacement_seat_plan: includeSeatPlan
+          ? (preview.replacement_seat_plans?.[routeId]?.assignments || value.replacement_seat_plan || [])
+          : []
+      }));
+    if (!routes.length) return routes;
+
+    const coveredRouteIds = new Set(routes.map(route => Number(route.source_route_id)));
+    const defaultReplacement = routes[0];
+    (preview.affected_routes || []).forEach(route => {
+      if (coveredRouteIds.has(Number(route.id))) return;
+      routes.push({
+        source_route_id: Number(route.id),
+        temp_id: `auto-replacement-${route.id}`,
+        bus_id: Number(defaultReplacement.bus_id),
+        departure_time: formatDateInput(route.departure_time),
+        arrival_time: formatDateInput(route.arrival_time),
+        replacement_seat_plan: includeSeatPlan
+          ? (preview.replacement_seat_plans?.[route.id]?.assignments || [])
+          : []
+      });
+      coveredRouteIds.add(Number(route.id));
+    });
+
+    return routes;
+  }
+
+  async function previewMaintenanceImpact(backupsMap = {}, selectedSplitsMap = maintenanceConflict?.selected_splits || {}) {
+    const safeBackupsMap = backupsMap && !backupsMap.nativeEvent ? backupsMap : {};
+    const selectedAssignments = buildSelectedSplitPlan(
+      maintenanceConflict?.preview?.affected_routes || [],
+      maintenanceConflict?.preview?.affected_bookings || [],
+      maintenanceConflict?.preview?.compatible_routes || {},
+      selectedSplitsMap || {}
+    ).assignments;
     const validationError = validateForm();
     if (validationError) {
       setFormError(validationError);
@@ -1406,45 +1611,96 @@ export default function Routes() {
         body: JSON.stringify({
           maintenance_start: form.maintenance_start,
           maintenance_end: form.maintenance_end,
-          sync_bus_status: true
+          sync_bus_status: true,
+          assignments: selectedAssignments,
+          backup_routes: buildMaintenanceBackupRoutes(safeBackupsMap, maintenanceConflict?.preview || {}, false)
         })
       }));
-      setMaintenanceConflict({ preview, backup_routes: {} });
+      setMaintenanceConflict(current => ({
+        preview,
+        backup_routes: Object.keys(safeBackupsMap).length ? safeBackupsMap : (current?.backup_routes || {}),
+        selected_splits: selectedSplitsMap || current?.selected_splits || {}
+      }));
     } catch (error) {
-      setFormError(error.message || 'Unable to preview maintenance impact.');
+      if (Object.keys(safeBackupsMap || {}).length) {
+        setMaintenanceRecoveryError(error.message || 'Unable to preview replacement seats.');
+      } else {
+        setFormError(error.message || 'Unable to preview maintenance impact.');
+      }
     } finally {
       setSaving(false);
     }
   }
 
   function updateMaintenanceBackup(routeId, patch) {
+    const currentBackups = maintenanceConflict?.backup_routes || {};
+    const affectedRoutes = maintenanceConflict?.preview?.affected_routes || [];
+    const nextBackups = { ...currentBackups };
+
+    nextBackups[routeId] = {
+      ...(currentBackups[routeId] || {}),
+      ...patch
+    };
+
+    if (patch.bus_id) {
+      affectedRoutes.forEach(route => {
+        const key = String(route.id);
+        if (Number(route.id) === Number(routeId) || nextBackups[key]?.bus_id) return;
+        nextBackups[key] = {
+          ...(nextBackups[key] || {}),
+          show_form: true,
+          bus_id: patch.bus_id,
+          departure_time: nextBackups[key]?.departure_time || formatDateInput(route.departure_time),
+          arrival_time: nextBackups[key]?.arrival_time || formatDateInput(route.arrival_time)
+        };
+      });
+    }
+
     setMaintenanceConflict(current => ({
       ...current,
-      backup_routes: {
-        ...(current?.backup_routes || {}),
-        [routeId]: {
-          ...(current?.backup_routes?.[routeId] || {}),
-          ...patch
-        }
-      }
+      backup_routes: nextBackups
     }));
+    setMaintenanceRecoveryError('');
+    if (nextBackups[routeId]?.bus_id) {
+      previewMaintenanceImpact(nextBackups, maintenanceConflict?.selected_splits || {});
+    }
+  }
+
+  function toggleMaintenanceSplit(routeId, optionId) {
+    const currentSplits = maintenanceConflict?.selected_splits || {};
+    const key = String(routeId);
+    const selected = (currentSplits[key] || []).map(Number);
+    const optionNumber = Number(optionId);
+    const nextSelected = selected.includes(optionNumber)
+      ? selected.filter(id => id !== optionNumber)
+      : [...selected, optionNumber];
+    const nextSplits = {
+      ...currentSplits,
+      [key]: nextSelected
+    };
+
+    setMaintenanceConflict(current => ({
+      ...current,
+      selected_splits: nextSplits
+    }));
+    setMaintenanceRecoveryError('');
+
+    const hasBackupBus = Object.values(maintenanceConflict?.backup_routes || {}).some(value => value?.bus_id);
+    if (hasBackupBus) {
+      previewMaintenanceImpact(maintenanceConflict?.backup_routes || {}, nextSplits);
+    }
   }
 
   async function submitMaintenanceRecovery() {
     if (!maintenanceConflict) return;
     const preview = maintenanceConflict.preview || {};
-    const backupRoutes = Object.entries(maintenanceConflict.backup_routes || {})
-      .filter(([, value]) => value.bus_id)
-      .map(([routeId, value]) => ({
-        source_route_id: Number(routeId),
-        temp_id: `backup-${routeId}`,
-        bus_id: Number(value.bus_id),
-        departure_time: value.departure_time,
-        arrival_time: value.arrival_time
-      }));
-    const backupSourceRouteIds = new Set(backupRoutes.map(route => Number(route.source_route_id)));
-    const assignments = (preview.auto_plan?.assignments || [])
-      .filter(assignment => !backupSourceRouteIds.has(Number(assignment.old_route_id)));
+    const backupRoutes = buildMaintenanceBackupRoutes(maintenanceConflict.backup_routes || {}, preview);
+    const assignments = buildSelectedSplitPlan(
+      preview.affected_routes || [],
+      preview.affected_bookings || [],
+      preview.compatible_routes || {},
+      maintenanceConflict.selected_splits || {}
+    ).assignments;
 
     await handleSubmit({
       assignments,
@@ -1652,6 +1908,9 @@ export default function Routes() {
                 <tbody>
                   {filteredRoutes.map(route => {
                     const companyMeta = getCompanyMeta(route.company_name);
+                    const departure = getScheduleParts(route.departure_time);
+                    const bookingCount = Number(route.booking_count || 0);
+                    const totalSeats = Number(route.total_seats || 0);
                     return (
                       <tr key={route.id}>
                         <td style={{ color: 'var(--accent)', fontSize: 12 }}>#{route.id}</td>
@@ -1679,7 +1938,10 @@ export default function Routes() {
                             </span>
                           </div>
                         </td>
-                        <td className="td-muted">{formatDateTime(route.departure_time)}</td>
+                        <td style={{ color: 'var(--accent)', fontWeight: 500 }}>
+                          {departure.date}
+                          {departure.time ? <span style={{ color: 'var(--amber)' }}>, {departure.time}</span> : null}
+                        </td>
                         <td className="td-muted">{formatDateTime(route.arrival_time)}</td>
                         <td>
                           <span className="badge badge-blue">
@@ -1687,8 +1949,8 @@ export default function Routes() {
                           </span>
                         </td>
                         <td>
-                          <span className={`badge ${Number(route.booking_count || 0) > 0 ? 'badge-blue' : 'badge-purple'}`}>
-                            {Number(route.booking_count || 0)}
+                          <span className={`badge ${bookingCount > 0 ? 'badge-blue' : 'badge-purple'}`}>
+                            {bookingCount}/{totalSeats > 0 ? totalSeats : '-'}
                           </span>
                         </td>
                         <td>
@@ -1737,6 +1999,7 @@ export default function Routes() {
           formError={formError}
           onChange={handleChange}
           onPreviewMaintenance={previewMaintenanceImpact}
+          onRevertDailySchedule={handleRevertDailySchedule}
           onClose={closeModal}
           onSubmit={() => handleSubmit()}
           buses={buses}
@@ -1792,6 +2055,7 @@ export default function Routes() {
           conflict={maintenanceConflict}
           saving={saving}
           error={maintenanceRecoveryError}
+          onSplitToggle={toggleMaintenanceSplit}
           onBackupChange={updateMaintenanceBackup}
           onClose={() => {
             if (!saving) {

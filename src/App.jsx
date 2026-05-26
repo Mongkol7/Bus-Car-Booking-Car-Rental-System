@@ -55,10 +55,14 @@ function App() {
 }
 
 function RoleRoute({ targetRole }) {
-  const { login } = useAuth();
+  const { login, token } = useAuth();
+
   useEffect(() => {
-    login(targetRole);
-  }, [targetRole, login]);
+    if (targetRole === 'guest' || !token) {
+      login(targetRole);
+    }
+  }, [targetRole, token, login]);
+
   return <Navigate to="/" replace />;
 }
 
@@ -99,7 +103,7 @@ function UserRoute({ role, onLogout }) {
     navigate(target);
   };
 
-  let pageContent = <Home role={role} setActive={goUserPage} onLogout={onLogout} />;
+  let pageContent = <Home role={role} setActive={goUserPage} onLogout={onLogout} setBookingsTab={setBookingsTab} />;
   if (active === 'search') {
     pageContent = (
       <BusSearch

@@ -293,8 +293,15 @@ body {
     transition: opacity 0.6s ease, transform 0.6s ease;
     transition-delay: var(--delay, 0ms);
   }
+  .scroll-animate.quick-scroll-animate {
+    transform: translateY(8px);
+    transition-duration: 0.32s;
+  }
   .scroll-animate[data-revealed="true"] {
     opacity: 1;
+    transform: translateY(0);
+  }
+  .scroll-animate.quick-scroll-animate[data-revealed="true"] {
     transform: translateY(0);
   }
 
@@ -489,6 +496,63 @@ body {
     color: var(--accent);
     border-color: rgba(79,142,247,0.3);
   }
+  .ios-switch-row {
+    width: 100%;
+    margin-top: 16px;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    border: 0.5px solid var(--glass-border);
+    border-radius: 14px;
+    background: rgba(255,255,255,0.035);
+    color: var(--accent);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 0.16s ease, background 0.16s ease;
+  }
+  .ios-switch-row:hover {
+    border-color: rgba(79,142,247,0.26);
+    background: rgba(255,255,255,0.055);
+  }
+  .ios-switch-title {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .ios-switch-sub {
+    display: block;
+    margin-top: 3px;
+    font-size: 11px;
+    color: var(--text-3);
+  }
+  .ios-switch {
+    width: 48px;
+    height: 28px;
+    padding: 2px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.16);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+    transition: background 0.18s ease;
+  }
+  .ios-switch.on {
+    background: var(--green);
+  }
+  .ios-switch-knob {
+    display: block;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.28);
+    transform: translateX(0);
+    transition: transform 0.18s ease;
+  }
+  .ios-switch.on .ios-switch-knob {
+    transform: translateX(20px);
+  }
   .dropdown-panel {
     margin-top: 0;
     padding: 0 14px;
@@ -594,12 +658,70 @@ body {
   .booking-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 12px; }
   .booking-meta-item { font-size: 11px; color: var(--text-2); }
   .booking-meta-item span { display: block; font-size: 13px; font-weight: 500; color: var(--text); margin-top: 4px; }
+  .booking-meta-item span.ticket-date-highlight,
+  .ticket-date-highlight {
+    color: var(--accent);
+    font-weight: 700;
+  }
   .qr-reveal {
     border-top: 0.5px solid var(--glass-border); margin-top: 14px; padding-top: 14px;
     display: flex; flex-direction: column; align-items: center; gap: 12px;
   }
   .qr-mini { background: white; border-radius: 8px; padding: 10px; width: 100px; height: 100px; display: flex; align-items: center; justify-content: center; }
   .qr-mini-grid { display: grid; grid-template-columns: repeat(8,1fr); gap: 1px; width: 78px; height: 78px; }
+  .rental-ticket-clickable {
+    cursor: pointer;
+    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  }
+  .rental-ticket-clickable:hover {
+    border-color: rgba(79,142,247,0.28);
+    transform: translateY(-1px);
+  }
+  .rental-ticket-panel {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transform: translateY(-6px);
+    transition: max-height 0.35s ease, opacity 0.25s ease, transform 0.25s ease,
+      margin-top 0.25s ease;
+  }
+  .rental-ticket-panel.open {
+    max-height: 820px;
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+    margin-top: 4px;
+  }
+  .rental-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .rental-driver-box {
+    margin-top: 14px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 0.5px solid rgba(79,142,247,0.22);
+    background: rgba(79,142,247,0.08);
+  }
+  .rental-feedback-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+  .rental-feedback-box {
+    padding: 12px;
+    border-radius: 12px;
+    border: 0.5px solid var(--glass-border);
+    background: rgba(255,255,255,0.035);
+  }
+  .rental-feedback-box.danger {
+    border-color: rgba(248,113,113,0.24);
+    background: rgba(248,113,113,0.04);
+  }
 
   .profile-avatar { width: 64px; height: 64px; border-radius: 50%; background: var(--accent-soft); border: 1.5px solid rgba(79,142,247,0.3); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 600; color: var(--accent); margin: 0 auto 12px; }
 
@@ -610,6 +732,19 @@ body {
     background: linear-gradient(135deg, rgba(79,142,247,0.12), rgba(255,255,255,0.04));
     border: 1px solid rgba(255,255,255,0.12);
     box-shadow: 0 18px 40px rgba(0,0,0,0.25);
+  }
+  .ticket-card[data-highlighted-ticket="true"] {
+    border-color: rgba(56,189,248,0.9);
+    box-shadow: 0 0 0 1px rgba(56,189,248,0.5), 0 22px 55px rgba(56,189,248,0.22);
+    animation: ticketFocusPulse 1.05s ease-in-out 3;
+  }
+  .ticket-card[data-highlighted-ticket="true"]::before,
+  .ticket-card[data-highlighted-ticket="true"]::after {
+    border-color: rgba(56,189,248,0.65);
+  }
+  @keyframes ticketFocusPulse {
+    0%, 100% { transform: translateY(0); }
+    45% { transform: translateY(-3px); }
   }
   .ticket-card::before,
   .ticket-card::after {
@@ -638,6 +773,8 @@ body {
     .search-bar { grid-template-columns: 1fr; }
     .car-grid { grid-template-columns: 1fr 1fr; }
     .booking-meta { grid-template-columns: 1fr 1fr; }
+    .rental-detail-grid,
+    .rental-feedback-grid { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 700px) {

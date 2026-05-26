@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon, icons, setupScrollReveal, getTodayISO } from '../../utils/sharedUser';
+import { useAuth } from '../../context/AuthContext';
 import AuthModal from './AuthModal';
 
 const FALLBACK_CITIES = ['Phnom Penh', 'Siem Reap', 'Battambang', 'Sihanoukville', 'Kampot', 'Kep', 'Kratie', 'Kampong Cham', 'Pursat', 'Banteay Meanchey'];
@@ -122,6 +123,7 @@ export default function BusSearch({
 }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { token, user } = useAuth();
   const stepByPath = {
     '/booking/search': 1,
     '/booking/seats': 2,
@@ -140,16 +142,34 @@ export default function BusSearch({
   const goStep = nextStep => navigate(pathByStep[nextStep] || pathByStep[1]);
   const [selectedRoute, setSelectedRoute] = useState(null);
   const [selectedSeats, setSelectedSeats] = useState([]);
+  const [selectedReturnRoute, setSelectedReturnRoute] = useState(null);
+  const [returnSeats, setReturnSeats] = useState([]);
+  const [activeSeatLeg, setActiveSeatLeg] = useState('outbound');
   const [payMethod, setPayMethod] = useState('aba');
   const [done, setDone] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [passenger, setPassenger] = useState({
+    firstName: user?.first_name || '',
+    lastName: user?.last_name || '',
+    phone: user?.phone || '',
+    idNumber: '',
+    email: user?.email || ''
+  });
   const [fromCity, setFromCity] = useState('');
   const [toCity, setToCity] = useState('');
-  const [travelDate, setTravelDate] = useState('');
+  const [travelDate, setTravelDate] = useState(getTodayISO());
+  const [returnDate, setReturnDate] = useState('');
   const [routes, setRoutes] = useState([]);
   const [loadingRoutes, setLoadingRoutes] = useState(true);
   const [routesError, setRoutesError] = useState('');
+  const [bookingError, setBookingError] = useState('');
+  const [savingBooking, setSavingBooking] = useState(false);
+
+  function goSeatsStep() {
+    setActiveSeatLeg('outbound');
+    goStep(2);
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -180,14 +200,23 @@ export default function BusSearch({
     return () => controller.abort();
   }, []);
   useEffect(() => {
-    if (step >= 2 && !selectedRoute) {
+    if (step >= 2 && (!selectedRoute || (returnDate && !selectedReturnRoute))) {
       navigate('/booking/search', { replace: true });
       return;
     }
-    if (step >= 3 && !selectedSeats.length) {
+    if (step >= 3 && (!selectedSeats.length || (returnDate && !returnSeats.length))) {
       navigate('/booking/seats', { replace: true });
     }
-  }, [step, selectedRoute, selectedSeats.length, navigate]);
+  }, [step, selectedRoute, selectedReturnRoute, selectedSeats.length, returnDate, returnSeats.length, navigate]);
+  useEffect(() => {
+    setPassenger((current) => ({
+      ...current,
+      firstName: current.firstName || user?.first_name || '',
+      lastName: current.lastName || user?.last_name || '',
+      phone: current.phone || user?.phone || '',
+      email: current.email || user?.email || ''
+    }));
+  }, [user]);
   const cityOptions = useMemo(() => {
     const cities = new Set(FALLBACK_CITIES);
     routes.forEach(route => {
@@ -196,13 +225,21 @@ export default function BusSearch({
     });
     return Array.from(cities).sort((a, b) => a.localeCompare(b));
   }, [routes]);
-  const filteredRoutes = useMemo(() => {
+  const outboundRoutes = useMemo(() => {
     return routes.filter(route =>
       (!fromCity || route.origin === fromCity) &&
       (!toCity || route.destination === toCity) &&
       (!travelDate || route.dateKey === travelDate)
     );
   }, [fromCity, routes, toCity, travelDate]);
+  const returnRoutes = useMemo(() => {
+    if (!returnDate || !fromCity || !toCity) return [];
+    return routes.filter(route =>
+      route.origin === toCity &&
+      route.destination === fromCity &&
+      route.dateKey === returnDate
+    );
+  }, [fromCity, returnDate, routes, toCity]);
   useEffect(() => {
     if (typeof window === 'undefined') return () => {};
     document.querySelectorAll('.route-card.scroll-animate').forEach(el => {
@@ -218,13 +255,86 @@ export default function BusSearch({
       cleanup();
       clearTimeout(timer);
     };
-  }, [step, routes.length, filteredRoutes.length, fromCity, toCity, travelDate]);
+  }, [step, routes.length, outboundRoutes.length, returnRoutes.length, fromCity, toCity, travelDate, returnDate]);
   const currentRoute = routes.find(r => r.id === selectedRoute);
+  const currentReturnRoute = routes.find(r => r.id === selectedReturnRoute);
   const takenSeats = currentRoute?.takenSeats || [];
+  const takenSeatSet = useMemo(() => new Set(takenSeats.map((seat) => String(seat || '').toUpperCase())), [takenSeats]);
   const currentSeatMap = currentRoute?.seatMap || fallbackSeatMap(currentRoute?.totalSeats || 0);
+  const returnTakenSeats = currentReturnRoute?.takenSeats || [];
+  const returnTakenSeatSet = useMemo(() => new Set(returnTakenSeats.map((seat) => String(seat || '').toUpperCase())), [returnTakenSeats]);
+  const currentReturnSeatMap = currentReturnRoute?.seatMap || fallbackSeatMap(currentReturnRoute?.totalSeats || 0);
+  const isRoundTrip = Boolean(returnDate);
+  const subtotal = ((currentRoute?.price ?? 0) * selectedSeats.length) + ((currentReturnRoute?.price ?? 0) * returnSeats.length);
+  const discount = isRoundTrip ? subtotal * 0.05 : 0;
+  const finalTotal = Math.max(0, subtotal - discount);
+  const activeRoute = activeSeatLeg === 'return' && isRoundTrip ? currentReturnRoute : currentRoute;
+  const activeSeatMap = activeSeatLeg === 'return' && isRoundTrip ? currentReturnSeatMap : currentSeatMap;
+  const activeTakenSeatSet = activeSeatLeg === 'return' && isRoundTrip ? returnTakenSeatSet : takenSeatSet;
+  const activeSelectedSeats = activeSeatLeg === 'return' && isRoundTrip ? returnSeats : selectedSeats;
   const goBack = () => {
     goStep(Math.max(1, step - 1));
   };
+  function updatePassenger(field, value) {
+    setPassenger((current) => ({ ...current, [field]: value }));
+  }
+
+  function validatePassenger() {
+    if (!passenger.firstName.trim() || !passenger.lastName.trim() || !passenger.phone.trim() || !passenger.email.trim() || !passenger.idNumber.trim()) {
+      setBookingError('Passenger name, phone, email, and ID/passport are required.');
+      return false;
+    }
+    setBookingError('');
+    return true;
+  }
+
+  async function confirmBusBooking() {
+    if (!token || role === 'guest') {
+      setShowAuthModal(true);
+      return;
+    }
+    if (!currentRoute || !selectedSeats.length || (isRoundTrip && (!currentReturnRoute || !returnSeats.length))) {
+      setBookingError(isRoundTrip ? 'Please select departure and coming back routes and seats.' : 'Please select a route and seat first.');
+      return;
+    }
+    if (!validatePassenger()) return;
+
+    setSavingBooking(true);
+    setBookingError('');
+    try {
+      const response = await fetch('/api/bookings/bus', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          legs: isRoundTrip
+            ? [
+              { route_id: currentRoute.id, seat_numbers: selectedSeats, leg_type: 'outbound' },
+              { route_id: currentReturnRoute.id, seat_numbers: returnSeats, leg_type: 'return' }
+            ]
+            : [{ route_id: currentRoute.id, seat_numbers: selectedSeats, leg_type: 'outbound' }],
+          payment_method: payMethod,
+          passenger: {
+            first_name: passenger.firstName,
+            last_name: passenger.lastName,
+            phone: passenger.phone,
+            email: passenger.email,
+            id_number: passenger.idNumber
+          }
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Unable to create booking.');
+      setPaymentSuccess(true);
+      goStep(5);
+    } catch (error) {
+      setBookingError(error.message || 'Unable to create booking.');
+    } finally {
+      setSavingBooking(false);
+    }
+  }
   if (paymentSuccess || step === 5) return <div className="page" style={{
     maxWidth: 480
   }}>
@@ -244,7 +354,7 @@ export default function BusSearch({
         margin: '0 auto 20px',
         fontSize: 24
       }}>
-            ?
+            <Icon d={icons.check} size={24} />
           </div>
           <div className="page-title">Payment successful!</div>
           <div className="page-sub">Choose where to go next</div>
@@ -266,9 +376,45 @@ export default function BusSearch({
         </div>
       </div>;
   const toggleSeat = sid => {
-    if (takenSeats.includes(sid)) return;
+    if (takenSeatSet.has(String(sid || '').toUpperCase())) return;
     setSelectedSeats(prev => prev.includes(sid) ? prev.filter(s => s !== sid) : [...prev, sid]);
   };
+  const toggleReturnSeat = sid => {
+    if (returnTakenSeatSet.has(String(sid || '').toUpperCase())) return;
+    setReturnSeats(prev => prev.includes(sid) ? prev.filter(s => s !== sid) : [...prev, sid]);
+  };
+  function routeCanBeSelected(route) {
+    return route && route.avail > 0 && !route.isMaintenanceBlocked;
+  }
+
+  function selectOutboundRoute(route, advanceToSeats = false) {
+    if (!routeCanBeSelected(route)) return;
+    if (role === 'guest') {
+      setShowAuthModal(true);
+      return;
+    }
+    setSelectedRoute(route.id);
+    setSelectedSeats([]);
+    setActiveSeatLeg('outbound');
+    if (advanceToSeats && (!isRoundTrip || selectedReturnRoute)) {
+      goSeatsStep();
+    }
+  }
+
+  function selectReturnRoute(route, advanceToSeats = false) {
+    if (!routeCanBeSelected(route)) return;
+    if (role === 'guest') {
+      setShowAuthModal(true);
+      return;
+    }
+    setSelectedReturnRoute(route.id);
+    setReturnSeats([]);
+    if (advanceToSeats && selectedRoute) {
+      goSeatsStep();
+    } else {
+      setActiveSeatLeg('return');
+    }
+  }
   if (done) return <div className="page" style={{
     maxWidth: 480
   }}>
@@ -288,7 +434,7 @@ export default function BusSearch({
         margin: '0 auto 20px',
         fontSize: 24
       }}>
-            ?
+            <Icon d={icons.check} size={24} />
           </div>
           <div className="page-title">Booking confirmed!</div>
           <div className="page-sub">Seat preserved. Show QR at boarding.</div>
@@ -329,6 +475,8 @@ export default function BusSearch({
         goStep(1);
         setSelectedSeats([]);
         setSelectedRoute(null);
+        setReturnSeats([]);
+        setSelectedReturnRoute(null);
       }}>
             Book another
           </button>
@@ -357,7 +505,7 @@ export default function BusSearch({
           </span>}
       </div>
       <div className="steps">
-        {['Search', 'Seats', 'Info', 'Pay'].map((s, i) => <div key={s} style={{
+        {['Select destination', 'Seats', 'Info', 'Pay'].map((s, i) => <div key={s} style={{
         display: 'flex',
         alignItems: 'center',
         flex: i === 3 ? 'initial' : 1
@@ -382,9 +530,11 @@ export default function BusSearch({
               <select value={fromCity} onChange={e => {
                 setFromCity(e.target.value);
                 setSelectedRoute(null);
+                setSelectedReturnRoute(null);
                 setSelectedSeats([]);
+                setReturnSeats([]);
               }}>
-                <option value="">All origins</option>
+                <option value="">Select origin</option>
                 {cityOptions.map(city => <option key={`from-${city}`} value={city}>
                     {city}
                   </option>)}
@@ -395,41 +545,54 @@ export default function BusSearch({
               <select value={toCity} onChange={e => {
                 setToCity(e.target.value);
                 setSelectedRoute(null);
+                setSelectedReturnRoute(null);
                 setSelectedSeats([]);
+                setReturnSeats([]);
               }}>
-                <option value="">All destinations</option>
+                <option value="">Select destination</option>
                 {cityOptions.map(city => <option key={`to-${city}`} value={city}>
                     {city}
                   </option>)}
               </select>
             </div>
             <div>
-              <div className="label">Date</div>
+              <div className="label">Departure date</div>
+              <input type="date" value={travelDate} min={getTodayISO()} onChange={e => {
+                const nextDate = e.target.value || getTodayISO();
+                setTravelDate(nextDate);
+                if (returnDate && returnDate < nextDate) {
+                  setReturnDate('');
+                  setSelectedReturnRoute(null);
+                  setReturnSeats([]);
+                }
+                setSelectedRoute(null);
+                setSelectedSeats([]);
+              }} />
+            </div>
+            <div>
+              <div className="label">Coming back date</div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <input type="date" value={travelDate} onChange={e => {
-                  setTravelDate(e.target.value);
-                  setSelectedRoute(null);
-                  setSelectedSeats([]);
+                <input type="date" value={returnDate} min={travelDate || getTodayISO()} onChange={e => {
+                  setReturnDate(e.target.value);
+                  setSelectedReturnRoute(null);
+                  setReturnSeats([]);
+                  setActiveSeatLeg('outbound');
                 }} />
-                {travelDate ? <button className="btn btn-ghost btn-sm" type="button" onClick={() => {
-                  setTravelDate('');
-                  setSelectedRoute(null);
-                  setSelectedSeats([]);
+                {returnDate ? <button className="btn btn-ghost btn-sm" type="button" onClick={() => {
+                  setReturnDate('');
+                  setSelectedReturnRoute(null);
+                  setReturnSeats([]);
+                  setActiveSeatLeg('outbound');
                 }}>
-                  All
+                  One way
                 </button> : null}
               </div>
             </div>
-            <button className="btn btn-primary" type="button" onClick={() => {
-              setFromCity('');
-              setToCity('');
-              setTravelDate('');
-              setSelectedRoute(null);
-              setSelectedSeats([]);
-            }}>
-              Show all
-            </button>
           </div>
+          {isRoundTrip ? <div className="card card-sm" style={{ marginTop: -8, marginBottom: 14 }}>
+            <div style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 700 }}>Two-way discount active</div>
+            <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4 }}>Choose seats for departure and coming back to receive 5% off both legs.</div>
+          </div> : null}
           {loadingRoutes ? <div className="card"><div className="page-sub">Loading bus routes...</div></div> : null}
           {routesError ? <div className="card" style={{ borderColor: 'rgba(248,113,113,0.35)' }}>
               <div className="page-sub" style={{ color: 'var(--red)' }}>{routesError}</div>
@@ -437,148 +600,100 @@ export default function BusSearch({
                 Try again
               </button>
             </div> : null}
-          {!loadingRoutes && !routesError ? <div className="sec-title">{filteredRoutes.length} trips found</div> : null}
-          {!loadingRoutes && !routesError && !filteredRoutes.length ? <div className="card"><div className="page-sub">No trips found for this route and date.</div></div> : null}
-          {!loadingRoutes && !routesError && filteredRoutes.map((r, i) => <div key={r.id} className={`route-card ticket-card scroll-animate ${selectedRoute === r.id ? 'selected' : ''}`} style={{
-        '--delay': `${i * 40}ms`,
-        opacity: r.isMaintenanceBlocked ? 0.62 : 1,
-        cursor: r.isMaintenanceBlocked ? 'not-allowed' : 'pointer'
-              }} onClick={() => {
-        if (r.avail <= 0 || r.isMaintenanceBlocked) return;
-        if (role === 'guest') {
-          setShowAuthModal(true);
-        } else setSelectedRoute(r.id);
-      }}>
-              <div>
-                <div className="route-time">{r.from}</div>
-                <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            marginTop: 2
-          }}>
-                  <span style={{
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: r.color,
-              boxShadow: `0 0 0 3px ${r.bg}`
-            }} />
-                  <span style={{
-              fontSize: 11,
-              color: r.color
-            }}>
-                    {r.vehicle}
-                  </span>
+          {!loadingRoutes && !routesError ? <>
+            <div className="sec-title">Departure schedules ({outboundRoutes.length})</div>
+            {!outboundRoutes.length ? <div className="card"><div className="page-sub">No departure trips found for this route and date.</div></div> : null}
+            {outboundRoutes.map((r, i) => <div key={r.id} className={`route-card ticket-card scroll-animate ${selectedRoute === r.id ? 'selected' : ''}`} style={{
+          '--delay': `${i * 40}ms`,
+          opacity: r.isMaintenanceBlocked ? 0.62 : 1,
+          cursor: r.isMaintenanceBlocked ? 'not-allowed' : 'pointer'
+                }} onClick={() => selectOutboundRoute(r)} onDoubleClick={() => selectOutboundRoute(r, true)}>
+                <div>
+                  <div className="route-time">{r.from}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: r.color, boxShadow: `0 0 0 3px ${r.bg}` }} />
+                    <span style={{ fontSize: 11, color: r.color }}>{r.vehicle}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{r.origin} to {r.destination}</div>
                 </div>
-                <div style={{
-            fontSize: 10,
-            color: 'var(--text-3)',
-            marginTop: 2
-          }}>
-                  {r.type}
-                  {r.busName ? ` - ${r.busName}` : ''}
+                <div className="route-arrow">
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>{r.duration}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div style={{ flex: 1, height: '0.5px', background: 'var(--glass-border)' }} /><span style={{ fontSize: 9, color: 'var(--text-3)' }}>?</span></div>
                 </div>
-              </div>
-              <div className="route-arrow">
-                <div style={{
-            fontSize: 11,
-            color: 'var(--text-3)',
-            marginBottom: 2
-          }}>
-                  {r.duration}
+                <div>
+                  <div className="route-time">{r.to}</div>
+                  <div style={{ fontSize: 11, color: r.avail <= 5 ? 'var(--amber)' : 'var(--text-3)', marginTop: 2 }}>
+                    {r.isMaintenanceBlocked ? 'Maintenance' : r.avail > 0 ? `${r.avail} seats left` : 'Sold out'}
+                  </div>
+                  {r.isMaintenanceBlocked ? <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 3 }}>{r.unavailableReason}</div> : null}
                 </div>
-                <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6
-          }}>
-                  <div style={{
-              flex: 1,
-              height: '0.5px',
-              background: 'var(--glass-border)'
-            }} />
-                  <span style={{
-              fontSize: 9,
-              color: 'var(--text-3)'
-            }}>?</span>
-                </div>
-              </div>
-              <div>
-                <div className="route-time">{r.to}</div>
-                <div style={{
-            fontSize: 11,
-            color: r.avail <= 5 ? 'var(--amber)' : 'var(--text-3)',
-            marginTop: 2
-          }}>
-                  {r.isMaintenanceBlocked ? 'Maintenance' : r.avail > 0 ? `${r.avail} seats left` : 'Sold out'}
-                </div>
-                {r.isMaintenanceBlocked ? <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 3 }}>{r.unavailableReason}</div> : null}
-              </div>
-              <div className="route-price">${r.price}</div>
-              <div style={{
-          width: 8,
-          height: 8,
-          borderRadius: '50%',
-          border: '1.5px solid',
-          borderColor: selectedRoute === r.id ? 'var(--accent)' : 'var(--glass-border)',
-          background: selectedRoute === r.id ? 'var(--accent)' : 'transparent',
-          flexShrink: 0
-        }} />
-            </div>)}
-          <div style={{
-        marginTop: 20,
-        display: 'flex',
-        justifyContent: 'flex-end'
-      }}>
-            <button className="btn btn-primary btn-lg" disabled={!selectedRoute} onClick={() => goStep(2)}>
+                <div className="route-price">${r.price}</div>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', border: '1.5px solid', borderColor: selectedRoute === r.id ? 'var(--accent)' : 'var(--glass-border)', background: selectedRoute === r.id ? 'var(--accent)' : 'transparent', flexShrink: 0 }} />
+              </div>)}
+
+            {isRoundTrip ? <>
+              <div className="sec-title" style={{ marginTop: 22 }}>Coming back schedules ({returnRoutes.length})</div>
+              {!returnRoutes.length ? <div className="card"><div className="page-sub">No coming back trips found for the reverse route and date.</div></div> : null}
+              {returnRoutes.map((r, i) => <div key={r.id} className={`route-card ticket-card scroll-animate ${selectedReturnRoute === r.id ? 'selected' : ''}`} style={{
+            '--delay': `${(outboundRoutes.length + i) * 40}ms`,
+            opacity: r.isMaintenanceBlocked ? 0.62 : 1,
+            cursor: r.isMaintenanceBlocked ? 'not-allowed' : 'pointer'
+                  }} onClick={() => selectReturnRoute(r)} onDoubleClick={() => selectReturnRoute(r, true)}>
+                  <div>
+                    <div className="route-time">{r.from}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: r.color, boxShadow: `0 0 0 3px ${r.bg}` }} />
+                      <span style={{ fontSize: 11, color: r.color }}>{r.vehicle}</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{r.origin} to {r.destination}</div>
+                  </div>
+                  <div className="route-arrow">
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>{r.duration}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div style={{ flex: 1, height: '0.5px', background: 'var(--glass-border)' }} /><span style={{ fontSize: 9, color: 'var(--text-3)' }}>?</span></div>
+                  </div>
+                  <div>
+                    <div className="route-time">{r.to}</div>
+                    <div style={{ fontSize: 11, color: r.avail <= 5 ? 'var(--amber)' : 'var(--text-3)', marginTop: 2 }}>
+                      {r.isMaintenanceBlocked ? 'Maintenance' : r.avail > 0 ? `${r.avail} seats left` : 'Sold out'}
+                    </div>
+                    {r.isMaintenanceBlocked ? <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 3 }}>{r.unavailableReason}</div> : null}
+                  </div>
+                  <div className="route-price">${r.price}</div>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', border: '1.5px solid', borderColor: selectedReturnRoute === r.id ? 'var(--accent)' : 'var(--glass-border)', background: selectedReturnRoute === r.id ? 'var(--accent)' : 'transparent', flexShrink: 0 }} />
+                </div>)}
+            </> : null}
+          </> : null}
+          <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
+            <button className="btn btn-primary btn-lg" disabled={!selectedRoute || (isRoundTrip && !selectedReturnRoute)} onClick={goSeatsStep}>
               Continue <Icon d={icons.arrow} size={15} color="#fff" />
             </button>
           </div>
         </>}
 
       {step === 2 && <div className="seat-map-wrap">
+          {isRoundTrip ? <div className="pill-nav" style={{ marginBottom: 16 }}>
+            <div className={`pill-tab ${activeSeatLeg === 'outbound' ? 'active' : ''}`} onClick={() => setActiveSeatLeg('outbound')}>Departure seats</div>
+            <div className={`pill-tab ${activeSeatLeg === 'return' ? 'active' : ''}`} onClick={() => setActiveSeatLeg('return')}>Coming back seats</div>
+          </div> : null}
           <div className="seat-legend">
-            <div className="seat-legend-item">
-              <div className="seat-dot seat-dot-avail" />
-              <span>Available</span>
-            </div>
-            <div className="seat-legend-item">
-              <div className="seat-dot seat-dot-taken" />
-              <span>Taken</span>
-            </div>
-            <div className="seat-legend-item">
-              <div className="seat-dot seat-dot-sel" />
-              <span>Selected</span>
-            </div>
-            <div className="seat-legend-item">
-              <div className="seat-dot" style={{ background: 'rgba(255,255,255,0.07)', border: '0.5px dashed var(--glass-border)' }} />
-              <span>Facility</span>
-            </div>
+            <div className="seat-legend-item"><div className="seat-dot seat-dot-avail" /><span>Available</span></div>
+            <div className="seat-legend-item"><div className="seat-dot seat-dot-taken" /><span>Taken</span></div>
+            <div className="seat-legend-item"><div className="seat-dot seat-dot-sel" /><span>Selected</span></div>
+            <div className="seat-legend-item"><div className="seat-dot" style={{ background: 'rgba(255,255,255,0.07)', border: '0.5px dashed var(--glass-border)' }} /><span>Facility</span></div>
           </div>
           <div className="seat-layout">
             <div>
               <div className="bus-shell">
                 <div className="bus-pattern" />
                 <div className="bus-roof" />
-                <div className="bus-front">
-                  <span className="steering">??</span>
-                </div>
-                <div
-                  className="seat-grid"
-                  style={{
-                    gridTemplateColumns: `repeat(${currentSeatMap.columns || 4}, 44px)`,
-                    maxWidth: 'none'
-                  }}
-                >
-                  {(currentSeatMap.cells || []).map(cell => {
+                <div className="bus-front"><span className="steering">??</span></div>
+                <div className="seat-grid" style={{ gridTemplateColumns: `repeat(${activeSeatMap.columns || 4}, 44px)`, maxWidth: 'none' }}>
+                  {(activeSeatMap.cells || []).map(cell => {
                     const sid = cell.label;
                     const isSeat = cell.type === 'seat';
-                    const taken = isSeat && takenSeats.includes(sid);
-                    const sel = isSeat && selectedSeats.includes(sid);
-                    const className = isSeat
-                      ? `seat ${taken ? 'seat-taken' : sel ? 'seat-sel' : 'seat-avail'}`
-                      : 'seat';
+                    const taken = isSeat && activeTakenSeatSet.has(String(sid || '').toUpperCase());
+                    const sel = isSeat && activeSelectedSeats.includes(sid);
+                    const className = isSeat ? `seat ${taken ? 'seat-taken' : sel ? 'seat-sel' : 'seat-avail'}` : 'seat';
                     const facilityStyle = !isSeat ? {
                       background: cell.type === 'empty' ? 'transparent' : 'rgba(255,255,255,0.07)',
                       borderStyle: cell.type === 'empty' ? 'dashed' : 'solid',
@@ -589,104 +704,40 @@ export default function BusSearch({
                       color: '#fff',
                       borderColor: cell.color
                     } : {};
-                    return (
-                      <div
-                        key={`${cell.row}-${cell.column}`}
-                        className={className}
-                        style={facilityStyle}
-                        title={cell.note || cell.label || cell.type}
-                        onClick={() => isSeat && toggleSeat(sid)}
-                      >
-                        {seatCellText(cell)}
-                      </div>
-                    );
+                    return <div key={`${cell.row}-${cell.column}`} className={className} style={facilityStyle} title={cell.note || cell.label || cell.type} onClick={() => isSeat && (activeSeatLeg === 'return' ? toggleReturnSeat(sid) : toggleSeat(sid))}>
+                      {seatCellText(cell)}
+                    </div>;
                   })}
                 </div>
               </div>
             </div>
-            <div style={{
-          flex: 1
-        }}>
-              <div className="sec-title">Booking summary</div>
+            <div style={{ flex: 1 }}>
+              <div className="sec-title">{activeSeatLeg === 'return' ? 'Coming back' : 'Departure'} summary</div>
               <div className="card card-sm">
-                <div className="summary-row">
-                  <span className="summary-key">Route</span>
-                  <span className="summary-val">
-                    {fromCity} ? {toCity}
-                  </span>
-                </div>
-                <div className="summary-row">
-                  <span className="summary-key">Date</span>
-                  <span className="summary-val">
-                    {travelDate} • {currentRoute?.from}
-                  </span>
-                </div>
+                <div className="summary-row"><span className="summary-key">Route</span><span className="summary-val">{activeRoute ? `${activeRoute.origin} -> ${activeRoute.destination}` : 'Select route'}</span></div>
+                <div className="summary-row"><span className="summary-key">Date</span><span className="summary-val">{activeRoute ? `${activeRoute.dateKey} | ${activeRoute.from} - ${activeRoute.to}` : 'Select date'}</span></div>
                 <div className="summary-row">
                   <span className="summary-key">Vehicle</span>
-                  <span className="summary-val" style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                color: currentRoute?.color || 'var(--text)'
-              }}>
-                    <span style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  background: currentRoute?.color || 'var(--text-3)',
-                  boxShadow: `0 0 0 3px ${currentRoute?.bg || 'transparent'}`
-                }} />
-                    {currentRoute?.vehicle}
+                  <span className="summary-val" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: activeRoute?.color || 'var(--text)' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: activeRoute?.color || 'var(--text-3)', boxShadow: `0 0 0 3px ${activeRoute?.bg || 'transparent'}` }} />
+                    {activeRoute?.vehicle}
                   </span>
                 </div>
+                <div className="summary-row"><span className="summary-key">Departure seats</span><span className="summary-val" style={{ color: 'var(--accent)' }}>{selectedSeats.length ? selectedSeats.join(', ') : 'None'}</span></div>
+                {isRoundTrip ? <div className="summary-row"><span className="summary-key">Coming back seats</span><span className="summary-val" style={{ color: 'var(--accent)' }}>{returnSeats.length ? returnSeats.join(', ') : 'None'}</span></div> : null}
+                <div className="summary-row"><span className="summary-key">Subtotal</span><span className="summary-val">${subtotal.toFixed(2)}</span></div>
+                {isRoundTrip ? <div className="summary-row"><span className="summary-key">Two-way discount</span><span className="summary-val" style={{ color: 'var(--green)' }}>-${discount.toFixed(2)}</span></div> : null}
+                <div className="divider" style={{ margin: '10px 0' }} />
                 <div className="summary-row">
-                  <span className="summary-key">Bus type</span>
-                  <span className="summary-val">{currentRoute?.type}</span>
-                </div>
-                <div className="summary-row">
-                  <span className="summary-key">Seats</span>
-                  <span className="summary-val" style={{
-                color: 'var(--accent)'
-              }}>
-                    {selectedSeats.length ? selectedSeats.join(', ') : 'None'}
-                  </span>
-                </div>
-                <div className="summary-row">
-                  <span className="summary-key">Price each</span>
-                  <span className="summary-val">
-                    ${currentRoute?.price ?? 0}
-                  </span>
-                </div>
-                <div className="divider" style={{
-              margin: '10px 0'
-            }} />
-                <div className="summary-row">
-                  <span className="summary-key" style={{
-                fontWeight: 600,
-                color: 'var(--text)'
-              }}>
-                    Total
-                  </span>
-                  <span className="summary-val" style={{
-                color: 'var(--green)',
-                fontSize: 16
-              }}>
-                    $
-                    {((currentRoute?.price ?? 0) * selectedSeats.length).toFixed(2)}
-                  </span>
+                  <span className="summary-key" style={{ fontWeight: 600, color: 'var(--text)' }}>Total</span>
+                  <span className="summary-val" style={{ color: 'var(--green)', fontSize: 16 }}>${finalTotal.toFixed(2)}</span>
                 </div>
               </div>
             </div>
           </div>
-          <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        marginTop: 24
-      }}>
-            <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}>
-              <Icon d={icons.back} size={15} />
-            </button>
-            <button className="btn btn-primary" disabled={!selectedSeats.length} onClick={() => goStep(3)}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
+            <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}><Icon d={icons.back} size={15} /></button>
+            <button className="btn btn-primary" disabled={!selectedSeats.length || (isRoundTrip && !returnSeats.length)} onClick={() => goStep(3)}>
               Continue <Icon d={icons.arrow} size={15} color="#fff" />
             </button>
           </div>
@@ -694,27 +745,28 @@ export default function BusSearch({
 
       {step === 3 && <div className="card">
           <div className="sec-title">Passenger information</div>
+          {bookingError ? <div style={{ marginBottom: 12, color: 'var(--red)', fontSize: 12 }}>{bookingError}</div> : null}
           <div className="form-row">
             <div>
               <div className="label">First name</div>
-              <input placeholder="Sereymongkol" />
+              <input placeholder="Sereymongkol" value={passenger.firstName} onChange={(event) => updatePassenger('firstName', event.target.value)} />
             </div>
             <div>
               <div className="label">Last name</div>
-              <input placeholder="Thoeung" />
+              <input placeholder="Thoeung" value={passenger.lastName} onChange={(event) => updatePassenger('lastName', event.target.value)} />
             </div>
           </div>
           <div className="form-group">
             <div className="label">Phone number</div>
-            <input placeholder="+855 17 420 051" />
+            <input placeholder="+855 17 420 051" value={passenger.phone} onChange={(event) => updatePassenger('phone', event.target.value)} />
           </div>
           <div className="form-group">
             <div className="label">National ID / Passport</div>
-            <input placeholder="ID123456789" />
+            <input placeholder="ID123456789" value={passenger.idNumber} onChange={(event) => updatePassenger('idNumber', event.target.value)} />
           </div>
           <div className="form-group">
             <div className="label">Email (for ticket)</div>
-            <input type="email" placeholder="thoeungsereymongkol@gmail.com" />
+            <input type="email" placeholder="thoeungsereymongkol@gmail.com" value={passenger.email} onChange={(event) => updatePassenger('email', event.target.value)} />
           </div>
           <div style={{
         display: 'flex',
@@ -724,7 +776,7 @@ export default function BusSearch({
             <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}>
               <Icon d={icons.back} size={15} />
             </button>
-            <button className="btn btn-primary btn-lg" onClick={() => goStep(4)}>
+            <button className="btn btn-primary btn-lg" onClick={() => { if (validatePassenger()) goStep(4); }}>
               Continue <Icon d={icons.arrow} size={15} color="#fff" />
             </button>
           </div>
@@ -732,6 +784,7 @@ export default function BusSearch({
 
       {step === 4 && <div className="card">
           <div className="sec-title">Choose payment method</div>
+          {bookingError ? <div style={{ marginBottom: 12, color: 'var(--red)', fontSize: 12 }}>{bookingError}</div> : null}
           {[{
         id: 'aba',
         icon: '??',
@@ -781,26 +834,19 @@ export default function BusSearch({
           color: 'var(--text-3)',
           marginTop: 10
         }}>
-                Amount: $
-                {((currentRoute?.price ?? 0) * selectedSeats.length).toFixed(2)}
+                Amount: ${finalTotal.toFixed(2)}
               </div>
             </div>}
 
           <div className="divider" />
           <div className="total-box">
-            <span style={{
-          fontSize: 13,
-          color: 'var(--accent)'
-        }}>
+            <span style={{ fontSize: 13, color: 'var(--accent)' }}>
               Total to pay
+              {isRoundTrip ? <span style={{ display: 'block', fontSize: 11, color: 'var(--text-2)', marginTop: 4 }}>
+                Subtotal ${subtotal.toFixed(2)} - 5% two-way discount ${discount.toFixed(2)}
+              </span> : null}
             </span>
-            <span style={{
-          fontSize: 18,
-          fontWeight: 700,
-          color: 'var(--accent)'
-        }}>
-              ${((currentRoute?.price ?? 0) * selectedSeats.length).toFixed(2)}
-            </span>
+            <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)' }}>${finalTotal.toFixed(2)}</span>
           </div>
 
           <div style={{
@@ -811,11 +857,8 @@ export default function BusSearch({
             <button className="btn btn-ghost btn-round-back" aria-label="Back" onClick={goBack}>
               <Icon d={icons.back} size={15} />
             </button>
-            <button className="btn btn-primary btn-lg" onClick={() => {
-          setPaymentSuccess(true);
-          goStep(5);
-        }}>
-              Confirm & Pay <Icon d={icons.check} size={15} color="#fff" />
+            <button className="btn btn-primary btn-lg" disabled={savingBooking} onClick={confirmBusBooking}>
+              {savingBooking ? 'Saving...' : 'Confirm & Pay'} <Icon d={icons.check} size={15} color="#fff" />
             </button>
           </div>
         </div>}

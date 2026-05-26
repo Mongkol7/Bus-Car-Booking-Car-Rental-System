@@ -14,10 +14,55 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
     if (typeof window === 'undefined') return null;
     const raw = window.localStorage.getItem('user');
-    return raw ? JSON.parse(raw) : null;
+    try {
+      return raw ? JSON.parse(raw) : null;
+    } catch (error) {
+      window.localStorage.removeItem('user');
+      return null;
+    }
   });
 
   const [redirectToLogin, setRedirectToLogin] = useState(false);
+
+  useEffect(() => {
+    if (!token) return undefined;
+
+    const controller = new AbortController();
+
+    async function hydrateUserFromToken() {
+      try {
+        const response = await fetch('/api/my/profile', {
+          headers: {
+            Authorization: `Bearer ${token}`
+          },
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          if ([401, 403, 404].includes(response.status)) {
+            setRole('guest');
+            setToken('');
+            setUser(null);
+          }
+          return;
+        }
+
+        const data = await response.json();
+        if (data?.user) {
+          setUser(data.user);
+          setRole(data.user.role || 'user');
+        }
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          console.error('Failed to restore user session:', error);
+        }
+      }
+    }
+
+    hydrateUserFromToken();
+
+    return () => controller.abort();
+  }, [token]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -74,12 +119,17 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
+  const updateUser = (patch) => {
+    setUser((current) => current ? { ...current, ...patch } : patch);
+    if (patch?.role) setRole(patch.role);
+  };
+
   const finishRedirect = () => {
     setRedirectToLogin(false);
   };
 
   return (
-    <AuthContext.Provider value={{ role, token, user, login, logout, setGuest, redirectToLogin, finishRedirect }}>
+    <AuthContext.Provider value={{ role, token, user, login, logout, setGuest, updateUser, redirectToLogin, finishRedirect }}>
       {children}
     </AuthContext.Provider>
   );

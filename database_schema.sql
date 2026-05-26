@@ -4,7 +4,10 @@
 -- ==========================================
 DROP TABLE IF EXISTS transactions CASCADE;
 DROP TABLE IF EXISTS user_sessions CASCADE;
+DROP TABLE IF EXISTS user_notifications CASCADE;
 DROP TABLE IF EXISTS car_rentals CASCADE;
+DROP TABLE IF EXISTS rental_driver_reviews CASCADE;
+DROP TABLE IF EXISTS rental_drivers CASCADE;
 DROP TABLE IF EXISTS bus_bookings CASCADE;
 DROP TABLE IF EXISTS bus_seats CASCADE;
 DROP TABLE IF EXISTS bus_routes CASCADE;
@@ -92,6 +95,37 @@ CREATE TABLE rental_cars (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 5.1 RENTAL DRIVERS
+CREATE TABLE rental_drivers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(150) NOT NULL,
+    license_number VARCHAR(50) UNIQUE NOT NULL,
+    phone VARCHAR(30),
+    rating NUMERIC(3,2) DEFAULT 5.00,
+    review_count INT DEFAULT 0,
+    hourly_rate DECIMAL(10,2) NOT NULL,
+    status VARCHAR(20) DEFAULT 'available' CHECK (status IN ('available', 'inactive')),
+    profile_photo TEXT,
+    background TEXT,
+    experience_years INT DEFAULT 0,
+    languages TEXT[] DEFAULT ARRAY[]::TEXT[],
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE rental_driver_reviews (
+    id SERIAL PRIMARY KEY,
+    driver_id INT REFERENCES rental_drivers(id) ON DELETE CASCADE,
+    user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    car_rental_id INT,
+    rating INT CHECK (rating BETWEEN 1 AND 5),
+    comment TEXT NOT NULL,
+    review_type VARCHAR(20) DEFAULT 'review' CHECK (review_type IN ('review', 'report')),
+    admin_reply TEXT,
+    admin_replied_at TIMESTAMP,
+    admin_replied_by INT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 6. BUS ROUTES
 CREATE TABLE bus_routes (
     id SERIAL PRIMARY KEY,
@@ -145,8 +179,20 @@ CREATE TABLE bus_bookings (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE CASCADE,
     route_id INT REFERENCES bus_routes(id) ON DELETE CASCADE,
+    booking_reference VARCHAR(40),
+    round_trip_reference VARCHAR(40),
+    trip_leg VARCHAR(20) DEFAULT 'outbound',
     seat_number VARCHAR(10) NOT NULL,
     total_price DECIMAL(10,2) NOT NULL,
+    original_price DECIMAL(10,2),
+    discount_amount DECIMAL(10,2) DEFAULT 0,
+    passenger_first_name VARCHAR(100),
+    passenger_last_name VARCHAR(100),
+    passenger_phone VARCHAR(30),
+    passenger_email VARCHAR(150),
+    passenger_id_number VARCHAR(80),
+    package_weight_kg DECIMAL(8,2) DEFAULT 0,
+    overweight_charge DECIMAL(10,2) DEFAULT 0,
     payment_method VARCHAR(50),
     status booking_status DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -159,12 +205,38 @@ CREATE TABLE car_rentals (
     car_id INT REFERENCES rental_cars(id) ON DELETE CASCADE,
     pickup_date DATE NOT NULL,
     return_date DATE NOT NULL,
+    pickup_datetime TIMESTAMP,
+    return_datetime TIMESTAMP,
+    rental_hours NUMERIC(8,2),
+    hourly_charge DECIMAL(10,2),
+    returned_at TIMESTAMP,
+    customer_phone VARCHAR(30),
+    hired_driver_id INT REFERENCES rental_drivers(id) ON DELETE SET NULL,
+    rental_base_price DECIMAL(10,2) DEFAULT 0,
+    driver_fee DECIMAL(10,2) DEFAULT 0,
     driver_name VARCHAR(150) NOT NULL,
     driver_license VARCHAR(50) NOT NULL,
     total_price DECIMAL(10,2) NOT NULL,
     payment_method payment_method NOT NULL,
-    status booking_status DEFAULT 'pending',
+    status booking_status DEFAULT 'pending' CHECK (status::TEXT IN ('pending', 'confirmed', 'cancelled', 'returned')),
     booked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE user_notifications (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    car_rental_id INT REFERENCES car_rentals(id) ON DELETE CASCADE,
+    bus_booking_id INT REFERENCES bus_bookings(id) ON DELETE CASCADE,
+    booking_reference VARCHAR(80),
+    type VARCHAR(50) NOT NULL,
+    title VARCHAR(150) NOT NULL,
+    message TEXT NOT NULL,
+    action_url TEXT,
+    action_type VARCHAR(50),
+    metadata JSONB DEFAULT '{}'::JSONB,
+    is_read BOOLEAN DEFAULT FALSE,
+    read_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 10. USER SESSIONS
@@ -212,5 +284,6 @@ CREATE INDEX idx_bus_routes_search ON bus_routes(origin, destination, departure_
 CREATE UNIQUE INDEX idx_bus_routes_daily_template_date ON bus_routes(daily_template_id, service_date) WHERE daily_template_id IS NOT NULL;
 CREATE INDEX idx_car_rental_dates ON car_rentals(pickup_date, return_date);
 CREATE INDEX idx_user_bookings ON bus_bookings(user_id);
+CREATE UNIQUE INDEX idx_bus_bookings_active_route_seat_unique ON bus_bookings(route_id, UPPER(seat_number)) WHERE status <> 'cancelled';
 CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
 CREATE INDEX idx_user_sessions_token_hash ON user_sessions(token_hash);

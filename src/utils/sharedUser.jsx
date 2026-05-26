@@ -22,11 +22,12 @@ export const icons = {
   qr: 'M3 3h6v6H3zm12 0h6v6h-6zM3 15h6v6H3zm12 0h2v2h-2zm4 0h2v2h-2zm-2 2h2v2h-2zm2 2h2v2h-2z',
   x: 'M18 6L6 18M6 6l12 12',
   edit: 'M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z',
+  bell: 'M18 8a6 6 0 00-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M13.73 21a2 2 0 01-3.46 0',
   logout: 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9',
   filter: 'M22 3H2l8 9.46V19l4 2v-8.54L22 3z'
 };
 
-export const setupScrollReveal = () => {
+export const setupScrollReveal = (options = {}) => {
   if (typeof window === 'undefined') return () => {};
   const elements = Array.from(document.querySelectorAll('.scroll-animate'));
   if (!('IntersectionObserver' in window)) {
@@ -43,8 +44,8 @@ export const setupScrollReveal = () => {
       }
     });
   }, {
-    threshold: 0.2,
-    rootMargin: '0px 0px -10% 0px'
+    threshold: options.threshold ?? 0.2,
+    rootMargin: options.rootMargin || '0px 0px -10% 0px'
   });
   elements.forEach(el => observer.observe(el));
   return () => observer.disconnect();
@@ -111,4 +112,3 @@ export const getTodayISO = () => {
   const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
-
