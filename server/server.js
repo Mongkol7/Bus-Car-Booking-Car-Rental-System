@@ -694,6 +694,10 @@ function normalizeText(value) {
   return String(value || '').trim();
 }
 
+function normalizeRouteName(value) {
+  return normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
+}
+
 function normalizeMoney(value) {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : NaN;
@@ -7166,7 +7170,10 @@ app.post('/api/bookings/bus', async (req, res) => {
       const outbound = routeByLeg.outbound?.route;
       const returning = routeByLeg.return?.route;
       if (!outbound || !returning) fail(400, 'Round trips require outbound and return legs.');
-      if (outbound.origin !== returning.destination || outbound.destination !== returning.origin) {
+      if (
+        normalizeRouteName(outbound.origin) !== normalizeRouteName(returning.destination) ||
+        normalizeRouteName(outbound.destination) !== normalizeRouteName(returning.origin)
+      ) {
         fail(400, 'Return trip must use the reverse destination of the outbound trip.');
       }
       if (new Date(returning.departure_time) <= new Date(outbound.departure_time)) {

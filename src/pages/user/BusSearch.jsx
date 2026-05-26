@@ -16,6 +16,17 @@ function getLocalDateKey(value) {
   return `${year}-${month}-${day}`;
 }
 
+function normalizeRouteName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function getRouteDateKey(route) {
+  const serviceDate = String(route?.service_date || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(serviceDate)) return serviceDate;
+  if (serviceDate) return getLocalDateKey(serviceDate);
+  return getLocalDateKey(route?.departure_time);
+}
+
 function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '--:--';
@@ -93,9 +104,9 @@ function formatDbRoute(route) {
 
   return {
     id: route.id,
-    origin: route.origin,
-    destination: route.destination,
-    dateKey: getLocalDateKey(route.departure_time),
+    origin: String(route.origin || '').trim(),
+    destination: String(route.destination || '').trim(),
+    dateKey: getRouteDateKey(route),
     from: formatTime(route.departure_time),
     to: formatTime(route.arrival_time),
     duration: formatDuration(route.departure_time, route.arrival_time),
@@ -148,6 +159,7 @@ export default function BusSearch({
   const [payMethod, setPayMethod] = useState('aba');
   const [done, setDone] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [createdTicketReference, setCreatedTicketReference] = useState('');
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [passenger, setPassenger] = useState({
     firstName: user?.first_name || '',
@@ -226,17 +238,21 @@ export default function BusSearch({
     return Array.from(cities).sort((a, b) => a.localeCompare(b));
   }, [routes]);
   const outboundRoutes = useMemo(() => {
+    const normalizedFrom = normalizeRouteName(fromCity);
+    const normalizedTo = normalizeRouteName(toCity);
     return routes.filter(route =>
-      (!fromCity || route.origin === fromCity) &&
-      (!toCity || route.destination === toCity) &&
+      (!normalizedFrom || normalizeRouteName(route.origin) === normalizedFrom) &&
+      (!normalizedTo || normalizeRouteName(route.destination) === normalizedTo) &&
       (!travelDate || route.dateKey === travelDate)
     );
   }, [fromCity, routes, toCity, travelDate]);
   const returnRoutes = useMemo(() => {
     if (!returnDate || !fromCity || !toCity) return [];
+    const normalizedFrom = normalizeRouteName(fromCity);
+    const normalizedTo = normalizeRouteName(toCity);
     return routes.filter(route =>
-      route.origin === toCity &&
-      route.destination === fromCity &&
+      normalizeRouteName(route.origin) === normalizedTo &&
+      normalizeRouteName(route.destination) === normalizedFrom &&
       route.dateKey === returnDate
     );
   }, [fromCity, returnDate, routes, toCity]);
@@ -327,6 +343,7 @@ export default function BusSearch({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Unable to create booking.');
+      setCreatedTicketReference(data.round_trip_reference || data.booking_reference || '');
       setPaymentSuccess(true);
       goStep(5);
     } catch (error) {
@@ -363,8 +380,11 @@ export default function BusSearch({
           if (setBookingsTab) setBookingsTab('trips');
           setPaymentSuccess(false);
           setActive('bookings');
+          const params = new URLSearchParams({ tab: 'trips' });
+          if (createdTicketReference) params.set('ticket', createdTicketReference);
+          navigate(`/bookings?${params.toString()}`);
         }}>
-              My Bookings
+              View booking ticket
             </button>
             <button className="btn btn-ghost btn-full" onClick={() => {
           setPaymentSuccess(false);
