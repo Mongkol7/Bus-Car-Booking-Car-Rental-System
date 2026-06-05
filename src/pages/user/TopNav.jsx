@@ -21,6 +21,7 @@ function formatNotificationTime(value) {
 
 function notificationIcon(type) {
   const normalized = String(type || '');
+  if (normalized.includes('refund')) return icons.qr || icons.bell;
   if (normalized.includes('rental') || normalized.includes('driver')) return icons.car;
   if (normalized.includes('cancel')) return icons.close || icons.ticket;
   return icons.bell;
@@ -36,6 +37,15 @@ function userInitials(user) {
 }
 
 function notificationTargetUrl(notification) {
+  if (notification?.action_url) {
+    try {
+      const action = new URL(notification.action_url, window.location.origin);
+      if (notification?.id && !action.searchParams.has('notice')) action.searchParams.set('notice', String(notification.id));
+      return `${action.pathname}${action.search}${action.hash}`;
+    } catch (error) {
+      return notification.action_url;
+    }
+  }
   const type = String(notification?.type || '');
   const baseTab = type.includes('rental') || type.includes('driver') || notification?.car_rental_id ? 'rentals' : 'trips';
   const params = new URLSearchParams({ tab: baseTab });
@@ -48,6 +58,7 @@ function notificationTargetUrl(notification) {
     const ticketReference = notification?.booking_reference || notification?.metadata?.ticket_reference;
     if (ticketReference) params.set('ticket', String(ticketReference));
   }
+  if (notification?.metadata?.refund_claim_id) params.set('refund', String(notification.metadata.refund_claim_id));
 
   if (notification?.id) params.set('notice', String(notification.id));
   return `/bookings?${params.toString()}`;

@@ -7,6 +7,13 @@ function formatMoney(value) {
   return `$${Number(value || 0).toFixed(2)}`;
 }
 
+function rentalReplacementLabel(summary) {
+  if (!summary?.id) return '';
+  const oldCar = [summary.old_car_name, summary.old_plate_number].filter(Boolean).join(' | ') || 'original car';
+  const newCar = [summary.new_car_name, summary.new_plate_number].filter(Boolean).join(' | ') || 'replacement car';
+  return `${oldCar} -> ${newCar}`;
+}
+
 function formatDateTime(value) {
   if (!value) return 'Not set';
   const date = new Date(value);
@@ -18,6 +25,36 @@ function formatDateTime(value) {
     hour: 'numeric',
     minute: '2-digit'
   });
+}
+
+function normalizeRefundClaim(row) {
+  if (!row?.id) return null;
+  return {
+    id: Number(row.id),
+    refundType: row.refund_type,
+    bookingReference: row.booking_reference || '',
+    amount: Number(row.amount || 0),
+    status: String(row.status || 'pending').toLowerCase(),
+    claimToken: row.claim_token || '',
+    carRentalId: row.car_rental_id ? Number(row.car_rental_id) : null,
+    createdAt: row.created_at,
+    claimedAt: row.claimed_at,
+    voidedAt: row.voided_at
+  };
+}
+
+function hashText(value) {
+  return String(value || '').split('').reduce((hash, char) => ((hash << 5) - hash + char.charCodeAt(0)) | 0, 0);
+}
+
+function refundQrCellIsDark(token, index) {
+  const row = Math.floor(index / 8);
+  const col = index % 8;
+  const inTopLeft = row < 3 && col < 3;
+  const inTopRight = row < 3 && col > 4;
+  const inBottomLeft = row > 4 && col < 3;
+  if (inTopLeft || inTopRight || inBottomLeft) return row === 0 || col === 0 || row === 2 || col === 2 || row === 5 || col === 5 || row === 7 || col === 7;
+  return Math.abs(hashText(`${token}:${index}`)) % 3 !== 0;
 }
 
 function formatStatus(status) {
@@ -148,13 +185,21 @@ function buildRentalTicket(row) {
     driverPhone: row.hired_driver_phone,
     myDriverReview: row.my_driver_review,
     myDriverReport: row.my_driver_report,
+    replacementSummary: row.replacement_summary,
+    refundClaim: normalizeRefundClaim(row.refund_claim),
     notifications: Array.isArray(row.notifications) ? row.notifications : [],
     unreadNotifications: Array.isArray(row.notifications) ? row.notifications.filter((item) => !item.is_read).length : 0
   };
 }
 
 function tripLegBusLabel(leg = {}) {
-  return [leg.company_name, leg.bus_name].filter(Boolean).join(' | ') || 'Bus not assigned';
+  const company = leg.company_name || 'Unknown company';
+  const bus = leg.bus_name || leg.bus_type || leg.plate_number || '';
+  return bus ? `${company} (${bus})` : company || 'Bus not assigned';
+}
+
+function tripLegThemeColor(leg = {}, fallback = '') {
+  return leg.color || getCompanyMeta(leg.company_name || '').color || fallback;
 }
 
 function buildTripTicket(row) {
@@ -169,6 +214,7 @@ function buildTripTicket(row) {
   const busSummary = isRoundTrip
     ? `Out: ${tripLegBusLabel(outbound)}${returning ? ` | Back: ${tripLegBusLabel(returning)}` : ''}`
     : tripLegBusLabel(outbound);
+  const busLegs = isRoundTrip ? [outbound, returning].filter(Boolean) : [outbound].filter(Boolean);
 
   return {
     id: `#${row.ticket_reference || row.booking_reference || `B-${row.first_booking_id}`}`,
@@ -183,6 +229,7 @@ function buildTripTicket(row) {
     busName: outbound.bus_name || row.bus_name,
     busType: outbound.bus_type || row.bus_type,
     busSummary,
+    busLegs,
     price: formatMoney(row.total_amount),
     subtotal: row.subtotal_amount,
     discount: row.discount_amount,
@@ -205,6 +252,7 @@ function buildTripTicket(row) {
     passengerEmail: row.passenger_email,
     myTripComment: row.my_trip_comment,
     myTripReport: row.my_trip_report,
+    refundClaim: normalizeRefundClaim(row.refund_claim),
     notifications: Array.isArray(row.notifications) ? row.notifications : [],
     unreadNotifications: Array.isArray(row.notifications) ? row.notifications.filter((item) => !item.is_read).length : 0,
     isRoundTrip,
@@ -238,6 +286,10 @@ export default function MyBookings({
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelError, setCancelError] = useState('');
   const [cancellingTicket, setCancellingTicket] = useState(false);
+  const [refundModal, setRefundModal] = useState(null);
+  const [refundLoading, setRefundLoading] = useState(false);
+  const [refundError, setRefundError] = useState('');
+  const [confirmingRefund, setConfirmingRefund] = useState(false);
   const [highlightTarget, setHighlightTarget] = useState(null);
 
   useEffect(() => {
@@ -267,8 +319,10 @@ export default function MyBookings({
     const queryTab = searchParams.get('tab');
     const ticketTarget = searchParams.get('ticket');
     const rentalTarget = searchParams.get('rental');
+    const refundTarget = searchParams.get('refund');
     const targetType = queryTab === 'rentals' || rentalTarget ? 'rental' : 'ticket';
     const rawId = targetType === 'rental' ? rentalTarget : ticketTarget;
+    if (refundTarget && token) openRefundClaim(refundTarget);
     if (!rawId) return;
 
     const targetId = String(rawId);
@@ -280,7 +334,7 @@ export default function MyBookings({
       setExpandedTripId(targetId);
       setTripFilter('all');
     }
-  }, [location.search]);
+  }, [location.search, token]);
 
   async function loadRentals({ silent = false } = {}) {
     if (!token || role === 'guest') {
@@ -577,6 +631,144 @@ export default function MyBookings({
     }).catch(() => null)));
   }
 
+  function refundClaimIdFromNotification(notification) {
+    const metadataId = notification?.metadata?.refund_claim_id;
+    if (metadataId) return Number(metadataId);
+    if (!notification?.action_url) return null;
+    try {
+      const url = new URL(notification.action_url, window.location.origin);
+      return Number(url.searchParams.get('refund')) || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function openRefundClaim(claimOrId) {
+    const normalized = typeof claimOrId === 'object' ? normalizeRefundClaim(claimOrId) : null;
+    const claimId = normalized?.id || Number(claimOrId);
+    if (!claimId) return;
+    setRefundError('');
+    if (normalized) setRefundModal(normalized);
+    setRefundLoading(true);
+    try {
+      const response = await fetch(`/api/my/refund-claims/${claimId}`, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Unable to open refund claim.');
+      setRefundModal(normalizeRefundClaim(data.refund_claim));
+    } catch (error) {
+      if (!normalized) {
+        setRefundModal({
+          id: claimId,
+          refundType: '',
+          bookingReference: '',
+          amount: 0,
+          status: 'unavailable',
+          claimToken: ''
+        });
+      }
+      setRefundError(error.message || 'Unable to open refund claim.');
+    } finally {
+      setRefundLoading(false);
+    }
+  }
+
+  async function confirmRefundClaim() {
+    if (!refundModal?.id) return;
+    setConfirmingRefund(true);
+    setRefundError('');
+    try {
+      const response = await fetch(`/api/my/refund-claims/${refundModal.id}/confirm`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Unable to confirm refund claim.');
+      setRefundModal(normalizeRefundClaim(data.refund_claim));
+      await Promise.all([
+        loadTrips({ silent: true }),
+        loadRentals({ silent: true })
+      ]);
+    } catch (error) {
+      setRefundError(error.message || 'Unable to confirm refund claim.');
+    } finally {
+      setConfirmingRefund(false);
+    }
+  }
+
+  function renderRefundNotificationAction(notification) {
+    const claimId = refundClaimIdFromNotification(notification);
+    if (!claimId) return null;
+    return <button className="btn btn-ghost btn-sm" type="button" style={{ marginTop: 8 }} onClick={(event) => {
+      event.stopPropagation();
+      openRefundClaim(claimId);
+    }}>
+      <Icon d={icons.qr} size={13} /> Open refund QR
+    </button>;
+  }
+
+  function renderRefundClaimBlock(booking) {
+    const claim = booking.refundClaim;
+    if (!claim?.id || claim.status === 'voided') return null;
+    const isPending = claim.status === 'pending';
+    return <div style={{
+      marginTop: 12,
+      padding: 10,
+      borderRadius: 10,
+      border: isPending ? '1px solid rgba(56,189,248,0.30)' : '1px solid rgba(34,197,94,0.28)',
+      background: isPending ? 'rgba(56,189,248,0.08)' : 'rgba(34,197,94,0.08)'
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 12, color: isPending ? 'var(--accent)' : 'var(--green)' }}>
+            Refund {isPending ? 'pending' : 'claimed'}
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 4 }}>
+            {formatMoney(claim.amount)} for {claim.bookingReference || booking.id}
+          </div>
+        </div>
+        <button className="btn btn-ghost btn-sm" type="button" onClick={(event) => {
+          event.stopPropagation();
+          openRefundClaim(claim);
+        }}>
+          <Icon d={icons.qr} size={13} /> {isPending ? 'Claim refund' : 'View claim'}
+        </button>
+      </div>
+    </div>;
+  }
+
+  function renderTicketBusLabel(leg, label, fallbackColor) {
+    const color = tripLegThemeColor(leg, fallbackColor);
+    return <span style={{ color, fontWeight: 700 }}>
+      {label ? `${label}: ` : ''}{tripLegBusLabel(leg)}
+    </span>;
+  }
+
+  function renderTicketBusSummary(booking) {
+    const legs = Array.isArray(booking.busLegs) && booking.busLegs.length
+      ? booking.busLegs
+      : Array.isArray(booking.legs) && booking.legs.length
+        ? booking.legs
+        : [];
+    if (!legs.length) {
+      return <span style={{ color: booking.color || getCompanyMeta(booking.company).color }}>
+        {booking.busSummary || booking.busName || booking.company}
+      </span>;
+    }
+
+    return <span style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+      {legs.map((leg, index) => {
+        const label = booking.isRoundTrip ? (leg.leg_type === 'return' ? 'Back' : 'Out') : '';
+        return <React.Fragment key={`${booking.rawId}-meta-bus-${leg.leg_type || index}`}>
+          {index > 0 ? <span style={{ color: 'var(--text-3)' }}>|</span> : null}
+          {renderTicketBusLabel(leg, label, booking.color || getCompanyMeta(booking.company).color)}
+        </React.Fragment>;
+      })}
+    </span>;
+  }
+
   async function cancelBusTicket() {
     if (!cancelTarget) return;
     setCancellingTicket(true);
@@ -592,6 +784,8 @@ export default function MyBookings({
       setTicketMenuOpen(null);
       setQrOpen(null);
       await loadTrips();
+      const claim = data.refund_claim || (Array.isArray(data.refund_claims) ? data.refund_claims[0] : null);
+      if (claim?.id) openRefundClaim(claim);
     } catch (error) {
       setCancelError(error.message || 'Unable to cancel ticket.');
     } finally {
@@ -613,6 +807,7 @@ export default function MyBookings({
       setCancelTarget(null);
       setTicketMenuOpen(null);
       await loadRentals();
+      if (data.refund_claim?.id) openRefundClaim(data.refund_claim);
     } catch (error) {
       setCancelError(error.message || 'Unable to cancel rental.');
     } finally {
@@ -654,8 +849,20 @@ export default function MyBookings({
               {!notification.is_read ? <span className="badge badge-amber">New</span> : null}
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.45, marginTop: 4 }}>{notification.message}</div>
+            {renderRefundNotificationAction(notification)}
           </div>
         ))}
+      </div> : null}
+      {renderRefundClaimBlock(booking)}
+
+      {booking.replacementSummary?.id ? <div style={{ marginTop: 12, padding: 10, borderRadius: 10, border: '1px solid rgba(245,158,11,0.28)', background: 'rgba(245,158,11,0.08)' }}>
+        <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--amber)' }}>Replacement car assigned</div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-2)', marginTop: 4 }}>
+          {rentalReplacementLabel(booking.replacementSummary)}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+          Your rental price stayed the same.
+        </div>
       </div> : null}
 
       {booking.driverName ? <div className="rental-driver-box">
@@ -789,9 +996,11 @@ export default function MyBookings({
               {!notification.is_read ? <span className="badge badge-amber">New</span> : null}
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.45, marginTop: 4 }}>{notification.message}</div>
+            {renderRefundNotificationAction(notification)}
           </div>
         ))}
       </div> : null}
+      {renderRefundClaimBlock(booking)}
 
       {!canShareFeedback ? <div className="page-sub" style={{ marginTop: 12 }}>
         Trip comment and report actions unlock once the departure time starts.
@@ -945,23 +1154,28 @@ export default function MyBookings({
           {booking.type === 'ticket' ? <div style={{ fontSize: 11, color: 'var(--text-2)', display: 'grid', gap: 3, marginTop: 4 }}>
             {booking.isRoundTrip && Array.isArray(booking.legs) ? booking.legs.map((leg) => (
               <div key={`${booking.rawId}-bus-${leg.leg_type}`} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: leg.color || booking.color || getCompanyMeta(booking.company).color }} />
-                <span style={{ color: leg.color || booking.color || getCompanyMeta(booking.company).color }}>
-                  {leg.leg_type === 'return' ? 'Back' : 'Out'}:
-                </span>
-                <span>{tripLegBusLabel(leg)}</span>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: tripLegThemeColor(leg, booking.color || getCompanyMeta(booking.company).color) }} />
+                {renderTicketBusLabel(leg, leg.leg_type === 'return' ? 'Back' : 'Out', booking.color || getCompanyMeta(booking.company).color)}
               </div>
             )) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: booking.color || getCompanyMeta(booking.company).color }} />
-                <span style={{ color: booking.color || getCompanyMeta(booking.company).color }}>{booking.company}</span>
-                {booking.busName ? <span>| {booking.busName}</span> : null}
+                <span style={{ color: booking.color || getCompanyMeta(booking.company).color, fontWeight: 700 }}>
+                  {tripLegBusLabel(booking.legs?.[0] || {
+                    company_name: booking.company,
+                    bus_name: booking.busName,
+                    bus_type: booking.busType
+                  })}
+                </span>
               </div>
             )}
           </div> : null}
           {booking.type === 'rental' && booking.driverName ? <div style={{ fontSize: 11, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
             <Icon d={icons.user} size={12} color="var(--accent)" />
             <span>{booking.driverName} | {Number(booking.driverRating || 0).toFixed(1)} rating</span>
+          </div> : null}
+          {booking.type === 'rental' && booking.replacementSummary?.id ? <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 5 }}>
+            Replacement car: {rentalReplacementLabel(booking.replacementSummary)}
           </div> : null}
           {booking.type === 'rental' && booking.unreadNotifications ? <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 5 }}>
             {booking.unreadNotifications} new rental notice{booking.unreadNotifications === 1 ? '' : 's'}
@@ -986,7 +1200,7 @@ export default function MyBookings({
         </div>
         {booking.type === 'ticket' ? <div className="booking-meta-item">
           Bus
-          <span style={{ color: booking.color || getCompanyMeta(booking.company).color }}>{booking.busSummary || booking.busName || booking.company}</span>
+          {renderTicketBusSummary(booking)}
         </div> : <div className="booking-meta-item">
           Driver
           <span>{booking.driverName ? 'Included' : 'Self-drive'}</span>
@@ -1125,6 +1339,53 @@ export default function MyBookings({
           <button className="btn btn-primary" disabled={cancellingTicket} onClick={cancelTarget.type === 'rental' ? cancelRentalTicket : cancelBusTicket}>
             {cancellingTicket ? 'Cancelling...' : 'Confirm cancel'}
           </button>
+        </div>
+      </div>
+    </div> : null}
+
+    {refundModal ? <div className="modal-overlay" onClick={() => !confirmingRefund && setRefundModal(null)}>
+      <div className="modal-card" style={{ maxWidth: 460, textAlign: 'left' }} onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title">Refund claim QR</div>
+        <div className="page-sub" style={{ marginTop: 8 }}>
+          Scan this mock QR at the cashier counter, then confirm once you receive the refund.
+        </div>
+
+        <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
+          <div className="rental-detail-grid" style={{ marginTop: 0 }}>
+            <div className="booking-meta-item">Claim<span>#{refundModal.id}</span></div>
+            <div className="booking-meta-item">Amount<span style={{ color: 'var(--green)' }}>{formatMoney(refundModal.amount)}</span></div>
+            <div className="booking-meta-item">Reference<span>{refundModal.bookingReference || 'Not set'}</span></div>
+            <div className="booking-meta-item">Status<span style={{ color: refundModal.status === 'pending' ? 'var(--accent)' : refundModal.status === 'claimed' ? 'var(--green)' : 'var(--red)' }}>{formatStatus(refundModal.status)}</span></div>
+          </div>
+
+          <div style={{ display: 'grid', placeItems: 'center', padding: 14, borderRadius: 12, border: '1px solid var(--glass-border)', background: 'rgba(255,255,255,0.04)' }}>
+            <div className="qr-mini" style={{ width: 132, height: 132 }}>
+              <div className="qr-mini-grid" style={{ width: 104, height: 104 }}>
+                {Array.from({ length: 64 }, (_, qrIndex) => <div key={qrIndex} style={{
+                  borderRadius: 1,
+                  background: refundQrCellIsDark(refundModal.claimToken || refundModal.id, qrIndex) ? '#111' : 'transparent'
+                }} />)}
+              </div>
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)', textAlign: 'center', wordBreak: 'break-all' }}>
+              {refundModal.claimToken || 'Claim token unavailable'}
+            </div>
+          </div>
+        </div>
+
+        {refundLoading ? <div style={{ marginTop: 12, color: 'var(--text-2)', fontSize: 12 }}>Loading latest claim status...</div> : null}
+        {refundError ? <div style={{ marginTop: 12, color: 'var(--red)', fontSize: 12 }}>{refundError}</div> : null}
+        {refundModal.status === 'claimed' ? <div style={{ marginTop: 12, color: 'var(--green)', fontSize: 12 }}>
+          Refund confirmed{refundModal.claimedAt ? ` on ${formatDateTime(refundModal.claimedAt)}` : ''}. This cancelled record can no longer be restored by admin.
+        </div> : null}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" disabled={confirmingRefund} onClick={() => setRefundModal(null)}>
+            Close
+          </button>
+          {refundModal.status === 'pending' ? <button className="btn btn-primary" disabled={confirmingRefund || refundLoading} onClick={confirmRefundClaim}>
+            {confirmingRefund ? 'Confirming...' : 'Confirm claimed'}
+          </button> : null}
         </div>
       </div>
     </div> : null}

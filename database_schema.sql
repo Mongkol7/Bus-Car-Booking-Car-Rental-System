@@ -26,10 +26,17 @@ ALTER TABLE IF EXISTS ONLY public.user_notifications DROP CONSTRAINT IF EXISTS u
 ALTER TABLE IF EXISTS ONLY public.user_notifications DROP CONSTRAINT IF EXISTS user_notifications_bus_booking_id_fkey;
 ALTER TABLE IF EXISTS ONLY public.transactions DROP CONSTRAINT IF EXISTS transactions_user_id_fkey;
 ALTER TABLE IF EXISTS ONLY public.transactions DROP CONSTRAINT IF EXISTS transactions_bus_booking_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.refund_claims DROP CONSTRAINT IF EXISTS refund_claims_user_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.refund_claims DROP CONSTRAINT IF EXISTS refund_claims_car_rental_id_fkey;
 ALTER TABLE IF EXISTS ONLY public.rental_driver_reviews DROP CONSTRAINT IF EXISTS rental_driver_reviews_user_id_fkey;
 ALTER TABLE IF EXISTS ONLY public.rental_driver_reviews DROP CONSTRAINT IF EXISTS rental_driver_reviews_driver_id_fkey;
 ALTER TABLE IF EXISTS ONLY public.rental_driver_reviews DROP CONSTRAINT IF EXISTS rental_driver_reviews_admin_replied_by_fkey;
 ALTER TABLE IF EXISTS ONLY public.rental_cars DROP CONSTRAINT IF EXISTS rental_cars_owner_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.rental_car_replacement_events DROP CONSTRAINT IF EXISTS rental_car_replacement_events_new_car_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.rental_car_replacement_events DROP CONSTRAINT IF EXISTS rental_car_replacement_events_old_car_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.rental_car_replacement_events DROP CONSTRAINT IF EXISTS rental_car_replacement_events_source_rental_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.rental_car_replacement_events DROP CONSTRAINT IF EXISTS rental_car_replacement_events_affected_rental_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.rental_car_replacement_events DROP CONSTRAINT IF EXISTS rental_car_replacement_events_admin_id_fkey;
 ALTER TABLE IF EXISTS ONLY public.daily_route_templates DROP CONSTRAINT IF EXISTS daily_route_templates_bus_id_fkey;
 ALTER TABLE IF EXISTS ONLY public.car_rentals DROP CONSTRAINT IF EXISTS car_rentals_user_id_fkey;
 ALTER TABLE IF EXISTS ONLY public.car_rentals DROP CONSTRAINT IF EXISTS car_rentals_hired_driver_id_fkey;
@@ -70,6 +77,9 @@ ALTER TABLE IF EXISTS ONLY public.rental_drivers DROP CONSTRAINT IF EXISTS renta
 ALTER TABLE IF EXISTS ONLY public.rental_driver_reviews DROP CONSTRAINT IF EXISTS rental_driver_reviews_pkey;
 ALTER TABLE IF EXISTS ONLY public.rental_cars DROP CONSTRAINT IF EXISTS rental_cars_plate_number_key;
 ALTER TABLE IF EXISTS ONLY public.rental_cars DROP CONSTRAINT IF EXISTS rental_cars_pkey;
+ALTER TABLE IF EXISTS ONLY public.rental_car_replacement_events DROP CONSTRAINT IF EXISTS rental_car_replacement_events_pkey;
+ALTER TABLE IF EXISTS ONLY public.refund_claims DROP CONSTRAINT IF EXISTS refund_claims_pkey;
+ALTER TABLE IF EXISTS ONLY public.refund_claims DROP CONSTRAINT IF EXISTS refund_claims_claim_token_key;
 ALTER TABLE IF EXISTS ONLY public.destinations DROP CONSTRAINT IF EXISTS destinations_pkey;
 ALTER TABLE IF EXISTS ONLY public.destinations DROP CONSTRAINT IF EXISTS destinations_name_key;
 ALTER TABLE IF EXISTS ONLY public.dashboard_monthly_expenses DROP CONSTRAINT IF EXISTS dashboard_monthly_expenses_pkey;
@@ -96,6 +106,8 @@ ALTER TABLE IF EXISTS public.roles ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS public.rental_drivers ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS public.rental_driver_reviews ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS public.rental_cars ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS public.rental_car_replacement_events ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS public.refund_claims ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS public.destinations ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS public.dashboard_monthly_expenses ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS public.daily_route_templates ALTER COLUMN id DROP DEFAULT;
@@ -125,6 +137,10 @@ DROP SEQUENCE IF EXISTS public.rental_driver_reviews_id_seq;
 DROP TABLE IF EXISTS public.rental_driver_reviews;
 DROP SEQUENCE IF EXISTS public.rental_cars_id_seq;
 DROP TABLE IF EXISTS public.rental_cars;
+DROP SEQUENCE IF EXISTS public.rental_car_replacement_events_id_seq;
+DROP TABLE IF EXISTS public.rental_car_replacement_events;
+DROP SEQUENCE IF EXISTS public.refund_claims_id_seq;
+DROP TABLE IF EXISTS public.refund_claims;
 DROP SEQUENCE IF EXISTS public.destinations_id_seq;
 DROP TABLE IF EXISTS public.destinations;
 DROP SEQUENCE IF EXISTS public.dashboard_monthly_expenses_id_seq;
@@ -587,6 +603,85 @@ CREATE SEQUENCE public.car_rentals_id_seq
 --
 
 ALTER SEQUENCE public.car_rentals_id_seq OWNED BY public.car_rentals.id;
+
+
+--
+-- Name: rental_car_replacement_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rental_car_replacement_events (
+    id integer NOT NULL,
+    affected_rental_id integer,
+    source_rental_id integer,
+    old_car_id integer,
+    new_car_id integer,
+    admin_id integer,
+    reason text DEFAULT 'late return replacement'::text NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: rental_car_replacement_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.rental_car_replacement_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: rental_car_replacement_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.rental_car_replacement_events_id_seq OWNED BY public.rental_car_replacement_events.id;
+
+
+--
+-- Name: refund_claims; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.refund_claims (
+    id integer NOT NULL,
+    user_id integer,
+    refund_type character varying(20) NOT NULL,
+    bus_booking_ids integer[] DEFAULT ARRAY[]::integer[],
+    car_rental_id integer,
+    booking_reference character varying(80),
+    amount numeric(10,2) DEFAULT 0 NOT NULL,
+    status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    claim_token character varying(80) NOT NULL,
+    claimed_at timestamp without time zone,
+    voided_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT refund_claims_refund_type_check CHECK (((refund_type)::text = ANY (ARRAY['bus_ticket'::text, 'car_rental'::text]))),
+    CONSTRAINT refund_claims_status_check CHECK (((status)::text = ANY (ARRAY['pending'::text, 'claimed'::text, 'voided'::text])))
+);
+
+
+--
+-- Name: refund_claims_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.refund_claims_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: refund_claims_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.refund_claims_id_seq OWNED BY public.refund_claims.id;
 
 
 --
@@ -1098,6 +1193,20 @@ ALTER TABLE ONLY public.car_rentals ALTER COLUMN id SET DEFAULT nextval('public.
 
 
 --
+-- Name: rental_car_replacement_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rental_car_replacement_events ALTER COLUMN id SET DEFAULT nextval('public.rental_car_replacement_events_id_seq'::regclass);
+
+
+--
+-- Name: refund_claims id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.refund_claims ALTER COLUMN id SET DEFAULT nextval('public.refund_claims_id_seq'::regclass);
+
+
+--
 -- Name: companies id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1267,6 +1376,30 @@ ALTER TABLE ONLY public.buses
 
 ALTER TABLE ONLY public.car_rentals
     ADD CONSTRAINT car_rentals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: rental_car_replacement_events rental_car_replacement_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rental_car_replacement_events
+    ADD CONSTRAINT rental_car_replacement_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: refund_claims refund_claims_claim_token_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.refund_claims
+    ADD CONSTRAINT refund_claims_claim_token_key UNIQUE (claim_token);
+
+
+--
+-- Name: refund_claims refund_claims_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.refund_claims
+    ADD CONSTRAINT refund_claims_pkey PRIMARY KEY (id);
 
 
 --
@@ -1631,6 +1764,62 @@ ALTER TABLE ONLY public.car_rentals
 
 ALTER TABLE ONLY public.car_rentals
     ADD CONSTRAINT car_rentals_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: refund_claims refund_claims_car_rental_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.refund_claims
+    ADD CONSTRAINT refund_claims_car_rental_id_fkey FOREIGN KEY (car_rental_id) REFERENCES public.car_rentals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: refund_claims refund_claims_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.refund_claims
+    ADD CONSTRAINT refund_claims_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rental_car_replacement_events rental_car_replacement_events_admin_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rental_car_replacement_events
+    ADD CONSTRAINT rental_car_replacement_events_admin_id_fkey FOREIGN KEY (admin_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: rental_car_replacement_events rental_car_replacement_events_affected_rental_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rental_car_replacement_events
+    ADD CONSTRAINT rental_car_replacement_events_affected_rental_id_fkey FOREIGN KEY (affected_rental_id) REFERENCES public.car_rentals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rental_car_replacement_events rental_car_replacement_events_source_rental_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rental_car_replacement_events
+    ADD CONSTRAINT rental_car_replacement_events_source_rental_id_fkey FOREIGN KEY (source_rental_id) REFERENCES public.car_rentals(id) ON DELETE SET NULL;
+
+
+--
+-- Name: rental_car_replacement_events rental_car_replacement_events_old_car_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rental_car_replacement_events
+    ADD CONSTRAINT rental_car_replacement_events_old_car_id_fkey FOREIGN KEY (old_car_id) REFERENCES public.rental_cars(id) ON DELETE SET NULL;
+
+
+--
+-- Name: rental_car_replacement_events rental_car_replacement_events_new_car_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rental_car_replacement_events
+    ADD CONSTRAINT rental_car_replacement_events_new_car_id_fkey FOREIGN KEY (new_car_id) REFERENCES public.rental_cars(id) ON DELETE SET NULL;
 
 
 --

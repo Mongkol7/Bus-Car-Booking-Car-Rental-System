@@ -631,7 +631,12 @@ export default function Bookings() {
         })
       );
       const rows = await loadBookings(false);
-      setEditing((current) => rows.find((booking) => booking.id === current?.id) || current);
+      setEditing((current) => {
+        if (!current) return current;
+        const groupedRows = groupBookingRows(rows);
+        const currentGroupKey = current.booking_group_key || bookingGroupKey(current);
+        return groupedRows.find((booking) => booking.booking_group_key === currentGroupKey || booking.id === current.id) || current;
+      });
     } catch (error) {
       setFormError(error.message || 'Unable to save trip feedback reply.');
     } finally {

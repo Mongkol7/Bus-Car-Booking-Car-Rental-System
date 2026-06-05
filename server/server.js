@@ -319,6 +319,41 @@ async function runUserSchemaMigration() {
   await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS damage_charge DECIMAL(10,2) DEFAULT 0`);
   await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS damage_responsibility VARCHAR(20) DEFAULT 'renter'`);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS rental_car_replacement_events (
+      id SERIAL PRIMARY KEY,
+      affected_rental_id INT REFERENCES car_rentals(id) ON DELETE CASCADE,
+      source_rental_id INT REFERENCES car_rentals(id) ON DELETE SET NULL,
+      old_car_id INT REFERENCES rental_cars(id) ON DELETE SET NULL,
+      new_car_id INT REFERENCES rental_cars(id) ON DELETE SET NULL,
+      admin_id INT REFERENCES users(id) ON DELETE SET NULL,
+      reason TEXT NOT NULL DEFAULT 'late return replacement',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS refund_claims (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      refund_type VARCHAR(20) NOT NULL CHECK (refund_type IN ('bus_ticket', 'car_rental')),
+      bus_booking_ids INT[] DEFAULT ARRAY[]::INT[],
+      car_rental_id INT REFERENCES car_rentals(id) ON DELETE CASCADE,
+      booking_reference VARCHAR(80),
+      amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'claimed', 'voided')),
+      claim_token VARCHAR(80) UNIQUE NOT NULL,
+      claimed_at TIMESTAMP,
+      voided_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`ALTER TABLE refund_claims ADD COLUMN IF NOT EXISTS bus_booking_ids INT[] DEFAULT ARRAY[]::INT[]`);
+  await pool.query(`ALTER TABLE refund_claims ADD COLUMN IF NOT EXISTS car_rental_id INT REFERENCES car_rentals(id) ON DELETE CASCADE`);
+  await pool.query(`ALTER TABLE refund_claims ADD COLUMN IF NOT EXISTS booking_reference VARCHAR(80)`);
+  await pool.query(`ALTER TABLE refund_claims ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE refund_claims ADD COLUMN IF NOT EXISTS voided_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE refund_claims ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
+  await pool.query(`
     UPDATE car_rentals
     SET damage_responsibility = CASE WHEN hired_driver_id IS NULL THEN 'renter' ELSE 'driver' END
     WHERE damage_responsibility IS NULL
@@ -733,6 +768,7 @@ const VEHICLE_STATUSES = ['available', 'rented', 'maintenance'];
 const ROUTE_AVAILABILITY_STATUSES = ['available', 'maintenance'];
 const SEAT_MAP_CELL_TYPES = ['seat', 'empty', 'door', 'bathroom', 'driver', 'note'];
 const DRIVER_STATUSES = ['available', 'inactive'];
+const RENTAL_TURNOVER_BUFFER_MINUTES = 30;
 const DAILY_ROUTE_WINDOW_DAYS = 30;
 
 async function syncBusBookingTransactions(bookingIds, db = pool) {
@@ -829,6 +865,223 @@ function calculateRentalPricing(pickupDateTime, returnDateTime, dailyRate, drive
     driverFee,
     totalPrice: Number((basePrice + driverFee).toFixed(2))
   };
+}
+
+function formatRentalConflictTime(value) {
+  if (!value) return 'unknown time';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatLocalTimestamp(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
+}
+
+function buildRentalDateTimeFromDate(date) {
+  return {
+    value: formatLocalTimestamp(date),
+    dateKey: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`,
+    date
+  };
+}
+
+function effectiveRentalReturnDateTime(status, returnDateTime, now = new Date()) {
+  if (['confirmed', 'returned'].includes(status) && now > returnDateTime.date) {
+    return buildRentalDateTimeFromDate(now);
+  }
+  return returnDateTime;
+}
+
+async function findCarRentalScheduleConflict({ carId, pickupDateTime, returnDateTime, excludeRentalId = null, db = pool }) {
+  const params = [
+    pickupDateTime.value,
+    returnDateTime.value,
+    RENTAL_TURNOVER_BUFFER_MINUTES,
+    excludeRentalId || 0
+  ];
+  const carConflict = await db.query(
+    `SELECT
+       cr.id,
+       cr.status,
+       COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+       COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+       rc.name AS car_name
+     FROM car_rentals cr
+     JOIN rental_cars rc ON rc.id = cr.car_id
+     WHERE cr.car_id = $5
+       AND cr.status IN ('pending', 'confirmed')
+       AND cr.id <> $4
+       AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') < (($2)::TIMESTAMP + ($3 || ' minutes')::INTERVAL)
+       AND COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') > (($1)::TIMESTAMP - ($3 || ' minutes')::INTERVAL)
+     ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC
+     LIMIT 1`,
+    [...params, carId]
+  );
+
+  if (carConflict.rowCount) {
+    const conflict = carConflict.rows[0];
+    return {
+      type: 'car',
+      rental: conflict,
+      message: `${conflict.car_name || 'Selected car'} already has rental #${conflict.id} from ${formatRentalConflictTime(conflict.pickup_datetime)} to ${formatRentalConflictTime(conflict.return_datetime)}. Please choose a time at least ${RENTAL_TURNOVER_BUFFER_MINUTES} minutes apart.`
+    };
+  }
+
+  return null;
+}
+
+async function findDriverRentalScheduleConflict({ driverId = null, pickupDateTime, returnDateTime, excludeRentalId = null, db = pool }) {
+  if (!driverId) return null;
+  const params = [
+    pickupDateTime.value,
+    returnDateTime.value,
+    RENTAL_TURNOVER_BUFFER_MINUTES,
+    excludeRentalId || 0
+  ];
+
+  const driverConflict = await db.query(
+    `SELECT
+       cr.id,
+       cr.status,
+       COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+       COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+       rd.name AS driver_name
+     FROM car_rentals cr
+     JOIN rental_drivers rd ON rd.id = cr.hired_driver_id
+     WHERE cr.hired_driver_id = $5
+       AND cr.status IN ('pending', 'confirmed')
+       AND cr.id <> $4
+       AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') < (($2)::TIMESTAMP + ($3 || ' minutes')::INTERVAL)
+       AND COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') > (($1)::TIMESTAMP - ($3 || ' minutes')::INTERVAL)
+     ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC
+     LIMIT 1`,
+    [...params, driverId]
+  );
+
+  if (driverConflict.rowCount) {
+    const conflict = driverConflict.rows[0];
+    return {
+      type: 'driver',
+      rental: conflict,
+      message: `${conflict.driver_name || 'Selected driver'} already has rental #${conflict.id} from ${formatRentalConflictTime(conflict.pickup_datetime)} to ${formatRentalConflictTime(conflict.return_datetime)}. Please choose a time at least ${RENTAL_TURNOVER_BUFFER_MINUTES} minutes apart.`
+    };
+  }
+
+  return null;
+}
+
+async function findRentalScheduleConflict({ carId, driverId = null, pickupDateTime, returnDateTime, excludeRentalId = null, db = pool }) {
+  const carConflict = await findCarRentalScheduleConflict({ carId, pickupDateTime, returnDateTime, excludeRentalId, db });
+  if (carConflict) return carConflict;
+  return findDriverRentalScheduleConflict({ driverId, pickupDateTime, returnDateTime, excludeRentalId, db });
+}
+
+async function findAvailableReplacementCarsForRental(rental, oldCarId, db = pool) {
+  const result = await db.query(
+    `SELECT
+       rc.id,
+       rc.name,
+       rc.type,
+       rc.plate_number,
+       rc.total_seats,
+       rc.transmission,
+       rc.daily_rate,
+       rc.status
+     FROM rental_cars rc
+     WHERE rc.id <> $1
+       AND rc.status = 'available'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM car_rentals cr
+         WHERE cr.car_id = rc.id
+           AND cr.id <> $2
+           AND cr.status IN ('pending', 'confirmed')
+           AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') < (($4)::TIMESTAMP + ($5 || ' minutes')::INTERVAL)
+           AND COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') > (($3)::TIMESTAMP - ($5 || ' minutes')::INTERVAL)
+       )
+     ORDER BY rc.name, rc.id`,
+    [
+      oldCarId,
+      rental.id,
+      rental.pickup_datetime,
+      rental.return_datetime,
+      RENTAL_TURNOVER_BUFFER_MINUTES
+    ]
+  );
+  return result.rows;
+}
+
+async function buildLateReturnImpact(sourceRental, pickupDateTime, effectiveReturnDateTime, db = pool) {
+  const affected = await db.query(
+    `SELECT
+       cr.id,
+       cr.user_id,
+       cr.car_id,
+       cr.status,
+       COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+       COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+       cr.total_price,
+       CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+       u.email,
+       u.phone,
+       old_car.name AS old_car_name,
+       old_car.type AS old_car_type,
+       old_car.plate_number AS old_plate_number,
+       old_car.daily_rate AS old_daily_rate
+     FROM car_rentals cr
+     JOIN users u ON u.id = cr.user_id
+     JOIN rental_cars old_car ON old_car.id = cr.car_id
+     WHERE cr.car_id = $1
+       AND cr.id <> $2
+       AND cr.status IN ('pending', 'confirmed')
+       AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') < (($4)::TIMESTAMP + ($5 || ' minutes')::INTERVAL)
+       AND COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') > (($3)::TIMESTAMP - ($5 || ' minutes')::INTERVAL)
+     ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC`,
+    [
+      sourceRental.car_id,
+      sourceRental.id,
+      pickupDateTime.value,
+      effectiveReturnDateTime.value,
+      RENTAL_TURNOVER_BUFFER_MINUTES
+    ]
+  );
+
+  const affectedRentals = [];
+  for (const rental of affected.rows) {
+    const replacementOptions = await findAvailableReplacementCarsForRental(rental, sourceRental.car_id, db);
+    affectedRentals.push({
+      ...rental,
+      replacement_options: replacementOptions
+    });
+  }
+
+  return {
+    buffer_minutes: RENTAL_TURNOVER_BUFFER_MINUTES,
+    effective_return_datetime: effectiveReturnDateTime.value,
+    affected_rentals: affectedRentals
+  };
+}
+
+function normalizeReplacementPlan(value) {
+  const items = Array.isArray(value) ? value : [];
+  const plan = new Map();
+  items.forEach((item) => {
+    const rentalId = Number(item?.rental_id);
+    const replacementCarId = Number(item?.replacement_car_id);
+    if (rentalId && replacementCarId) plan.set(rentalId, replacementCarId);
+  });
+  return plan;
+}
+
+function rentalWindowsOverlapWithBuffer(left, right) {
+  const leftPickup = new Date(left.pickup_datetime);
+  const leftReturn = new Date(left.return_datetime);
+  const rightPickup = new Date(right.pickup_datetime);
+  const rightReturn = new Date(right.return_datetime);
+  if ([leftPickup, leftReturn, rightPickup, rightReturn].some((date) => Number.isNaN(date.getTime()))) return false;
+  const bufferMs = RENTAL_TURNOVER_BUFFER_MINUTES * 60 * 1000;
+  return leftPickup.getTime() < rightReturn.getTime() + bufferMs && leftReturn.getTime() > rightPickup.getTime() - bufferMs;
 }
 
 async function releaseExpiredBusMaintenance() {
@@ -1031,7 +1284,32 @@ async function fetchAdminRentalById(rentalId) {
        rc.daily_rate,
        rd.name AS hired_driver_name,
        rd.rating AS hired_driver_rating,
-       rd.hourly_rate AS hired_driver_hourly_rate
+       rd.hourly_rate AS hired_driver_hourly_rate,
+       (
+         SELECT JSON_BUILD_OBJECT(
+           'id', rcre.id,
+           'source_rental_id', rcre.source_rental_id,
+           'old_car_id', rcre.old_car_id,
+           'new_car_id', rcre.new_car_id,
+           'old_car_name', old_car.name,
+           'old_plate_number', old_car.plate_number,
+           'new_car_name', new_car.name,
+           'new_plate_number', new_car.plate_number,
+           'reason', rcre.reason,
+           'created_at', rcre.created_at
+         )
+         FROM rental_car_replacement_events rcre
+         LEFT JOIN rental_cars old_car ON old_car.id = rcre.old_car_id
+         LEFT JOIN rental_cars new_car ON new_car.id = rcre.new_car_id
+         WHERE rcre.affected_rental_id = cr.id
+         ORDER BY rcre.created_at DESC, rcre.id DESC
+         LIMIT 1
+       ) AS replacement_summary,
+       (
+         SELECT COUNT(*)::INT
+         FROM rental_car_replacement_events rcre
+         WHERE rcre.source_rental_id = cr.id
+       ) AS replacement_count
      FROM car_rentals cr
      JOIN users u ON u.id = cr.user_id
      JOIN rental_cars rc ON rc.id = cr.car_id
@@ -1109,6 +1387,349 @@ async function createUserNotification(notification, db = pool) {
       JSON.stringify(metadata)
     ]
   );
+}
+
+function parsePgIntArray(value) {
+  if (Array.isArray(value)) return value.map(Number).filter(Boolean);
+  if (typeof value === 'string') {
+    return value
+      .replace(/[{}]/g, '')
+      .split(',')
+      .map((item) => Number(item))
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function formatRefundClaim(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    user_id: Number(row.user_id),
+    refund_type: row.refund_type,
+    bus_booking_ids: parsePgIntArray(row.bus_booking_ids),
+    car_rental_id: row.car_rental_id ? Number(row.car_rental_id) : null,
+    booking_reference: row.booking_reference || '',
+    amount: Number(Number(row.amount || 0).toFixed(2)),
+    status: row.status,
+    claim_token: row.claim_token,
+    created_at: row.created_at,
+    claimed_at: row.claimed_at,
+    voided_at: row.voided_at
+  };
+}
+
+function createRefundClaimToken() {
+  return `RFD-${crypto.randomBytes(16).toString('hex').toUpperCase()}`;
+}
+
+function refundClaimActionUrl(claimRow) {
+  const claim = formatRefundClaim(claimRow);
+  if (!claim) return '/bookings';
+  const params = new URLSearchParams({
+    tab: claim.refund_type === 'car_rental' ? 'rentals' : 'trips',
+    refund: String(claim.id)
+  });
+  if (claim.refund_type === 'car_rental' && claim.car_rental_id) params.set('rental', String(claim.car_rental_id));
+  if (claim.refund_type === 'bus_ticket' && claim.booking_reference) params.set('ticket', claim.booking_reference);
+  return `/bookings?${params.toString()}`;
+}
+
+async function insertRefundClaim(values, db = pool) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const result = await db.query(
+        `INSERT INTO refund_claims (
+           user_id,
+           refund_type,
+           bus_booking_ids,
+           car_rental_id,
+           booking_reference,
+           amount,
+           status,
+           claim_token
+         )
+         VALUES ($1, $2, $3::INT[], $4, $5, $6, 'pending', $7)
+         RETURNING *`,
+        [
+          values.user_id,
+          values.refund_type,
+          values.bus_booking_ids || [],
+          values.car_rental_id || null,
+          values.booking_reference || null,
+          Number(values.amount || 0).toFixed(2),
+          createRefundClaimToken()
+        ]
+      );
+      return result.rows[0];
+    } catch (error) {
+      if (error.code !== '23505' || attempt === 2) throw error;
+    }
+  }
+  return null;
+}
+
+async function createBusRefundClaimsForBookingGroups(bookingIds, db = pool) {
+  const ids = Array.from(new Set((Array.isArray(bookingIds) ? bookingIds : [bookingIds]).map(Number).filter(Boolean)));
+  if (!ids.length) return [];
+
+  const result = await db.query(
+    `SELECT
+       bb.id,
+       bb.user_id,
+       bb.total_price,
+       COALESCE(bb.round_trip_reference, bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS ticket_reference,
+       bb.seat_number,
+       br.origin,
+       br.destination,
+       br.departure_time,
+       b.name AS bus_name,
+       c.name AS company_name
+     FROM bus_bookings bb
+     JOIN bus_routes br ON br.id = bb.route_id
+     JOIN buses b ON b.id = br.bus_id
+     LEFT JOIN companies c ON c.id = b.company_id
+     WHERE bb.id = ANY($1::INT[])
+     ORDER BY bb.id`,
+    [ids]
+  );
+  if (!result.rowCount) return [];
+
+  const groups = new Map();
+  result.rows.forEach((row) => {
+    const key = `${row.user_id}-${row.ticket_reference}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  });
+
+  const claims = [];
+  for (const rows of groups.values()) {
+    const first = rows[0];
+    const groupIds = rows.map((row) => Number(row.id));
+    const amount = rows.reduce((sum, row) => sum + Number(row.total_price || 0), 0);
+    const existing = await db.query(
+      `SELECT *
+       FROM refund_claims
+       WHERE refund_type = 'bus_ticket'
+         AND user_id = $1
+         AND booking_reference = $2
+         AND status = 'pending'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [first.user_id, first.ticket_reference]
+    );
+
+    if (existing.rowCount) {
+      const updated = await db.query(
+        `UPDATE refund_claims
+         SET bus_booking_ids = $1::INT[],
+             amount = $2,
+             updated_at = NOW()
+         WHERE id = $3
+         RETURNING *`,
+        [groupIds, amount.toFixed(2), existing.rows[0].id]
+      );
+      claims.push(updated.rows[0]);
+    } else {
+      const inserted = await insertRefundClaim({
+        user_id: first.user_id,
+        refund_type: 'bus_ticket',
+        bus_booking_ids: groupIds,
+        car_rental_id: null,
+        booking_reference: first.ticket_reference,
+        amount
+      }, db);
+      if (inserted) claims.push(inserted);
+    }
+  }
+
+  return claims;
+}
+
+async function createRentalRefundClaim(rentalId, db = pool) {
+  const result = await db.query(
+    `SELECT
+       cr.id,
+       cr.user_id,
+       cr.total_price,
+       rc.name AS car_name
+     FROM car_rentals cr
+     JOIN rental_cars rc ON rc.id = cr.car_id
+     WHERE cr.id = $1`,
+    [rentalId]
+  );
+  if (!result.rowCount) return null;
+  const rental = result.rows[0];
+  const reference = `CR-${String(rental.id).padStart(6, '0')}`;
+  const existing = await db.query(
+    `SELECT *
+     FROM refund_claims
+     WHERE refund_type = 'car_rental'
+       AND car_rental_id = $1
+       AND user_id = $2
+       AND status = 'pending'
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1`,
+    [rental.id, rental.user_id]
+  );
+
+  if (existing.rowCount) {
+    const updated = await db.query(
+      `UPDATE refund_claims
+       SET amount = $1,
+           booking_reference = $2,
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [Number(rental.total_price || 0).toFixed(2), reference, existing.rows[0].id]
+    );
+    return updated.rows[0];
+  }
+
+  return insertRefundClaim({
+    user_id: rental.user_id,
+    refund_type: 'car_rental',
+    bus_booking_ids: [],
+    car_rental_id: rental.id,
+    booking_reference: reference,
+    amount: Number(rental.total_price || 0)
+  }, db);
+}
+
+async function createRefundClaimNotification(claimRow, context = {}, db = pool) {
+  const claim = formatRefundClaim(claimRow);
+  if (!claim || claim.status !== 'pending') return 0;
+
+  const existing = await db.query(
+    `SELECT id
+     FROM user_notifications
+     WHERE user_id = $1
+       AND type = 'refund_claim_available'
+       AND COALESCE(metadata->>'refund_claim_id', '') = $2
+     LIMIT 1`,
+    [claim.user_id, String(claim.id)]
+  );
+  if (existing.rowCount) return 0;
+
+  const isRental = claim.refund_type === 'car_rental';
+  const label = isRental
+    ? `rental ${claim.booking_reference || `#${claim.car_rental_id}`}`
+    : `bus ticket ${claim.booking_reference || ''}`.trim();
+  await createUserNotification({
+    user_id: claim.user_id,
+    car_rental_id: isRental ? claim.car_rental_id : null,
+    bus_booking_id: isRental ? null : claim.bus_booking_ids[0],
+    booking_reference: isRental ? null : claim.booking_reference,
+    type: 'refund_claim_available',
+    title: 'Refund claim available',
+    message: `${label} was cancelled. Open this notice to scan the refund QR for $${claim.amount.toFixed(2)}.`,
+    action_url: refundClaimActionUrl(claim),
+    action_type: 'claim_refund',
+    metadata: {
+      ...(context.metadata || {}),
+      refund_claim_id: claim.id,
+      refund_amount: claim.amount,
+      refund_type: claim.refund_type,
+      action_type: 'claim_refund',
+      booking_reference: claim.booking_reference,
+      bus_booking_ids: claim.bus_booking_ids,
+      car_rental_id: claim.car_rental_id
+    }
+  }, db);
+  return 1;
+}
+
+async function deleteRefundClaimNotifications(claimIds, db = pool) {
+  const ids = (Array.isArray(claimIds) ? claimIds : [claimIds]).map(Number).filter(Boolean);
+  if (!ids.length) return 0;
+  const result = await db.query(
+    `DELETE FROM user_notifications
+     WHERE type = 'refund_claim_available'
+       AND COALESCE(metadata->>'refund_claim_id', '') = ANY($1::TEXT[])`,
+    [ids.map(String)]
+  );
+  return result.rowCount || 0;
+}
+
+async function assertBusRefundRestoreAllowed(bookingIds, db = pool) {
+  const ids = Array.from(new Set((Array.isArray(bookingIds) ? bookingIds : [bookingIds]).map(Number).filter(Boolean)));
+  if (!ids.length) return;
+  const claimed = await db.query(
+    `SELECT id, booking_reference
+     FROM refund_claims
+     WHERE refund_type = 'bus_ticket'
+       AND status = 'claimed'
+       AND bus_booking_ids && $1::INT[]
+     LIMIT 1`,
+    [ids]
+  );
+  if (claimed.rowCount) {
+    throw Object.assign(new Error('Refund already claimed, cannot restore this cancelled bus ticket.'), { status: 409 });
+  }
+}
+
+async function assertRentalRefundRestoreAllowed(rentalId, db = pool) {
+  if (!rentalId) return;
+  const claimed = await db.query(
+    `SELECT id
+     FROM refund_claims
+     WHERE refund_type = 'car_rental'
+       AND car_rental_id = $1
+       AND status = 'claimed'
+     LIMIT 1`,
+    [rentalId]
+  );
+  if (claimed.rowCount) {
+    throw Object.assign(new Error('Refund already claimed, cannot restore this cancelled rental.'), { status: 409 });
+  }
+}
+
+async function voidPendingBusRefundClaims(bookingIds, db = pool) {
+  const ids = Array.from(new Set((Array.isArray(bookingIds) ? bookingIds : [bookingIds]).map(Number).filter(Boolean)));
+  if (!ids.length) return [];
+  const result = await db.query(
+    `UPDATE refund_claims
+     SET status = 'voided',
+         voided_at = NOW(),
+         updated_at = NOW()
+     WHERE refund_type = 'bus_ticket'
+       AND status = 'pending'
+       AND bus_booking_ids && $1::INT[]
+     RETURNING id`,
+    [ids]
+  );
+  const claimIds = result.rows.map((row) => row.id);
+  await deleteRefundClaimNotifications(claimIds, db);
+  return claimIds;
+}
+
+async function voidPendingRentalRefundClaims(rentalId, db = pool) {
+  if (!rentalId) return [];
+  const result = await db.query(
+    `UPDATE refund_claims
+     SET status = 'voided',
+         voided_at = NOW(),
+         updated_at = NOW()
+     WHERE refund_type = 'car_rental'
+       AND car_rental_id = $1
+       AND status = 'pending'
+     RETURNING id`,
+    [rentalId]
+  );
+  const claimIds = result.rows.map((row) => row.id);
+  await deleteRefundClaimNotifications(claimIds, db);
+  return claimIds;
+}
+
+async function fetchUserRefundClaim(claimId, userId, db = pool) {
+  const result = await db.query(
+    `SELECT *
+     FROM refund_claims
+     WHERE id = $1
+       AND user_id = $2`,
+    [claimId, userId]
+  );
+  return result.rows[0] || null;
 }
 
 async function createBusTicketNotifications(bookingIds, options = {}, db = pool) {
@@ -1258,6 +1879,16 @@ async function applyDriverDeactivation(driverId, driverName, db = pool) {
     [driverId]
   );
   await syncRentalTransactions(cancelled.rows.map((row) => row.id), db);
+  for (const row of cancelled.rows) {
+    const claim = await createRentalRefundClaim(row.id, db);
+    await createRefundClaimNotification(claim, {
+      metadata: {
+        reason: 'driver deactivated',
+        driver_id: driverId,
+        driver_name: driverName
+      }
+    }, db);
+  }
   return {
     notificationCount,
     cancelledCount: cancelled.rowCount || 0
@@ -1299,6 +1930,7 @@ async function restoreDriverRentalsBeforePickup(driverId, driverName, db = pool)
   let restoredCount = 0;
   let notificationCount = 0;
   for (const rental of eligible.rows) {
+    await assertRentalRefundRestoreAllowed(rental.id, db);
     const previousStatus = ['pending', 'confirmed'].includes(String(rental.previous_status || '').toLowerCase())
       ? String(rental.previous_status).toLowerCase()
       : 'confirmed';
@@ -1330,6 +1962,7 @@ async function restoreDriverRentalsBeforePickup(driverId, driverName, db = pool)
       [previousStatus, rental.id]
     );
     await syncRentalTransactions(updated.rows.map((row) => row.id), db);
+    await voidPendingRentalRefundClaims(rental.id, db);
     restoredCount += updated.rowCount || 0;
   }
 
@@ -3723,15 +4356,15 @@ app.get('/api/rental-drivers', async (req, res) => {
     const params = [];
     let availabilityFilter = '';
     if (pickupDateTime && returnDateTime) {
-      params.push(returnDateTime.value, pickupDateTime.value);
+      params.push(returnDateTime.value, pickupDateTime.value, RENTAL_TURNOVER_BUFFER_MINUTES);
       availabilityFilter = `
         AND NOT EXISTS (
           SELECT 1
           FROM car_rentals cr
           WHERE cr.hired_driver_id = rd.id
             AND cr.status IN ('pending', 'confirmed')
-            AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') < ($1)::TIMESTAMP
-            AND COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') > ($2)::TIMESTAMP
+            AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') < (($1)::TIMESTAMP + ($3 || ' minutes')::INTERVAL)
+            AND COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') > (($2)::TIMESTAMP - ($3 || ' minutes')::INTERVAL)
         )
       `;
     }
@@ -3765,7 +4398,7 @@ app.get('/api/rental-drivers', async (req, res) => {
            FROM car_rentals cr
            WHERE cr.hired_driver_id = rd.id
              AND cr.status IN ('pending', 'confirmed')
-             AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') > NOW()
+             AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') > ${pickupDateTime && returnDateTime ? '($2)::TIMESTAMP' : 'NOW()'}
            ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC
            LIMIT 1
          ) AS next_rental_start,
@@ -3774,7 +4407,7 @@ app.get('/api/rental-drivers', async (req, res) => {
            FROM car_rentals cr
            WHERE cr.hired_driver_id = rd.id
              AND cr.status IN ('pending', 'confirmed')
-             AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') > NOW()
+             AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') > ${pickupDateTime && returnDateTime ? '($2)::TIMESTAMP' : 'NOW()'}
            ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC
            LIMIT 1
          ) AS next_rental_end,
@@ -3913,6 +4546,46 @@ app.get('/api/my/rentals', async (req, res) => {
          rd.phone AS hired_driver_phone,
          (
            SELECT JSON_BUILD_OBJECT(
+             'id', rcre.id,
+             'source_rental_id', rcre.source_rental_id,
+             'old_car_id', rcre.old_car_id,
+             'new_car_id', rcre.new_car_id,
+             'old_car_name', old_car.name,
+             'old_plate_number', old_car.plate_number,
+             'new_car_name', new_car.name,
+             'new_plate_number', new_car.plate_number,
+             'reason', rcre.reason,
+             'created_at', rcre.created_at
+           )
+           FROM rental_car_replacement_events rcre
+           LEFT JOIN rental_cars old_car ON old_car.id = rcre.old_car_id
+           LEFT JOIN rental_cars new_car ON new_car.id = rcre.new_car_id
+           WHERE rcre.affected_rental_id = cr.id
+           ORDER BY rcre.created_at DESC, rcre.id DESC
+           LIMIT 1
+         ) AS replacement_summary,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', rcx.id,
+             'refund_type', rcx.refund_type,
+             'booking_reference', rcx.booking_reference,
+             'amount', rcx.amount,
+             'status', rcx.status,
+             'claim_token', rcx.claim_token,
+             'created_at', rcx.created_at,
+             'claimed_at', rcx.claimed_at,
+             'voided_at', rcx.voided_at
+           )
+           FROM refund_claims rcx
+           WHERE rcx.refund_type = 'car_rental'
+             AND rcx.car_rental_id = cr.id
+             AND rcx.user_id = cr.user_id
+             AND rcx.status <> 'voided'
+           ORDER BY rcx.created_at DESC, rcx.id DESC
+           LIMIT 1
+         ) AS refund_claim,
+         (
+           SELECT JSON_BUILD_OBJECT(
              'id', rdr.id,
              'rating', rdr.rating,
              'comment', rdr.comment,
@@ -3951,6 +4624,9 @@ app.get('/api/my/rentals', async (req, res) => {
                  un.type,
                  un.title,
                  un.message,
+                 un.action_url,
+                 un.action_type,
+                 COALESCE(un.metadata, '{}'::JSONB) AS metadata,
                  un.is_read,
                  un.created_at
                FROM user_notifications un
@@ -4072,30 +4748,96 @@ app.put('/api/my/rentals/:id/notifications/read', async (req, res) => {
   }
 });
 
+app.get('/api/my/refund-claims/:id', async (req, res) => {
+  const claimId = Number(req.params.id);
+  if (!claimId) return res.status(400).json({ error: 'Invalid refund claim id.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const claim = await fetchUserRefundClaim(claimId, user.id);
+    if (!claim) return res.status(404).json({ error: 'Refund claim not found.' });
+    if (claim.status === 'voided') return res.status(410).json({ error: 'This refund claim is no longer available.' });
+    res.json({ refund_claim: formatRefundClaim(claim) });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/my/refund-claims/:id/confirm', async (req, res) => {
+  const claimId = Number(req.params.id);
+  if (!claimId) return res.status(400).json({ error: 'Invalid refund claim id.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const claim = await fetchUserRefundClaim(claimId, user.id);
+    if (!claim) return res.status(404).json({ error: 'Refund claim not found.' });
+    if (claim.status === 'voided') return res.status(410).json({ error: 'This refund claim was voided because the booking was restored.' });
+    if (claim.status === 'claimed') return res.status(409).json({ error: 'This refund was already claimed.' });
+
+    const result = await pool.query(
+      `UPDATE refund_claims
+       SET status = 'claimed',
+           claimed_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $1
+         AND user_id = $2
+         AND status = 'pending'
+       RETURNING *`,
+      [claimId, user.id]
+    );
+    if (!result.rowCount) return res.status(409).json({ error: 'This refund claim is no longer pending.' });
+
+    await pool.query(
+      `UPDATE user_notifications
+       SET is_read = TRUE,
+           read_at = COALESCE(read_at, NOW())
+       WHERE user_id = $1
+         AND type = 'refund_claim_available'
+         AND COALESCE(metadata->>'refund_claim_id', '') = $2`,
+      [user.id, String(claimId)]
+    );
+
+    res.json({
+      message: 'Refund claim confirmed.',
+      refund_claim: formatRefundClaim(result.rows[0])
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 app.post('/api/my/rentals/:id/cancel', async (req, res) => {
   const rentalId = Number(req.params.id);
   if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
 
+  const client = await pool.connect();
   try {
     const user = await getAuthUserFromRequest(req);
-    const existing = await pool.query(
+    await client.query('BEGIN');
+    const existing = await client.query(
       `SELECT
          id,
+         user_id,
          status,
          COALESCE(pickup_datetime, pickup_date + TIME '09:00:00') AS pickup_datetime
        FROM car_rentals
        WHERE id = $1
-         AND user_id = $2`,
+         AND user_id = $2
+       FOR UPDATE`,
       [rentalId, user.id]
     );
 
-    if (!existing.rowCount) return res.status(404).json({ error: 'Rental ticket not found.' });
+    if (!existing.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental ticket not found.' });
+    }
     const rental = existing.rows[0];
     if (!['pending', 'confirmed'].includes(String(rental.status || '').toLowerCase())) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Only pending or confirmed rentals can be cancelled.' });
     }
 
-    const cancelable = await pool.query(
+    const cancelable = await client.query(
       `UPDATE car_rentals
        SET status = 'cancelled',
            returned_at = NULL
@@ -4108,13 +4850,23 @@ app.post('/api/my/rentals/:id/cancel', async (req, res) => {
     );
 
     if (!cancelable.rowCount) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Rentals can only be cancelled before the pickup date.' });
     }
-    await syncRentalTransactions(cancelable.rows.map((row) => row.id));
+    await syncRentalTransactions(cancelable.rows.map((row) => row.id), client);
+    const claim = await createRentalRefundClaim(rentalId, client);
 
-    res.json({ id: rentalId, message: 'Rental cancelled successfully.' });
+    await client.query('COMMIT');
+    res.json({
+      id: rentalId,
+      message: 'Rental cancelled successfully.',
+      refund_claim: formatRefundClaim(claim)
+    });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(err.status || 500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -4200,18 +4952,6 @@ app.post('/api/rentals', async (req, res) => {
     if (!car.rowCount) return res.status(404).json({ error: 'Rental car not found.' });
     if (car.rows[0].status !== 'available') return res.status(400).json({ error: 'Selected car is not available.' });
 
-    const carConflict = await pool.query(
-      `SELECT id
-       FROM car_rentals
-       WHERE car_id = $1
-         AND status IN ('pending', 'confirmed')
-         AND COALESCE(pickup_datetime, pickup_date + TIME '09:00:00') < ($2)::TIMESTAMP
-         AND COALESCE(return_datetime, return_date + TIME '09:00:00') > ($3)::TIMESTAMP
-       LIMIT 1`,
-      [carId, returnDateTime.value, pickupDateTime.value]
-    );
-    if (carConflict.rowCount) return res.status(409).json({ error: 'Selected car already has a rental during that time.' });
-
     let hiredDriver = null;
     if (needDriver) {
       if (!hiredDriverId) return res.status(400).json({ error: 'Please choose a driver.' });
@@ -4225,23 +4965,19 @@ app.post('/api/rentals', async (req, res) => {
       hiredDriver = driver.rows[0];
       if (hiredDriver.status !== 'available') return res.status(400).json({ error: 'Selected driver is not available.' });
 
-      const driverConflict = await pool.query(
-        `SELECT id
-         FROM car_rentals
-         WHERE hired_driver_id = $1
-           AND status IN ('pending', 'confirmed')
-           AND COALESCE(pickup_datetime, pickup_date + TIME '09:00:00') < ($2)::TIMESTAMP
-           AND COALESCE(return_datetime, return_date + TIME '09:00:00') > ($3)::TIMESTAMP
-         LIMIT 1`,
-        [hiredDriverId, returnDateTime.value, pickupDateTime.value]
-      );
-      if (driverConflict.rowCount) return res.status(409).json({ error: 'Selected driver already has a rental during that time.' });
-
       driverName = hiredDriver.name;
       driverLicense = hiredDriver.license_number;
     } else if (!driverName || !driverLicense) {
       return res.status(400).json({ error: 'Driver name and license are required.' });
     }
+
+    const scheduleConflict = await findRentalScheduleConflict({
+      carId,
+      driverId: hiredDriverId,
+      pickupDateTime,
+      returnDateTime
+    });
+    if (scheduleConflict) return res.status(409).json({ error: scheduleConflict.message, conflict: scheduleConflict });
 
     const pricing = calculateRentalPricing(pickupDateTime, returnDateTime, car.rows[0].daily_rate, hiredDriver?.hourly_rate || 0);
     const result = await pool.query(
@@ -4709,7 +5445,7 @@ app.put('/api/admin/seat-map-templates/:id', async (req, res) => {
     const templates = await fetchSeatMapTemplates({ company_id: companyId, vehicle_type: vehicleType });
     res.json(templates.find((template) => template.id === templateId));
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -4804,7 +5540,7 @@ app.post('/api/admin/seat-map-history', async (req, res) => {
     });
     res.status(201).json({ message: 'Seat map history saved successfully.' });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -6141,6 +6877,10 @@ app.put('/api/admin/bookings/group', async (req, res) => {
     if (existingRows.length !== bookingIds.length) {
       return res.status(404).json({ error: 'One or more booking seats were not found.' });
     }
+    const restoredIds = existingRows
+      .filter((row) => row.status === 'cancelled' && status !== 'cancelled')
+      .map((row) => row.id);
+    await assertBusRefundRestoreAllowed(restoredIds);
 
     const activeRows = existingRows.filter((row) => row.status !== 'cancelled');
     const currentPackageWeight = existingRows.reduce((sum, row) => sum + Number(row.package_weight_kg || 0), 0);
@@ -6185,19 +6925,20 @@ app.put('/api/admin/bookings/group', async (req, res) => {
     }
 
     await syncBusBookingTransactions(bookingIds);
+    if (restoredIds.length) {
+      await voidPendingBusRefundClaims(restoredIds);
+    }
 
     const cancelledIds = existingRows
       .filter((row) => row.status !== 'cancelled' && status === 'cancelled')
       .map((row) => row.id);
     if (cancelledIds.length) {
-      const first = existingRows[0];
-      await createBusTicketNotifications(cancelledIds, {
-        type: 'bus_ticket_cancelled',
-        title: 'Your bus ticket was cancelled',
-        message: `${first.origin} to ${first.destination} was cancelled by admin. Open My Bookings for details.`,
-        action_type: 'view_trip',
-        metadata: { reason: 'admin grouped booking status cancelled' }
-      });
+      const refundClaims = await createBusRefundClaimsForBookingGroups(cancelledIds);
+      for (const claim of refundClaims) {
+        await createRefundClaimNotification(claim, {
+          metadata: { reason: 'admin grouped booking status cancelled' }
+        });
+      }
     }
 
     const packageChanged =
@@ -6259,6 +7000,9 @@ app.put('/api/admin/bookings/:id', async (req, res) => {
     const totalPrice = baseBookingPrice + overweightCharge;
 
     if (!Number.isFinite(totalPrice) || totalPrice <= 0) return res.status(400).json({ error: 'Total price must be greater than zero.' });
+    if (existing.status === 'cancelled' && status !== 'cancelled') {
+      await assertBusRefundRestoreAllowed(bookingId);
+    }
 
     await pool.query(
       `UPDATE bus_bookings
@@ -6272,15 +7016,17 @@ app.put('/api/admin/bookings/:id', async (req, res) => {
       [seatNumber, totalPrice.toFixed(2), packageWeightForUpdate.toFixed(2), overweightCharge.toFixed(2), paymentMethod, status, bookingId]
     );
     await syncBusBookingTransactions(bookingId);
+    if (existing.status === 'cancelled' && status !== 'cancelled') {
+      await voidPendingBusRefundClaims(bookingId);
+    }
 
     if (existing.status !== 'cancelled' && status === 'cancelled') {
-      await createBusTicketNotifications(bookingId, {
-        type: 'bus_ticket_cancelled',
-        title: 'Your bus ticket was cancelled',
-        message: `${existing.origin} to ${existing.destination} was cancelled by admin. Open My Bookings for details.`,
-        action_type: 'view_trip',
-        metadata: { reason: 'admin booking status cancelled' }
-      });
+      const refundClaims = await createBusRefundClaimsForBookingGroups(bookingId);
+      for (const claim of refundClaims) {
+        await createRefundClaimNotification(claim, {
+          metadata: { reason: 'admin booking status cancelled' }
+        });
+      }
     }
 
     const packageChanged =
@@ -6795,7 +7541,32 @@ app.get('/api/admin/rentals', async (req, res) => {
          rd.hourly_rate AS hired_driver_hourly_rate,
          rd.background AS hired_driver_background,
          rd.experience_years AS hired_driver_experience_years,
-         rd.languages AS hired_driver_languages
+         rd.languages AS hired_driver_languages,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', rcre.id,
+             'source_rental_id', rcre.source_rental_id,
+             'old_car_id', rcre.old_car_id,
+             'new_car_id', rcre.new_car_id,
+             'old_car_name', old_car.name,
+             'old_plate_number', old_car.plate_number,
+             'new_car_name', new_car.name,
+             'new_plate_number', new_car.plate_number,
+             'reason', rcre.reason,
+             'created_at', rcre.created_at
+           )
+           FROM rental_car_replacement_events rcre
+           LEFT JOIN rental_cars old_car ON old_car.id = rcre.old_car_id
+           LEFT JOIN rental_cars new_car ON new_car.id = rcre.new_car_id
+           WHERE rcre.affected_rental_id = cr.id
+           ORDER BY rcre.created_at DESC, rcre.id DESC
+           LIMIT 1
+         ) AS replacement_summary,
+         (
+           SELECT COUNT(*)::INT
+           FROM rental_car_replacement_events rcre
+           WHERE rcre.source_rental_id = cr.id
+         ) AS replacement_count
        FROM car_rentals cr
        JOIN users u ON u.id = cr.user_id
        JOIN rental_cars rc ON rc.id = cr.car_id
@@ -6803,6 +7574,39 @@ app.get('/api/admin/rentals', async (req, res) => {
        ORDER BY cr.booked_at DESC, cr.id DESC`
     );
     res.json({ rentals: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/rentals/:id/late-return-impact', async (req, res) => {
+  const rentalId = Number(req.params.id);
+  const pickupInput = req.body.pickup_datetime || (req.body.pickup_date ? `${normalizeText(req.body.pickup_date)}T09:00` : '');
+  const returnInput = req.body.return_datetime || (req.body.return_date ? `${normalizeText(req.body.return_date)}T09:00` : '');
+  const pickupDateTime = normalizeRentalDateTime(pickupInput);
+  const returnDateTime = normalizeRentalDateTime(returnInput);
+  const status = normalizeText(req.body.status || '').toLowerCase();
+
+  if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
+  if (pickupDateTime.error) return res.status(400).json({ error: pickupDateTime.error });
+  if (returnDateTime.error) return res.status(400).json({ error: returnDateTime.error });
+  if (returnDateTime.date <= pickupDateTime.date) return res.status(400).json({ error: 'Return date-time must be after pickup date-time.' });
+
+  try {
+    const existing = await fetchAdminRentalById(rentalId);
+    if (!existing) return res.status(404).json({ error: 'Rental not found.' });
+    if (String(existing.status || '').toLowerCase() === 'cancelled' || status === 'cancelled') {
+      return res.json({ buffer_minutes: RENTAL_TURNOVER_BUFFER_MINUTES, affected_rentals: [] });
+    }
+
+    const effectiveReturnDateTime = effectiveRentalReturnDateTime(status, returnDateTime);
+    const impact = await buildLateReturnImpact(existing, pickupDateTime, effectiveReturnDateTime);
+    res.json({
+      source_rental_id: existing.id,
+      source_car_id: existing.car_id,
+      source_car_name: existing.car_name,
+      ...impact
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6830,16 +7634,98 @@ app.put('/api/admin/rentals/:id', async (req, res) => {
   if (!RENTAL_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid rental status.' });
   if (!Number.isFinite(damageCharge) || damageCharge < 0) return res.status(400).json({ error: 'Damage charge must be zero or greater.' });
 
+  const replacementPlan = normalizeReplacementPlan(req.body.replacement_plan);
+  const client = await pool.connect();
   try {
+    const admin = await getOptionalAuthUserFromRequest(req);
+    await client.query('BEGIN');
+    const lock = await client.query(`SELECT id FROM car_rentals WHERE id = $1 FOR UPDATE`, [rentalId]);
+    if (!lock.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental not found.' });
+    }
+
     const existing = await fetchAdminRentalById(rentalId);
-    if (!existing) return res.status(404).json({ error: 'Rental not found.' });
+    if (!existing) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Rental not found.' });
+    }
+    const restoringCancelledRental = existing.status === 'cancelled' && status !== 'cancelled';
+    if (restoringCancelledRental) {
+      await assertRentalRefundRestoreAllowed(rentalId, client);
+    }
+
+    const effectiveReturnDateTime = effectiveRentalReturnDateTime(status, returnDateTime);
+    const driverConflict = status === 'cancelled' ? null : await findDriverRentalScheduleConflict({
+      driverId: existing.hired_driver_id || null,
+      pickupDateTime,
+      returnDateTime: effectiveReturnDateTime,
+      excludeRentalId: rentalId,
+      db: client
+    });
+    if (driverConflict) {
+      throw Object.assign(new Error(driverConflict.message), { status: 409, conflict: driverConflict });
+    }
+
+    const lateImpact = status === 'cancelled'
+      ? { affected_rentals: [] }
+      : await buildLateReturnImpact(existing, pickupDateTime, effectiveReturnDateTime, client);
+    const affectedRentals = lateImpact.affected_rentals || [];
+    if (affectedRentals.length) {
+      await client.query(
+        `SELECT id FROM car_rentals WHERE id = ANY($1::INT[]) FOR UPDATE`,
+        [affectedRentals.map((rental) => rental.id)]
+      );
+    }
+
+    const replacementSelections = [];
+    for (const affected of affectedRentals) {
+      const replacementCarId = replacementPlan.get(Number(affected.id));
+      if (!replacementCarId) {
+        throw Object.assign(
+          new Error(`Replacement car is required for affected rental(s): ${affectedRentals.map((rental) => `#${rental.id}`).join(', ')}.`),
+          { status: 409, code: 'RENTAL_REPLACEMENT_REQUIRED', affected_rentals: affectedRentals }
+        );
+      }
+
+      const replacementOptions = await findAvailableReplacementCarsForRental(affected, existing.car_id, client);
+      const selectedCar = replacementOptions.find((car) => Number(car.id) === replacementCarId);
+      if (!selectedCar) {
+        throw Object.assign(
+          new Error(`Replacement car #${replacementCarId} is not available for rental #${affected.id}.`),
+          { status: 409, code: 'RENTAL_REPLACEMENT_UNAVAILABLE', affected_rentals: affectedRentals }
+        );
+      }
+
+      replacementSelections.push({
+        affected,
+        selectedCar
+      });
+    }
+
+    for (let index = 0; index < replacementSelections.length; index += 1) {
+      for (let compareIndex = index + 1; compareIndex < replacementSelections.length; compareIndex += 1) {
+        const left = replacementSelections[index];
+        const right = replacementSelections[compareIndex];
+        if (
+          Number(left.selectedCar.id) === Number(right.selectedCar.id) &&
+          rentalWindowsOverlapWithBuffer(left.affected, right.affected)
+        ) {
+          throw Object.assign(
+            new Error(`${left.selectedCar.name} cannot cover affected rentals #${left.affected.id} and #${right.affected.id} because their schedules overlap.`),
+            { status: 409, code: 'RENTAL_REPLACEMENT_PLAN_OVERLAP', affected_rentals: affectedRentals }
+          );
+        }
+      }
+    }
+
     const driverHourlyRate = Number(existing.hired_driver_hourly_rate || 0);
     const pricing = calculateRentalPricing(pickupDateTime, returnDateTime, existing.daily_rate, driverHourlyRate);
     const returnedAtDate = status === 'returned'
       ? (existing.status === 'returned' && existing.returned_at ? new Date(existing.returned_at) : new Date())
       : null;
     const returnedAtValue = returnedAtDate
-      ? `${returnedAtDate.getFullYear()}-${String(returnedAtDate.getMonth() + 1).padStart(2, '0')}-${String(returnedAtDate.getDate()).padStart(2, '0')} ${String(returnedAtDate.getHours()).padStart(2, '0')}:${String(returnedAtDate.getMinutes()).padStart(2, '0')}:${String(returnedAtDate.getSeconds()).padStart(2, '0')}`
+      ? formatLocalTimestamp(returnedAtDate)
       : null;
     const lateHours = returnedAtDate && returnedAtDate > returnDateTime.date
       ? Math.max(1, Math.ceil((returnedAtDate - returnDateTime.date) / 3600000))
@@ -6850,7 +7736,7 @@ app.put('/api/admin/rentals/:id', async (req, res) => {
     const renterDamageCharge = damageResponsibility === 'renter' ? damageCharge : 0;
     const totalPrice = Number((pricing.basePrice + pricing.driverFee + lateReturnCharge + renterDamageCharge).toFixed(2));
 
-    await pool.query(
+    await client.query(
       `UPDATE car_rentals
        SET pickup_date = $1,
            return_date = $2,
@@ -6894,44 +7780,106 @@ app.put('/api/admin/rentals/:id', async (req, res) => {
         rentalId
       ]
     );
-    await syncRentalTransactions(rentalId);
+    await syncRentalTransactions(rentalId, client);
+    if (restoringCancelledRental) {
+      await voidPendingRentalRefundClaims(rentalId, client);
+    }
 
-    const updated = await fetchAdminRentalById(rentalId);
-    const pickupChanged = new Date(existing.pickup_datetime).getTime() !== new Date(updated.pickup_datetime).getTime();
-    const returnChanged = new Date(existing.return_datetime).getTime() !== new Date(updated.return_datetime).getTime();
-    if (existing.status !== 'cancelled' && updated.status === 'cancelled') {
+    for (const selection of replacementSelections) {
+      const { affected, selectedCar } = selection;
+      await client.query(
+        `UPDATE car_rentals
+         SET car_id = $1
+         WHERE id = $2`,
+        [selectedCar.id, affected.id]
+      );
+      await client.query(
+        `INSERT INTO rental_car_replacement_events (
+           affected_rental_id,
+           source_rental_id,
+           old_car_id,
+           new_car_id,
+           admin_id,
+           reason
+         )
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          affected.id,
+          rentalId,
+          affected.car_id,
+          selectedCar.id,
+          admin?.id || null,
+          'late return replacement'
+        ]
+      );
       await createUserNotification({
-        user_id: updated.user_id,
-        car_rental_id: updated.id,
-        type: 'rental_cancelled',
-        title: 'Your rental was cancelled',
-        message: `${updated.car_name} rental was cancelled by admin.`,
-        action_url: '/bookings?tab=rentals',
+        user_id: affected.user_id,
+        car_rental_id: affected.id,
+        type: 'rental_car_replaced',
+        title: 'Your rental car was changed',
+        message: `${affected.old_car_name} was changed to ${selectedCar.name} because another return ran late. Your rental price stayed the same.`,
+        action_url: `/bookings?tab=rentals&rental=${affected.id}`,
         action_type: 'view_rental',
-        metadata: { rental_id: updated.id, car_name: updated.car_name }
-      });
-    } else if ((pickupChanged || returnChanged) && updated.status !== 'cancelled') {
+        metadata: {
+          rental_id: affected.id,
+          source_rental_id: rentalId,
+          old_car_id: affected.car_id,
+          old_car_name: affected.old_car_name,
+          old_plate_number: affected.old_plate_number,
+          new_car_id: selectedCar.id,
+          new_car_name: selectedCar.name,
+          new_plate_number: selectedCar.plate_number,
+          pickup_datetime: affected.pickup_datetime,
+          return_datetime: affected.return_datetime,
+          reason: 'late return replacement',
+          price_kept: true
+        }
+      }, client);
+    }
+
+    const pickupChanged = new Date(existing.pickup_datetime).getTime() !== pickupDateTime.date.getTime();
+    const returnChanged = new Date(existing.return_datetime).getTime() !== returnDateTime.date.getTime();
+    if (existing.status !== 'cancelled' && status === 'cancelled') {
+      const claim = await createRentalRefundClaim(rentalId, client);
+      await createRefundClaimNotification(claim, {
+        metadata: {
+          reason: 'admin rental status cancelled',
+          rental_id: existing.id,
+          car_name: existing.car_name
+        }
+      }, client);
+    } else if ((pickupChanged || returnChanged) && status !== 'cancelled') {
       await createUserNotification({
-        user_id: updated.user_id,
-        car_rental_id: updated.id,
+        user_id: existing.user_id,
+        car_rental_id: existing.id,
         type: 'rental_changed',
         title: 'Your rental schedule changed',
-        message: `${updated.car_name} rental pickup or return time was updated by admin.`,
+        message: `${existing.car_name} rental pickup or return time was updated by admin.`,
         action_url: '/bookings?tab=rentals',
         action_type: 'view_rental',
         metadata: {
-          rental_id: updated.id,
+          rental_id: existing.id,
           old_pickup_datetime: existing.pickup_datetime,
           old_return_datetime: existing.return_datetime,
-          pickup_datetime: updated.pickup_datetime,
-          return_datetime: updated.return_datetime
+          pickup_datetime: pickupDateTime.value,
+          return_datetime: returnDateTime.value
         }
-      });
+      }, client);
     }
 
+    await client.query('COMMIT');
+    const updated = await fetchAdminRentalById(rentalId);
     res.json(updated);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(err.status || 400).json({
+      error: err.message,
+      code: err.code,
+      conflict: err.conflict,
+      affected_rentals: err.affected_rentals
+    });
+  } finally {
+    client.release();
   }
 });
 
@@ -7590,9 +8538,11 @@ app.get('/api/my/bookings/trips', async (req, res) => {
                'type', un.type,
                'title', un.title,
                'message', un.message,
+               'action_url', un.action_url,
+               'action_type', un.action_type,
                'is_read', un.is_read,
                'created_at', un.created_at,
-               'metadata', un.metadata
+               'metadata', COALESCE(un.metadata, '{}'::JSONB)
              )
              ORDER BY un.created_at DESC, un.id DESC
            )
@@ -7635,7 +8585,30 @@ app.get('/api/my/bookings/trips', async (req, res) => {
              AND btf.feedback_type = 'report'
            ORDER BY btf.created_at DESC, btf.id DESC
            LIMIT 1
-         ) AS my_trip_report
+         ) AS my_trip_report,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', rcx.id,
+             'refund_type', rcx.refund_type,
+             'booking_reference', rcx.booking_reference,
+             'amount', rcx.amount,
+             'status', rcx.status,
+             'claim_token', rcx.claim_token,
+             'created_at', rcx.created_at,
+             'claimed_at', rcx.claimed_at,
+             'voided_at', rcx.voided_at
+           )
+           FROM refund_claims rcx
+           WHERE rcx.refund_type = 'bus_ticket'
+             AND rcx.user_id = bb.user_id
+             AND rcx.status <> 'voided'
+             AND (
+               rcx.booking_reference = COALESCE(bb.round_trip_reference, bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0')))
+               OR bb.id = ANY(rcx.bus_booking_ids)
+             )
+           ORDER BY rcx.created_at DESC, rcx.id DESC
+           LIMIT 1
+         ) AS refund_claim
        FROM bus_bookings bb
        JOIN bus_routes r ON r.id = bb.route_id
        JOIN buses b ON b.id = r.bus_id
@@ -7675,6 +8648,7 @@ app.get('/api/my/bookings/trips', async (req, res) => {
           notifications: [],
           my_trip_comment: null,
           my_trip_report: null,
+          refund_claim: null,
           legs: []
         });
       }
@@ -7698,6 +8672,9 @@ app.get('/api/my/bookings/trips', async (req, res) => {
       }
       if (row.my_trip_report && (!ticket.my_trip_report || new Date(row.my_trip_report.created_at) > new Date(ticket.my_trip_report.created_at))) {
         ticket.my_trip_report = row.my_trip_report;
+      }
+      if (row.refund_claim && (!ticket.refund_claim || new Date(row.refund_claim.created_at) > new Date(ticket.refund_claim.created_at))) {
+        ticket.refund_claim = row.refund_claim;
       }
 
       const legKey = `${row.trip_leg || 'outbound'}-${row.booking_reference || row.route_id}`;
@@ -7856,18 +8833,15 @@ app.post('/api/my/bookings/trips/:reference/cancel', async (req, res) => {
       [user.id, bookingIds]
     );
 
-    await client.query(
-      `UPDATE transactions
-       SET status = 'cancelled'
-       WHERE user_id = $1
-         AND bus_booking_id = ANY($2::INT[])`,
-      [user.id, bookingIds]
-    );
+    await syncBusBookingTransactions(bookingIds, client);
+    const refundClaims = await createBusRefundClaimsForBookingGroups(bookingIds, client);
 
     await client.query('COMMIT');
     res.json({
       message: 'Ticket cancelled successfully.',
-      cancelled_count: cancelResult.rowCount
+      cancelled_count: cancelResult.rowCount,
+      refund_claim: refundClaims.length === 1 ? formatRefundClaim(refundClaims[0]) : null,
+      refund_claims: refundClaims.map(formatRefundClaim)
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

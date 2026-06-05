@@ -8,6 +8,18 @@ const STATUS_TABS = ['all', 'pending', 'upcoming', 'active', 'overdue', 'cancell
 const DRIVER_STATUS_TABS = ['all', 'available', 'inactive'];
 const EDIT_STATUS_OPTIONS = ['pending', 'confirmed', 'cancelled', 'returned'];
 const PAYMENT_METHODS = ['aba', 'khqr', 'cash'];
+const COMPACT_BUTTON_GROUP_STYLE = { display: 'flex', gap: 4, flexWrap: 'nowrap', alignItems: 'center' };
+const COMPACT_BUTTON_STYLE = { padding: '5px 7px', minWidth: 0, whiteSpace: 'nowrap' };
+const EMPTY_REPLACEMENT_CAR = {
+  name: '',
+  type: '',
+  plate_number: '',
+  total_seats: '',
+  transmission: '',
+  daily_rate: '',
+  status: 'available',
+  photos: ''
+};
 const EMPTY_FORM = {
   pickup_datetime: '',
   return_datetime: '',
@@ -32,7 +44,11 @@ const EMPTY_DRIVER_FORM = {
 
 async function parseJsonResponse(response) {
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Request failed.');
+  if (!response.ok) {
+    const error = new Error(data.error || 'Request failed.');
+    Object.assign(error, data);
+    throw error;
+  }
   return data;
 }
 
@@ -62,6 +78,13 @@ function formatDateTime(value) {
 
 function formatMoney(value) {
   return `$${Number(value || 0).toFixed(2)}`;
+}
+
+function replacementLabel(summary) {
+  if (!summary?.id) return '';
+  const oldCar = [summary.old_car_name, summary.old_plate_number].filter(Boolean).join(' | ') || 'original car';
+  const newCar = [summary.new_car_name, summary.new_plate_number].filter(Boolean).join(' | ') || 'replacement car';
+  return `${oldCar} -> ${newCar}`;
 }
 
 function driverKind(rental) {
@@ -179,13 +202,15 @@ function calculateRentalPreview(form, rental) {
 }
 
 function exportCsv(rows) {
-  const headers = ['ID', 'User', 'Email', 'Phone', 'Car', 'Pickup date-time', 'Return date-time', 'Rental hours', 'Daily rate', 'Hourly rate', 'Hourly charge', 'Driver type', 'Hired driver', 'Self-driver / actual driver', 'Driver phone', 'Driver license', 'Driver hourly rate', 'Driver fee', 'Late return hours', 'Late return charge', 'Damage responsibility', 'Damage charge', 'Damage description', 'Total', 'Payment', 'Status', 'Returned at'];
+  const headers = ['ID', 'User', 'Email', 'Phone', 'Car', 'Replacement', 'Moved next rentals', 'Pickup date-time', 'Return date-time', 'Rental hours', 'Daily rate', 'Hourly rate', 'Hourly charge', 'Driver type', 'Hired driver', 'Self-driver / actual driver', 'Driver phone', 'Driver license', 'Driver hourly rate', 'Driver fee', 'Late return hours', 'Late return charge', 'Damage responsibility', 'Damage charge', 'Damage description', 'Total', 'Payment', 'Status', 'Returned at'];
   const body = rows.map((rental) => [
     rental.id,
     rental.user_name,
     rental.email,
     rental.phone,
     rental.car_name,
+    replacementLabel(rental.replacement_summary),
+    Number(rental.replacement_count || 0),
     formatDateTime(rental.pickup_datetime || rental.pickup_date),
     formatDateTime(rental.return_datetime || rental.return_date),
     Number(rental.rental_hours || 0).toFixed(2),
@@ -221,7 +246,27 @@ function exportCsv(rows) {
   URL.revokeObjectURL(url);
 }
 
-function RentalModal({ rental, form, error, saving, onChange, onSubmit, onClose }) {
+function RentalModal({
+  rental,
+  form,
+  error,
+  saving,
+  lateImpact,
+  impactLoading,
+  impactError,
+  replacementPlan,
+  replacementCarForm,
+  addingReplacementCar,
+  replacementCarError,
+  replacementCarStatus,
+  onChange,
+  onReplacementChange,
+  onPreviewImpact,
+  onReplacementCarChange,
+  onAddReplacementCar,
+  onSubmit,
+  onClose
+}) {
   const preview = calculateRentalPreview(form, rental);
   const driverHourlyRate = Number(rental?.hired_driver_hourly_rate || 0);
   const driverFeePreview = rental?.hired_driver_id && preview.valid ? Number((preview.hours * driverHourlyRate).toFixed(2)) : 0;
@@ -239,9 +284,10 @@ function RentalModal({ rental, form, error, saving, onChange, onSubmit, onClose 
   const damageResponsibility = rental?.hired_driver_id ? 'driver' : 'renter';
   const renterDamageCharge = damageResponsibility === 'renter' ? damageCharge : 0;
   const totalPreview = Number((preview.charge + driverFeePreview + lateChargePreview + renterDamageCharge).toFixed(2));
+  const affectedRentals = Array.isArray(lateImpact?.affected_rentals) ? lateImpact.affected_rentals : [];
   return (
     <div className="modal-overlay">
-      <div className="modal-card" style={{ maxWidth: 620 }}>
+      <div className="modal-card" style={{ maxWidth: 620, maxHeight: 'calc(100vh - 32px)', overflowY: 'auto', overscrollBehavior: 'contain' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
           <div>
             <div className="modal-title">Edit rental</div>
@@ -411,6 +457,81 @@ function RentalModal({ rental, form, error, saving, onChange, onSubmit, onClose 
             Final total is recalculated by the server from rental charge, hired-driver fee, late return charge, and renter-responsible damage.
           </div>
         </div>
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 8, border: '1px solid rgba(245,158,11,0.22)', background: 'rgba(245,158,11,0.06)' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+            <div>
+              <div className="sec-title" style={{ fontSize: 13, marginBottom: 4 }}>Affected next schedule</div>
+              <div className="td-muted" style={{ fontSize: 11 }}>
+                If this car return overlaps the next booking, move that next customer to another available car. Their price stays the same.
+              </div>
+            </div>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={onPreviewImpact} disabled={impactLoading || saving}>
+              {impactLoading ? 'Checking...' : 'Check'}
+            </button>
+          </div>
+
+          {impactError ? <div style={{ marginBottom: 10, padding: 9, borderRadius: 8, color: 'var(--red)', background: 'rgba(248,113,113,0.10)' }}>{impactError}</div> : null}
+          {!impactLoading && !impactError && !affectedRentals.length ? (
+            <div className="td-muted" style={{ fontSize: 12 }}>No next same-car rental is blocked by this return window.</div>
+          ) : null}
+
+          {affectedRentals.length ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              {affectedRentals.map((affected) => {
+                const selected = replacementPlan[String(affected.id)] || '';
+                return (
+                  <div key={affected.id} style={{ padding: 10, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 12 }}>Rental #{affected.id} | {affected.user_name || affected.email || 'Customer'}</div>
+                        <div className="td-muted" style={{ fontSize: 11 }}>
+                          {formatDateTime(affected.pickup_datetime)} to {formatDateTime(affected.return_datetime)}
+                        </div>
+                        <div className="td-muted" style={{ fontSize: 11 }}>
+                          Current car: {affected.old_car_name || 'Rental car'} {affected.old_plate_number ? `| ${affected.old_plate_number}` : ''}
+                        </div>
+                      </div>
+                      <span className="badge badge-amber">Move next customer</span>
+                    </div>
+                    <select
+                      value={selected}
+                      onChange={(event) => onReplacementChange(affected.id, event.target.value)}
+                      style={{ marginTop: 9 }}
+                    >
+                      <option value="">Select replacement car</option>
+                      {(affected.replacement_options || []).map((car) => (
+                        <option key={car.id} value={car.id}>
+                          {car.name} | {car.plate_number} | {formatMoney(car.daily_rate)}/day
+                        </option>
+                      ))}
+                    </select>
+                    {!(affected.replacement_options || []).length ? (
+                      <div style={{ marginTop: 6, color: 'var(--red)', fontSize: 11 }}>No available replacement car for this rental window. Add a new car below.</div>
+                    ) : null}
+                    {selected ? <div style={{ marginTop: 6, color: 'var(--green)', fontSize: 11 }}>Replacement selected. This will save only when you click Save changes.</div> : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <div className="sec-title" style={{ fontSize: 13, marginBottom: 8 }}>Add new replacement car</div>
+            {replacementCarError ? <div style={{ marginBottom: 8, color: 'var(--red)', fontSize: 12 }}>{replacementCarError}</div> : null}
+            {replacementCarStatus ? <div style={{ marginBottom: 8, color: 'var(--green)', fontSize: 12 }}>{replacementCarStatus}</div> : null}
+            <div className="grid2" style={{ gap: 8 }}>
+              <input name="name" placeholder="Car name" value={replacementCarForm.name} onChange={onReplacementCarChange} />
+              <input name="type" placeholder="Type" value={replacementCarForm.type} onChange={onReplacementCarChange} />
+              <input name="plate_number" placeholder="Plate number" value={replacementCarForm.plate_number} onChange={onReplacementCarChange} />
+              <input name="transmission" placeholder="Transmission" value={replacementCarForm.transmission} onChange={onReplacementCarChange} />
+              <input name="total_seats" type="number" min="1" placeholder="Seats" value={replacementCarForm.total_seats} onChange={onReplacementCarChange} />
+              <input name="daily_rate" type="number" min="0" step="0.01" placeholder="Daily rate" value={replacementCarForm.daily_rate} onChange={onReplacementCarChange} />
+            </div>
+            <button className="btn btn-ghost btn-sm" type="button" style={{ marginTop: 8 }} onClick={onAddReplacementCar} disabled={addingReplacementCar || saving}>
+              {addingReplacementCar ? 'Adding car...' : 'Add car to fleet'}
+            </button>
+          </div>
+        </div>
         <div style={{ marginTop: 12 }}>
           <div className="td-muted" style={{ fontSize: 11, marginBottom: 6 }}>Current total price</div>
           <input value={formatMoney(totalPreview || preview.charge)} readOnly />
@@ -457,7 +578,7 @@ function DriverModal({ mode, driver, form, error, saving, onChange, onSubmit, on
 
   return (
     <div className="modal-overlay">
-      <div className="modal-card" style={{ maxWidth: 620 }}>
+      <div className="modal-card" style={{ maxWidth: 620, maxHeight: 'calc(100vh - 32px)', overflowY: 'auto', overscrollBehavior: 'contain' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
           <div>
             <div className="modal-title">{mode === 'edit' ? 'Edit driver' : 'Add driver'}</div>
@@ -685,6 +806,14 @@ export default function Rentals() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [lateImpact, setLateImpact] = useState(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState('');
+  const [replacementPlan, setReplacementPlan] = useState({});
+  const [replacementCarForm, setReplacementCarForm] = useState(EMPTY_REPLACEMENT_CAR);
+  const [addingReplacementCar, setAddingReplacementCar] = useState(false);
+  const [replacementCarError, setReplacementCarError] = useState('');
+  const [replacementCarStatus, setReplacementCarStatus] = useState('');
   const [deletingRental, setDeletingRental] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [drivers, setDrivers] = useState([]);
@@ -770,6 +899,10 @@ export default function Rentals() {
         rental.hired_driver_license_number,
         rental.damage_description,
         rental.damage_responsibility,
+        rental.replacement_summary?.old_car_name,
+        rental.replacement_summary?.new_car_name,
+        rental.replacement_summary?.old_plate_number,
+        rental.replacement_summary?.new_plate_number,
         rental.payment_method,
         rentalStage(rental)
       ].filter(Boolean).join(' ').toLowerCase();
@@ -813,6 +946,14 @@ export default function Rentals() {
     driverQuery
   ]);
 
+  useEffect(() => {
+    if (!editing) return undefined;
+    const timer = window.setTimeout(() => {
+      loadLateReturnImpact(true);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [editing?.id, form.pickup_datetime, form.return_datetime, form.status]);
+
   function openEdit(rental) {
     setEditing(rental);
     setForm({
@@ -826,6 +967,12 @@ export default function Rentals() {
       damage_charge: Number(rental.damage_charge || 0).toFixed(2)
     });
     setFormError('');
+    setLateImpact(null);
+    setImpactError('');
+    setReplacementPlan({});
+    setReplacementCarForm(EMPTY_REPLACEMENT_CAR);
+    setReplacementCarError('');
+    setReplacementCarStatus('');
   }
 
   function closeEdit() {
@@ -833,6 +980,12 @@ export default function Rentals() {
     setEditing(null);
     setForm(EMPTY_FORM);
     setFormError('');
+    setLateImpact(null);
+    setImpactError('');
+    setReplacementPlan({});
+    setReplacementCarForm(EMPTY_REPLACEMENT_CAR);
+    setReplacementCarError('');
+    setReplacementCarStatus('');
   }
 
   function handleChange(event) {
@@ -840,23 +993,116 @@ export default function Rentals() {
     setForm((current) => ({ ...current, [name]: value }));
   }
 
+  function handleReplacementChange(rentalId, value) {
+    setReplacementPlan((current) => ({
+      ...current,
+      [String(rentalId)]: value
+    }));
+  }
+
+  function handleReplacementCarChange(event) {
+    const { name, value } = event.target;
+    setReplacementCarForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function loadLateReturnImpact(silent = false) {
+    if (!editing || !form.pickup_datetime || !form.return_datetime) return null;
+    if (!silent) setImpactLoading(true);
+    setImpactError('');
+    try {
+      const data = await parseJsonResponse(await fetch(`/api/admin/rentals/${editing.id}/late-return-impact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pickup_datetime: form.pickup_datetime,
+          return_datetime: form.return_datetime,
+          status: form.status
+        })
+      }));
+      setLateImpact(data);
+      setReplacementPlan((current) => {
+        const validAffected = new Set((data.affected_rentals || []).map((rental) => String(rental.id)));
+        const next = {};
+        Object.entries(current).forEach(([rentalId, carId]) => {
+          const affected = (data.affected_rentals || []).find((item) => String(item.id) === rentalId);
+          if (validAffected.has(rentalId) && (affected?.replacement_options || []).some((car) => String(car.id) === String(carId))) {
+            next[rentalId] = carId;
+          }
+        });
+        return next;
+      });
+      return data;
+    } catch (error) {
+      setLateImpact(null);
+      setImpactError(error.message || 'Unable to check affected rentals.');
+      return null;
+    } finally {
+      if (!silent) setImpactLoading(false);
+    }
+  }
+
+  async function addReplacementCar() {
+    setAddingReplacementCar(true);
+    setReplacementCarError('');
+    setReplacementCarStatus('');
+    try {
+      const created = await parseJsonResponse(await fetch('/api/admin/rental-cars', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...replacementCarForm,
+          status: 'available',
+          photos: replacementCarForm.photos || ''
+        })
+      }));
+      setReplacementCarForm(EMPTY_REPLACEMENT_CAR);
+      setReplacementCarStatus(`${created.name || 'New car'} added. Select it from the replacement list.`);
+      const nextImpact = await loadLateReturnImpact(false);
+      const firstAffected = (nextImpact?.affected_rentals || []).find((affected) => (
+        !replacementPlan[String(affected.id)] &&
+        (affected.replacement_options || []).some((car) => Number(car.id) === Number(created.id))
+      ));
+      if (firstAffected) {
+        setReplacementPlan((current) => ({ ...current, [String(firstAffected.id)]: String(created.id) }));
+      }
+    } catch (error) {
+      setReplacementCarError(error.message || 'Unable to add replacement car.');
+    } finally {
+      setAddingReplacementCar(false);
+    }
+  }
+
   async function saveRental() {
     if (!editing) return;
     setSaving(true);
     setFormError('');
     try {
+      const replacement_plan = Object.entries(replacementPlan)
+        .map(([rental_id, replacement_car_id]) => ({ rental_id: Number(rental_id), replacement_car_id: Number(replacement_car_id) }))
+        .filter((item) => item.rental_id && item.replacement_car_id);
       await parseJsonResponse(
         await fetch(`/api/admin/rentals/${editing.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form)
+          body: JSON.stringify({ ...form, replacement_plan })
         })
       );
       setEditing(null);
       setForm(EMPTY_FORM);
       setFormError('');
+      setLateImpact(null);
+      setReplacementPlan({});
+      setReplacementCarForm(EMPTY_REPLACEMENT_CAR);
+      setReplacementCarError('');
+      setReplacementCarStatus('');
       await loadRentals(false);
     } catch (error) {
+      if (Array.isArray(error.affected_rentals)) {
+        setLateImpact({
+          buffer_minutes: error.buffer_minutes,
+          affected_rentals: error.affected_rentals
+        });
+      }
       setFormError(error.message || 'Unable to save rental.');
     } finally {
       setSaving(false);
@@ -1087,6 +1333,16 @@ export default function Rentals() {
                     </td>
                     <td>
                       <div className="td-muted">{rental.car_name}</div>
+                      {rental.replacement_summary?.id ? (
+                        <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4 }}>
+                          Replaced: {replacementLabel(rental.replacement_summary)}
+                        </div>
+                      ) : null}
+                      {Number(rental.replacement_count || 0) > 0 ? (
+                        <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 4 }}>
+                          Moved {Number(rental.replacement_count || 0)} next rental{Number(rental.replacement_count || 0) === 1 ? '' : 's'}
+                        </div>
+                      ) : null}
                       <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{rental.car_type} • {rental.plate_number}</div>
                     </td>
                     <td className="td-muted">
@@ -1245,29 +1501,51 @@ export default function Rentals() {
                             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{Number(driver.total_rentals || 0)} total</div>
                           </td>
                           <td>
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              <button className="btn btn-ghost btn-sm" onClick={() => openFeedback(driver, 'review')}>
-                                Comments ({Number(driver.reviews_count || 0)})
+                            <div style={COMPACT_BUTTON_GROUP_STYLE}>
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                style={COMPACT_BUTTON_STYLE}
+                                title="Driver comments"
+                                aria-label={`Open ${driver.name} comments`}
+                                onClick={() => openFeedback(driver, 'review')}
+                              >
+                                Cmt ({Number(driver.reviews_count || 0)})
                               </button>
-                              <button className="btn btn-ghost btn-sm" style={{ color: Number(driver.reports_count || 0) ? 'var(--red)' : undefined }} onClick={() => openFeedback(driver, 'report')}>
-                                Reports ({Number(driver.reports_count || 0)})
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                style={{ ...COMPACT_BUTTON_STYLE, color: Number(driver.reports_count || 0) ? 'var(--red)' : undefined }}
+                                title="Driver reports"
+                                aria-label={`Open ${driver.name} reports`}
+                                onClick={() => openFeedback(driver, 'report')}
+                              >
+                                Rpt ({Number(driver.reports_count || 0)})
                               </button>
                             </div>
                           </td>
                           <td>
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              <button type="button" className="btn btn-ghost btn-sm" onClick={() => openEditDriver(driver)}>
-                                <Icon d={icons.edit} size={12} /> Edit
+                            <div style={COMPACT_BUTTON_GROUP_STYLE}>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                style={COMPACT_BUTTON_STYLE}
+                                title="Edit driver"
+                                aria-label={`Edit ${driver.name}`}
+                                onClick={() => openEditDriver(driver)}
+                              >
+                                <Icon d={icons.edit} size={12} />
                               </button>
                               <button
                                 type="button"
                                 className="btn btn-danger btn-sm"
+                                style={COMPACT_BUTTON_STYLE}
+                                title={driverHasHistory ? 'Deactivate driver' : 'Delete driver'}
+                                aria-label={`${driverHasHistory ? 'Deactivate' : 'Delete'} ${driver.name}`}
                                 onClick={() => {
                                   setDriverDeleteError('');
                                   setDeletingDriver(driver);
                                 }}
                               >
-                                <Icon d={icons.trash} size={12} /> {driverHasHistory ? 'Deactivate' : 'Delete'}
+                                <Icon d={icons.trash} size={12} /> {driverHasHistory ? 'Disable' : 'Del'}
                               </button>
                             </div>
                           </td>
@@ -1286,7 +1564,27 @@ export default function Rentals() {
       )}
 
       {editing ? (
-        <RentalModal rental={editing} form={form} error={formError} saving={saving} onChange={handleChange} onSubmit={saveRental} onClose={closeEdit} />
+        <RentalModal
+          rental={editing}
+          form={form}
+          error={formError}
+          saving={saving}
+          lateImpact={lateImpact}
+          impactLoading={impactLoading}
+          impactError={impactError}
+          replacementPlan={replacementPlan}
+          replacementCarForm={replacementCarForm}
+          addingReplacementCar={addingReplacementCar}
+          replacementCarError={replacementCarError}
+          replacementCarStatus={replacementCarStatus}
+          onChange={handleChange}
+          onReplacementChange={handleReplacementChange}
+          onPreviewImpact={() => loadLateReturnImpact(false)}
+          onReplacementCarChange={handleReplacementCarChange}
+          onAddReplacementCar={addReplacementCar}
+          onSubmit={saveRental}
+          onClose={closeEdit}
+        />
       ) : null}
       <DeleteModal rental={deletingRental} deleting={deleting} onCancel={() => setDeletingRental(null)} onConfirm={deleteRental} />
       {driverModalMode ? (

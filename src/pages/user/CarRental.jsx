@@ -103,11 +103,28 @@ function getCarAvailability(car, now = new Date()) {
   return { status: 'Available', statusKey: 'available', badgeClass: 'badge-green', note: 'No booking scheduled', noteColor: 'var(--green)', bookable: true };
 }
 
-function getDriverAvailability(driver, now = new Date()) {
+function getDriverAvailability(driver, selectedWindow = {}, now = new Date()) {
+  const pickupDate = new Date(selectedWindow.pickup);
+  const returnDate = new Date(selectedWindow.dropoff);
+  const hasSelectedWindow = !Number.isNaN(pickupDate.getTime()) && !Number.isNaN(returnDate.getTime()) && returnDate > pickupDate;
+
+  if (hasSelectedWindow) {
+    const nextRentalStart = new Date(driver?.next_rental_start);
+    const hasNextRentalAfterPickup = !Number.isNaN(nextRentalStart.getTime()) && nextRentalStart > pickupDate;
+    return {
+      note: hasNextRentalAfterPickup
+        ? `Available ${formatDuration(nextRentalStart - pickupDate)} from pickup`
+        : 'No next schedule after this pickup',
+      subNote: hasNextRentalAfterPickup ? `Next schedule ${formatDateTime(nextRentalStart)}` : '',
+      color: 'var(--green)'
+    };
+  }
+
   const currentRentalEnd = new Date(driver?.current_rental_end);
   if (!Number.isNaN(currentRentalEnd.getTime()) && currentRentalEnd > now) {
     return {
       note: `Free in ${formatDuration(currentRentalEnd - now)}`,
+      subNote: '',
       color: 'var(--red)'
     };
   }
@@ -116,12 +133,14 @@ function getDriverAvailability(driver, now = new Date()) {
   if (!Number.isNaN(nextRentalStart.getTime()) && nextRentalStart > now) {
     return {
       note: `Available for ${formatDuration(nextRentalStart - now)}`,
+      subNote: `Next booking ${formatDateTime(nextRentalStart)}`,
       color: 'var(--amber)'
     };
   }
 
   return {
     note: 'No upcoming rental',
+    subNote: '',
     color: 'var(--green)'
   };
 }
@@ -196,12 +215,13 @@ function DriverCard({
   selected,
   open,
   commentsOpen,
+  rentalWindow,
   onSelect,
   onToggle,
   onCommentsToggle
 }) {
   const reviews = Array.isArray(driver.reviews) ? driver.reviews : [];
-  const availability = getDriverAvailability(driver);
+  const availability = getDriverAvailability(driver, rentalWindow);
 
   return (
     <div
@@ -248,6 +268,7 @@ function DriverCard({
           <div style={{ fontSize: 11, color: availability.color, marginTop: 3, fontWeight: 700 }}>
             {availability.note}
           </div>
+          {availability.subNote ? <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 2 }}>{availability.subNote}</div> : null}
           {driver.latest_comment ? <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>Latest: {driver.latest_comment}</div> : null}
         </div>
       </div>
@@ -746,6 +767,7 @@ export default function CarRental({
               selected={Number(selectedDriverId) === Number(driver.id)}
               open={Number(openDriverId) === Number(driver.id)}
               commentsOpen={Number(openDriverCommentsId) === Number(driver.id)}
+              rentalWindow={{ pickup: rentalSummary.pickup, dropoff: rentalSummary.dropoff }}
               onSelect={() => setSelectedDriverId(driver.id)}
               onToggle={() => setOpenDriverId((current) => Number(current) === Number(driver.id) ? null : driver.id)}
               onCommentsToggle={() => setOpenDriverCommentsId((current) => Number(current) === Number(driver.id) ? null : driver.id)}

@@ -1596,6 +1596,24 @@ INSERT INTO public.car_rentals (id, user_id, car_id, pickup_date, return_date, d
 ALTER TABLE public.car_rentals ENABLE TRIGGER ALL;
 
 --
+-- Data for Name: rental_car_replacement_events; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+ALTER TABLE public.rental_car_replacement_events DISABLE TRIGGER ALL;
+
+
+ALTER TABLE public.rental_car_replacement_events ENABLE TRIGGER ALL;
+
+--
+-- Data for Name: refund_claims; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+ALTER TABLE public.refund_claims DISABLE TRIGGER ALL;
+
+
+ALTER TABLE public.refund_claims ENABLE TRIGGER ALL;
+
+--
 -- Data for Name: dashboard_monthly_expenses; Type: TABLE DATA; Schema: public; Owner: -
 --
 
@@ -1882,6 +1900,20 @@ SELECT pg_catalog.setval('public.destinations_id_seq', 7, true);
 --
 
 SELECT pg_catalog.setval('public.rental_cars_id_seq', 21, true);
+
+
+--
+-- Name: rental_car_replacement_events_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.rental_car_replacement_events_id_seq', 1, false);
+
+
+--
+-- Name: refund_claims_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.refund_claims_id_seq', 1, false);
 
 
 --

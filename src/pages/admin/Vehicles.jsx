@@ -132,6 +132,18 @@ function getRentalCarAvailability(car, now = new Date()) {
     };
   }
 
+  const overdueRental = rentals.find((rental) => rental.pickupDate <= now && rental.returnDate <= now && rental.status === 'confirmed');
+  if (overdueRental) {
+    return {
+      status: 'rented',
+      label: 'Rented',
+      badgeClass: 'badge-blue',
+      note: `Still renting, due ${formatDuration(now - overdueRental.returnDate)} ago`,
+      noteColor: 'var(--red)',
+      rental: overdueRental
+    };
+  }
+
   const nextRental = rentals.find((rental) => rental.pickupDate > now);
   if (nextRental) {
     return {
