@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { setupScrollReveal, getCompanyMeta } from '../../utils/sharedUser';
 
@@ -36,9 +37,10 @@ function buildTripActivity(row) {
   const seats = legs.flatMap((leg) => Array.isArray(leg.seats) ? leg.seats : []).filter(Boolean);
   const company = outbound.company_name || row.company_name || 'Unknown company';
   const companyColor = outbound.color || row.color || getCompanyMeta(company).color;
+  const ticketReference = row.ticket_reference || row.booking_reference || row.first_booking_id;
 
   return {
-    id: `trip-${row.ticket_reference || row.booking_reference || row.first_booking_id}`,
+    id: `trip-${ticketReference}`,
     type: 'ticket',
     route: returning
       ? `${outbound.origin || 'Origin'} -> ${outbound.destination || 'Destination'} round trip`
@@ -50,7 +52,8 @@ function buildTripActivity(row) {
     status: formatStatus(row.status),
     statusKey: row.status,
     createdAt: row.latest_created_at || row.created_at || outbound.departure_time || row.departure_time,
-    targetTab: 'trips'
+    targetTab: 'trips',
+    targetId: ticketReference
   };
 }
 
@@ -64,7 +67,8 @@ function buildRentalActivity(row) {
     status: formatStatus(row.status),
     statusKey: row.status,
     createdAt: row.booked_at || row.pickup_datetime,
-    targetTab: 'rentals'
+    targetTab: 'rentals',
+    targetId: row.id
   };
 }
 
@@ -73,6 +77,7 @@ export default function Home({
   setActive,
   setBookingsTab
 }) {
+  const navigate = useNavigate();
   const { token, user } = useAuth();
   const [recentTrips, setRecentTrips] = useState([]);
   const [recentRentals, setRecentRentals] = useState([]);
@@ -142,7 +147,10 @@ export default function Home({
 
   function openActivity(item) {
     if (setBookingsTab) setBookingsTab(item.targetTab);
-    setActive('bookings');
+    const params = new URLSearchParams({ tab: item.targetTab });
+    if (item.targetTab === 'trips' && item.targetId) params.set('ticket', item.targetId);
+    if (item.targetTab === 'rentals' && item.targetId) params.set('rental', item.targetId);
+    navigate(`/bookings?${params.toString()}`);
   }
 
   return <div>

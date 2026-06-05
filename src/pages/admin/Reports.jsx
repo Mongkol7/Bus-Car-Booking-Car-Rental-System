@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icon, icons, getCompanyMeta } from '../../utils/sharedAdmin';
 
+const REPORT_PROFILE = {
+  companyName: 'BookRide Transport & Express',
+  businessType: 'Passenger Bus Booking and Car Rental Operations',
+  address: 'Phnom Penh, Kingdom of Cambodia',
+  contact: 'Operations Administration Office',
+  systemName: 'Bus Booking + Car Rental System'
+};
+
 function currentMonthKey() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -41,6 +49,20 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatDateTime(value) {
+  if (!value) return 'No data';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function reportMonthLabel(monthKey) {
+  if (!monthKey) return 'Selected month';
+  const [year, month] = String(monthKey).split('-').map(Number);
+  if (!year || !month) return String(monthKey);
+  return new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
 function percent(value, max) {
@@ -132,6 +154,242 @@ function exportReportCsv(report) {
   link.download = `admin-report-${report.month || 'month'}.csv`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function drawReportChrome(doc, generatedAt, report) {
+  const pageCount = doc.getNumberOfPages();
+  const width = doc.internal.pageSize.getWidth();
+  const height = doc.internal.pageSize.getHeight();
+
+  for (let page = 1; page <= pageCount; page += 1) {
+    doc.setPage(page);
+    doc.setDrawColor(33, 50, 82);
+    doc.setFillColor(33, 50, 82);
+    doc.rect(0, 0, width, 52, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text(REPORT_PROFILE.companyName, 42, 22);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text(REPORT_PROFILE.businessType, 42, 36);
+    doc.text(`Report month: ${reportMonthLabel(report.month)}`, width - 42, 22, { align: 'right' });
+    doc.text(`Generated: ${formatDateTime(generatedAt)}`, width - 42, 36, { align: 'right' });
+
+    doc.setDrawColor(217, 226, 236);
+    doc.line(42, height - 44, width - 42, height - 44);
+    doc.setTextColor(91, 107, 127);
+    doc.setFontSize(8);
+    doc.text(`${REPORT_PROFILE.systemName} - Confidential internal report`, 42, height - 25);
+    doc.text(`Page ${page} of ${pageCount}`, width - 42, height - 25, { align: 'right' });
+  }
+}
+
+function addPdfSectionTitle(doc, title, startY) {
+  const width = doc.internal.pageSize.getWidth();
+  const bottomLimit = doc.internal.pageSize.getHeight() - 90;
+  let y = startY;
+  if (y > bottomLimit) {
+    doc.addPage();
+    y = 86;
+  }
+  doc.setDrawColor(33, 50, 82);
+  doc.setFillColor(246, 248, 251);
+  doc.roundedRect(42, y - 12, width - 84, 24, 4, 4, 'F');
+  doc.setTextColor(33, 50, 82);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.text(title, 52, y + 4);
+  return y + 20;
+}
+
+function addPdfTable(doc, autoTable, title, headers, rows, startY, options = {}) {
+  const y = addPdfSectionTitle(doc, title, startY);
+  const body = rows.length ? rows : [headers.map((_, index) => (index === 0 ? 'No records for this period' : ''))];
+  autoTable(doc, {
+    head: [headers],
+    body,
+    startY: y,
+    margin: { left: 42, right: 42, top: 72, bottom: 64 },
+    styles: {
+      font: 'helvetica',
+      fontSize: options.fontSize || 8,
+      cellPadding: 5,
+      lineColor: [217, 226, 236],
+      lineWidth: 0.4,
+      textColor: [33, 50, 82],
+      overflow: 'linebreak'
+    },
+    headStyles: {
+      fillColor: [33, 50, 82],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold'
+    },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: options.columnStyles || {},
+    didDrawPage: () => {},
+    rowPageBreak: 'avoid'
+  });
+  return (doc.lastAutoTable?.finalY || y) + 18;
+}
+
+function addSignatureBlock(doc, startY) {
+  const width = doc.internal.pageSize.getWidth();
+  const height = doc.internal.pageSize.getHeight();
+  let y = startY;
+  if (y > height - 220) {
+    doc.addPage();
+    y = 90;
+  }
+
+  y = addPdfSectionTitle(doc, 'Approval and Signature', y);
+  const left = 42;
+  const gap = 14;
+  const boxWidth = (width - 84 - gap * 2) / 3;
+  const labels = ['Prepared by', 'Checked by', 'Approved by / Owner'];
+
+  labels.forEach((label, index) => {
+    const x = left + index * (boxWidth + gap);
+    doc.setDrawColor(186, 198, 213);
+    doc.roundedRect(x, y, boxWidth, 84, 4, 4);
+    doc.setTextColor(33, 50, 82);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text(label, x + 10, y + 17);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text('Name:', x + 10, y + 38);
+    doc.line(x + 38, y + 39, x + boxWidth - 10, y + 39);
+    doc.text('Signature:', x + 10, y + 58);
+    doc.line(x + 55, y + 59, x + boxWidth - 10, y + 59);
+    doc.text('Date:', x + 10, y + 76);
+    doc.line(x + 34, y + 77, x + boxWidth - 10, y + 77);
+  });
+
+  doc.setDrawColor(186, 198, 213);
+  doc.roundedRect(width - 176, y + 104, 134, 72, 4, 4);
+  doc.setTextColor(91, 107, 127);
+  doc.setFontSize(8);
+  doc.text('Company stamp', width - 109, y + 142, { align: 'center' });
+}
+
+async function exportReportPdf(report) {
+  const [{ jsPDF }, autoTableModule] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable')
+  ]);
+  const autoTable = autoTableModule.default;
+  const generatedAt = new Date();
+  const summary = report.summary || {};
+  const comparison = report.comparison || {};
+  const details = report.details || {};
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  const width = doc.internal.pageSize.getWidth();
+  let y = 92;
+
+  doc.setTextColor(33, 50, 82);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(20);
+  doc.text('Transportation Operations Report', 42, y);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.text('Revenue, booking, rental, customer, company, and payment performance', 42, y + 18);
+  doc.setDrawColor(33, 50, 82);
+  doc.line(42, y + 32, width - 42, y + 32);
+  y += 58;
+
+  autoTable(doc, {
+    startY: y,
+    margin: { left: 42, right: 42, top: 72, bottom: 64 },
+    theme: 'plain',
+    body: [
+      ['Company / Operator', REPORT_PROFILE.companyName, 'Report Period', reportMonthLabel(report.month)],
+      ['Business Type', REPORT_PROFILE.businessType, 'Previous Period', reportMonthLabel(comparison.month)],
+      ['Address', REPORT_PROFILE.address, 'Prepared Date', formatDateTime(generatedAt)],
+      ['Contact', REPORT_PROFILE.contact, 'Document Type', 'Internal management report']
+    ],
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 5, textColor: [33, 50, 82] },
+    columnStyles: {
+      0: { fontStyle: 'bold', fillColor: [246, 248, 251], cellWidth: 105 },
+      1: { cellWidth: 165 },
+      2: { fontStyle: 'bold', fillColor: [246, 248, 251], cellWidth: 95 },
+      3: { cellWidth: 145 }
+    }
+  });
+  y = (doc.lastAutoTable?.finalY || y) + 20;
+
+  y = addPdfTable(doc, autoTable, 'Executive Summary', ['Item', 'Value', 'Note'], [
+    ['Total revenue', formatMoney(report.metrics?.total_revenue), `${formatPercent(summary.revenue_source_split?.booking_percent)} booking / ${formatPercent(summary.revenue_source_split?.rental_percent)} rental`],
+    ['Transactions', formatNumber(report.metrics?.transactions), 'Non-cancelled bus bookings and car rentals'],
+    ['Average transaction value', formatMoney(summary.average_transaction_value), 'Total revenue divided by transactions'],
+    ['Cancellation count', formatNumber(summary.cancellation_count), `${formatPercent(summary.cancellation_rate)} cancellation rate`],
+    ['Active customers', formatNumber(summary.active_customers), `${formatNumber(summary.new_customers)} new users in period`],
+    ['Best revenue day', formatMoney(summary.best_revenue_day?.revenue), summary.best_revenue_day?.date ? formatDate(summary.best_revenue_day.date) : 'No revenue yet']
+  ], y);
+
+  const comparisonRows = [
+    ['Total revenue', formatMoney(report.metrics?.total_revenue), formatMoney(comparison.total_revenue?.previous), formatMoney(comparison.total_revenue?.change), formatPercent(comparison.total_revenue?.percent)],
+    ['Booking revenue', formatMoney(report.metrics?.booking_revenue), formatMoney(comparison.booking_revenue?.previous), formatMoney(comparison.booking_revenue?.change), formatPercent(comparison.booking_revenue?.percent)],
+    ['Rental revenue', formatMoney(report.metrics?.rental_revenue), formatMoney(comparison.rental_revenue?.previous), formatMoney(comparison.rental_revenue?.change), formatPercent(comparison.rental_revenue?.percent)],
+    ['Transactions', formatNumber(report.metrics?.transactions), formatNumber(comparison.transactions?.previous), formatNumber(comparison.transactions?.change), formatPercent(comparison.transactions?.percent)]
+  ];
+  y = addPdfTable(doc, autoTable, 'Monthly KPI Comparison', ['Metric', 'Current', 'Previous', 'Change', 'Change %'], comparisonRows, y);
+
+  y = addPdfTable(doc, autoTable, 'Daily Revenue', ['Date', 'Booking revenue', 'Rental revenue', 'Total revenue'], (report.daily || []).map((day) => [
+    formatDate(day.date),
+    formatMoney(day.booking_revenue),
+    formatMoney(day.rental_revenue),
+    formatMoney(Number(day.booking_revenue || 0) + Number(day.rental_revenue || 0))
+  ]), y);
+
+  y = addPdfTable(doc, autoTable, 'Bus Booking Route and Company Performance', ['Route', 'Company', 'Bookings', 'Revenue', 'Avg fare', 'Cancelled', 'Cancel rate'], (details.bookings || []).map((row) => [
+    `${row.origin} to ${row.destination}`,
+    row.company_name || 'Unknown company',
+    formatNumber(row.count),
+    formatMoney(row.revenue),
+    formatMoney(row.average_fare),
+    formatNumber(row.cancelled_count),
+    formatPercent(row.cancellation_rate)
+  ]), y, { fontSize: 7.5 });
+
+  y = addPdfTable(doc, autoTable, 'Car Rental Performance', ['Car', 'Type', 'Rentals', 'Revenue', 'Avg rental', 'Returned', 'Cancelled', 'Cancel rate'], (details.rentals || []).map((row) => [
+    row.name,
+    row.type,
+    formatNumber(row.count),
+    formatMoney(row.revenue),
+    formatMoney(row.average_rental_value),
+    formatNumber(row.returned_count),
+    formatNumber(row.cancelled_count),
+    formatPercent(row.cancellation_rate)
+  ]), y, { fontSize: 7.5 });
+
+  y = addPdfTable(doc, autoTable, 'Customer Activity', ['Customer', 'Email', 'Spend', 'Transactions', 'Bookings', 'Rentals', 'Last activity'], (details.customers || []).map((row) => [
+    row.user_name,
+    row.email,
+    formatMoney(row.spend),
+    formatNumber(row.transaction_count),
+    formatNumber(row.booking_count),
+    formatNumber(row.rental_count),
+    formatDate(row.last_activity)
+  ]), y, { fontSize: 7.5 });
+
+  y = addPdfTable(doc, autoTable, 'Payment Mix', ['Method', 'Count', 'Revenue', 'Count share', 'Revenue share'], (details.payments || []).map((row) => [
+    String(row.payment_method || 'unknown').toUpperCase(),
+    formatNumber(row.count),
+    formatMoney(row.revenue),
+    formatPercent(row.count_share),
+    formatPercent(row.revenue_share)
+  ]), y);
+
+  y = addPdfTable(doc, autoTable, 'Company Performance', ['Company', 'Bookings', 'Revenue'], (details.companies || report.top_companies || []).map((row) => [
+    row.name || 'Unknown company',
+    formatNumber(row.count),
+    formatMoney(row.revenue)
+  ]), y);
+
+  addSignatureBlock(doc, y);
+  drawReportChrome(doc, generatedAt, report);
+  doc.save(`admin-company-report-${report.month || 'month'}.pdf`);
 }
 
 function TrendBadge({ data }) {
@@ -313,6 +571,9 @@ export default function Reports() {
           <select style={{ width: 160, fontSize: 12 }} value={month} onChange={(event) => setMonth(event.target.value)}>
             {monthOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
+          <button className="btn btn-ghost btn-sm" onClick={() => exportReportPdf(report)} disabled={loading}>
+            <Icon d={icons.download} size={13} /> Export PDF
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={() => exportReportCsv(report)}>
             <Icon d={icons.download} size={13} /> Export CSV
           </button>

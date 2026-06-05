@@ -127,6 +127,10 @@ function formatDbRoute(route) {
   };
 }
 
+function routeBusDisplayName(route) {
+  return route?.busName || route?.vehicle || 'Selected bus';
+}
+
 export default function BusSearch({
   role,
   setActive,
@@ -274,6 +278,10 @@ export default function BusSearch({
   }, [step, routes.length, outboundRoutes.length, returnRoutes.length, fromCity, toCity, travelDate, returnDate]);
   const currentRoute = routes.find(r => r.id === selectedRoute);
   const currentReturnRoute = routes.find(r => r.id === selectedReturnRoute);
+  const selectedBusChips = [
+    currentRoute ? { id: 'departure', label: 'Departure', route: currentRoute } : null,
+    currentReturnRoute ? { id: 'return', label: 'Coming back', route: currentReturnRoute } : null
+  ].filter(Boolean);
   const takenSeats = currentRoute?.takenSeats || [];
   const takenSeatSet = useMemo(() => new Set(takenSeats.map((seat) => String(seat || '').toUpperCase())), [takenSeats]);
   const currentSeatMap = currentRoute?.seatMap || fallbackSeatMap(currentRoute?.totalSeats || 0);
@@ -510,17 +518,19 @@ export default function BusSearch({
       <div className="page-title">Bus booking</div>
       <div className="page-sub">Search across Cambodia's top routes</div>
       <div className="company-row">
-        {currentRoute ? <span className="company-chip" style={{
-        color: currentRoute.color,
-        borderColor: currentRoute.color,
-        background: currentRoute.bg
-      }}>
-            {currentRoute.vehicle}
-          </span> : <span className="company-chip" style={{
-        color: 'var(--text-2)',
-        borderColor: 'var(--glass-border)',
-        background: 'rgba(255,255,255,0.04)'
-      }}>
+        {selectedBusChips.length ? selectedBusChips.map(({ id, label, route }) => (
+          <span key={id} className="company-chip" style={{
+            color: route.color,
+            borderColor: route.color,
+            background: route.bg
+          }}>
+            {label}: {routeBusDisplayName(route)}
+          </span>
+        )) : <span className="company-chip" style={{
+          color: 'var(--text-2)',
+          borderColor: 'var(--glass-border)',
+          background: 'rgba(255,255,255,0.04)'
+        }}>
             Select a route to see bus company
           </span>}
       </div>

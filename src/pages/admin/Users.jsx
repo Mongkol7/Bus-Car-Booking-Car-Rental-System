@@ -41,6 +41,19 @@ function formatDate(value) {
   });
 }
 
+function formatDateTime(value) {
+  if (!value) return 'Not set';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not set';
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
 function roleBadge(role) {
   return role === 'admin' ? 'badge-purple' : 'badge-blue';
 }
@@ -49,12 +62,42 @@ function statusBadge(status) {
   return status === 'Active' ? 'badge-green' : 'badge-red';
 }
 
-function UserFormModal({ mode, form, formError, saving, roles, onChange, onSubmit, onClose }) {
+function activityStatusBadge(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (['confirmed', 'completed', 'returned'].includes(normalized)) return 'badge-green';
+  if (normalized === 'pending') return 'badge-amber';
+  return 'badge-red';
+}
+
+const ACTIVITY_LABELS = {
+  bus: 'bus bookings',
+  rentals: 'rentals'
+};
+
+function UserFormModal({
+  mode,
+  form,
+  formError,
+  saving,
+  roles,
+  activity,
+  activityTab,
+  activityLoading,
+  activityError,
+  onActivityTabChange,
+  onChange,
+  onSubmit,
+  onClose
+}) {
   const isCreate = mode === 'create';
+  const busBookings = Array.isArray(activity?.bus_bookings) ? activity.bus_bookings : [];
+  const carRentals = Array.isArray(activity?.car_rentals) ? activity.car_rentals : [];
+  const activeActivityRows = activityTab === 'rentals' ? carRentals : busBookings;
+  const activeActivityLabel = ACTIVITY_LABELS[activityTab] || 'activity';
 
   return (
     <div className="modal-overlay">
-      <div className="modal-card" style={{ maxWidth: 620 }}>
+      <div className="modal-card" style={{ maxWidth: 760 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
           <div>
             <div className="modal-title">{isCreate ? 'Add user' : 'Edit user'}</div>
@@ -130,6 +173,106 @@ function UserFormModal({ mode, form, formError, saving, roles, onChange, onSubmi
           </div>
         </div>
 
+        {!isCreate ? (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 10 }}>
+              <div>
+                <div className="label">User activity</div>
+                <div className="td-muted" style={{ fontSize: 11 }}>
+                  {busBookings.length} bus booking{busBookings.length === 1 ? '' : 's'} | {carRentals.length} rental{carRentals.length === 1 ? '' : 's'}
+                </div>
+              </div>
+              <div className="pill-nav" style={{ padding: 0, margin: 0, background: 'transparent' }}>
+                <div className={`pill-tab ${activityTab === 'bus' ? 'active' : ''}`} onClick={() => onActivityTabChange('bus')}>
+                  Booking bus
+                </div>
+                <div className={`pill-tab ${activityTab === 'rentals' ? 'active' : ''}`} onClick={() => onActivityTabChange('rentals')}>
+                  Rental
+                </div>
+              </div>
+            </div>
+
+            <div style={{ border: '0.5px solid var(--glass-border)', borderRadius: 8, overflow: 'hidden', background: 'var(--glass)' }}>
+              {activityLoading ? (
+                <div className="td-muted" style={{ padding: 14 }}>Loading user activity...</div>
+              ) : activityError ? (
+                <div style={{ padding: 14, color: 'var(--red)', background: 'var(--red-soft)' }}>{activityError}</div>
+              ) : activeActivityRows.length ? (
+                <div className="table-wrap" style={{ maxHeight: 280 }}>
+                  <table>
+                    <thead>
+                      {activityTab === 'bus' ? (
+                        <tr>
+                          <th>Booking</th>
+                          <th>Route</th>
+                          <th>Schedule</th>
+                          <th>Seat</th>
+                          <th>Paid</th>
+                          <th>Status</th>
+                        </tr>
+                      ) : (
+                        <tr>
+                          <th>Rental</th>
+                          <th>Car</th>
+                          <th>Pickup</th>
+                          <th>Return</th>
+                          <th>Paid</th>
+                          <th>Status</th>
+                        </tr>
+                      )}
+                    </thead>
+                    <tbody>
+                      {activityTab === 'bus'
+                        ? activeActivityRows.map((booking) => (
+                          <tr key={`bus-${booking.id}`}>
+                            <td>
+                              <div style={{ fontWeight: 600 }}>#{booking.id}</div>
+                              <div className="td-muted">{booking.round_trip_reference || booking.booking_reference}</div>
+                            </td>
+                            <td>
+                              <div>{booking.origin} to {booking.destination}</div>
+                              <div className="td-muted">{booking.company_name || booking.bus_name}{booking.plate_number ? ` | ${booking.plate_number}` : ''}</div>
+                            </td>
+                            <td className="td-muted">{formatDateTime(booking.departure_time)}</td>
+                            <td className="td-muted">{booking.seat_number}</td>
+                            <td>
+                              <div style={{ color: 'var(--green)', fontWeight: 600 }}>{formatCurrency(booking.total_price)}</div>
+                              <div className="td-muted">{String(booking.payment_method || '').toUpperCase()}</div>
+                            </td>
+                            <td><span className={`badge ${activityStatusBadge(booking.status)}`}>{booking.status}</span></td>
+                          </tr>
+                        ))
+                        : activeActivityRows.map((rental) => (
+                          <tr key={`rental-${rental.id}`}>
+                            <td>
+                              <div style={{ fontWeight: 600 }}>#R-{rental.id}</div>
+                              <div className="td-muted">{Number(rental.rental_hours || 0)} hour{Number(rental.rental_hours || 0) === 1 ? '' : 's'}</div>
+                            </td>
+                            <td>
+                              <div>{rental.car_name}</div>
+                              <div className="td-muted">{rental.plate_number || 'No plate'}{rental.hired_driver_id ? ` | Driver: ${rental.driver_name || 'Assigned'}` : ''}</div>
+                            </td>
+                            <td className="td-muted">{formatDateTime(rental.pickup_datetime)}</td>
+                            <td className="td-muted">{formatDateTime(rental.return_datetime)}</td>
+                            <td>
+                              <div style={{ color: 'var(--green)', fontWeight: 600 }}>{formatCurrency(rental.total_price)}</div>
+                              <div className="td-muted">{String(rental.payment_method || '').toUpperCase()}</div>
+                            </td>
+                            <td><span className={`badge ${activityStatusBadge(rental.status)}`}>{rental.status}</span></td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="td-muted" style={{ padding: 14 }}>
+                  No {activeActivityLabel} found for this user.
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+
         <div className="modal-btns" style={{ marginTop: 18 }}>
           <button className="btn btn-ghost" onClick={onClose} disabled={saving}>
             Cancel
@@ -137,6 +280,100 @@ function UserFormModal({ mode, form, formError, saving, roles, onChange, onSubmi
           <button className="btn btn-primary" onClick={onSubmit} disabled={saving}>
             {saving ? 'Saving...' : isCreate ? 'Create user' : 'Save changes'}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UserFeedbackModal({
+  user,
+  type,
+  rows,
+  loading,
+  error,
+  savingReplyId,
+  replyDrafts,
+  onDraft,
+  onSaveReply,
+  onClose
+}) {
+  if (!user || !type) return null;
+  const isReport = type === 'reports';
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal-card" style={{ maxWidth: 760 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
+          <div>
+            <div className="modal-title">{isReport ? 'User reports' : 'User comments'}</div>
+            <div className="modal-sub">{user.full_name} | {user.email}</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>
+            <Icon d={icons.x} size={12} />
+          </button>
+        </div>
+
+        {error ? (
+          <div style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 8, color: 'var(--red)', background: 'var(--red-soft)' }}>
+            {error}
+          </div>
+        ) : null}
+        {loading ? <div className="sec-sub">Loading feedback...</div> : null}
+        {!loading && !rows.length ? <div className="sec-sub">No {isReport ? 'reports' : 'comments'} found.</div> : null}
+
+        <div style={{ display: 'grid', gap: 12, maxHeight: '65vh', overflow: 'auto', paddingRight: 4 }}>
+          {rows.map((item) => (
+            <div key={`${item.source_type}-${item.id}`} style={{ padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+                <div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span className={`badge ${item.source_type === 'trip' ? 'badge-blue' : 'badge-purple'}`}>
+                      {item.source_label}
+                    </span>
+                    <span className="td-muted" style={{ fontSize: 11 }}>{item.item_reference || 'No reference'}</span>
+                  </div>
+                  <div style={{ fontWeight: 700, marginTop: 6 }}>{item.context_title || 'No context'}</div>
+                  <div className="td-muted" style={{ fontSize: 11 }}>
+                    {item.context_subtitle || 'No details'}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  {isReport ? (
+                    <div className="badge badge-red">Report</div>
+                  ) : item.rating ? (
+                    <div className="badge badge-green">{Number(item.rating || 0).toFixed(1)} / 5</div>
+                  ) : (
+                    <div className="badge badge-blue">Comment</div>
+                  )}
+                  <div className="td-muted" style={{ fontSize: 11, marginTop: 4 }}>{formatDateTime(item.created_at)}</div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.5 }}>{item.comment}</div>
+              {item.admin_reply ? (
+                <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: 'rgba(34,197,94,0.08)', color: 'var(--text-2)', fontSize: 12 }}>
+                  <strong style={{ color: 'var(--green)' }}>Admin reply:</strong> {item.admin_reply}
+                  <div className="td-muted" style={{ fontSize: 10, marginTop: 4 }}>Replied {formatDateTime(item.admin_replied_at)}</div>
+                </div>
+              ) : null}
+              <textarea
+                placeholder="Write a public admin reply"
+                value={replyDrafts[`${item.source_type}-${item.id}`] ?? item.admin_reply ?? ''}
+                onChange={(event) => onDraft(item, event.target.value)}
+                style={{ marginTop: 10, minHeight: 72 }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={savingReplyId === `${item.source_type}-${item.id}`}
+                  onClick={() => onSaveReply(item)}
+                >
+                  {savingReplyId === `${item.source_type}-${item.id}` ? 'Saving...' : item.admin_reply ? 'Update reply' : 'Save reply'}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -296,6 +533,10 @@ export default function Users() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [activity, setActivity] = useState({ bus_bookings: [], car_rentals: [], comments: [], reports: [] });
+  const [activityTab, setActivityTab] = useState('bus');
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState('');
   const [deletingUser, setDeletingUser] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
@@ -304,6 +545,12 @@ export default function Users() {
   const [roleError, setRoleError] = useState('');
   const [roleSaving, setRoleSaving] = useState(false);
   const [deletingRoleId, setDeletingRoleId] = useState(null);
+  const [feedbackModal, setFeedbackModal] = useState(null);
+  const [feedbackRows, setFeedbackRows] = useState([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [replyDrafts, setReplyDrafts] = useState({});
+  const [savingReplyId, setSavingReplyId] = useState(null);
 
   useEffect(() => {
     loadUsers();
@@ -321,6 +568,68 @@ export default function Users() {
       setPageError(error.message || 'Unable to load users.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadUserActivity(userId) {
+    if (!userId) return;
+    setActivityLoading(true);
+    setActivityError('');
+    try {
+      const data = await parseJsonResponse(await fetch(`/api/admin/users/${userId}/activity`));
+      setActivity({
+        bus_bookings: data.bus_bookings || [],
+        car_rentals: data.car_rentals || [],
+        comments: data.comments || [],
+        reports: data.reports || []
+      });
+    } catch (error) {
+      setActivity({ bus_bookings: [], car_rentals: [], comments: [], reports: [] });
+      setActivityError(error.message || 'Unable to load user activity.');
+    } finally {
+      setActivityLoading(false);
+    }
+  }
+
+  async function openUserFeedback(user, type) {
+    setFeedbackModal({ user, type });
+    setFeedbackRows([]);
+    setReplyDrafts({});
+    setFeedbackLoading(true);
+    setFeedbackError('');
+    try {
+      const data = await parseJsonResponse(await fetch(`/api/admin/users/${user.id}/activity`));
+      setFeedbackRows(type === 'reports' ? data.reports || [] : data.comments || []);
+    } catch (error) {
+      setFeedbackError(error.message || 'Unable to load user feedback.');
+    } finally {
+      setFeedbackLoading(false);
+    }
+  }
+
+  async function saveFeedbackReply(item) {
+    const draftKey = `${item.source_type}-${item.id}`;
+    const reply = replyDrafts[draftKey] ?? item.admin_reply ?? '';
+    const endpoint = item.source_type === 'trip'
+      ? `/api/admin/bus-trip-feedback/${item.id}/reply`
+      : `/api/admin/rental-driver-feedback/${item.id}/reply`;
+
+    setSavingReplyId(draftKey);
+    setFeedbackError('');
+    try {
+      await parseJsonResponse(await fetch(endpoint, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_reply: reply })
+      }));
+      if (feedbackModal) {
+        await openUserFeedback(feedbackModal.user, feedbackModal.type);
+        await loadUsers(false);
+      }
+    } catch (error) {
+      setFeedbackError(error.message || 'Unable to save reply.');
+    } finally {
+      setSavingReplyId(null);
     }
   }
 
@@ -351,6 +660,9 @@ export default function Users() {
     const defaultRole = roles.find((role) => role.name === 'user') || roles[0];
     setForm({ ...EMPTY_FORM, role_id: defaultRole ? String(defaultRole.id) : '' });
     setFormError('');
+    setActivity({ bus_bookings: [], car_rentals: [], comments: [], reports: [] });
+    setActivityError('');
+    setActivityTab('bus');
   }
 
   function openAddRoleModal() {
@@ -362,6 +674,9 @@ export default function Users() {
 
   function openEditModal(user) {
     setModalMode('edit');
+    setActivity({ bus_bookings: [], car_rentals: [], comments: [], reports: [] });
+    setActivityError('');
+    setActivityTab('bus');
     setForm({
       first_name: user.first_name || '',
       last_name: user.last_name || '',
@@ -374,6 +689,7 @@ export default function Users() {
       id: user.id
     });
     setFormError('');
+    loadUserActivity(user.id);
   }
 
   function closeModal() {
@@ -381,6 +697,9 @@ export default function Users() {
     setModalMode(null);
     setForm(EMPTY_FORM);
     setFormError('');
+    setActivity({ bus_bookings: [], car_rentals: [], comments: [], reports: [] });
+    setActivityError('');
+    setActivityLoading(false);
   }
 
   function handleChange(event) {
@@ -444,6 +763,8 @@ export default function Users() {
       setModalMode(null);
       setForm(EMPTY_FORM);
       setFormError('');
+      setActivity({ bus_bookings: [], car_rentals: [], comments: [], reports: [] });
+      setActivityError('');
       await loadUsers(false);
     } catch (error) {
       setFormError(error.message || 'Unable to save user.');
@@ -646,6 +967,7 @@ export default function Users() {
                   <th>Total spent</th>
                   <th>Last activity</th>
                   <th>Status</th>
+                  <th>Feedback</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -668,6 +990,20 @@ export default function Users() {
                       <span className={`badge ${statusBadge(user.status)}`}>{user.status}</span>
                     </td>
                     <td>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button className="btn btn-ghost btn-sm" onClick={() => openUserFeedback(user, 'comments')}>
+                          Comments ({Number(user.comments_count || 0)})
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          style={{ color: Number(user.reports_count || 0) ? 'var(--red)' : undefined }}
+                          onClick={() => openUserFeedback(user, 'reports')}
+                        >
+                          Reports ({Number(user.reports_count || 0)})
+                        </button>
+                      </div>
+                    </td>
+                    <td>
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button className="btn btn-ghost btn-sm" onClick={() => openEditModal(user)}>
                           <Icon d={icons.edit} size={12} />
@@ -684,7 +1020,7 @@ export default function Users() {
                 ))}
                 {!filteredUsers.length && (
                   <tr>
-                    <td colSpan={9} className="td-muted" style={{ padding: 18 }}>
+                    <td colSpan={10} className="td-muted" style={{ padding: 18 }}>
                       No users found.
                     </td>
                   </tr>
@@ -702,6 +1038,11 @@ export default function Users() {
           formError={formError}
           saving={saving}
           roles={roles}
+          activity={activity}
+          activityTab={activityTab}
+          activityLoading={activityLoading}
+          activityError={activityError}
+          onActivityTabChange={setActivityTab}
           onChange={handleChange}
           onSubmit={handleSubmit}
           onClose={closeModal}
@@ -726,6 +1067,26 @@ export default function Users() {
           }}
         />
       ) : null}
+      <UserFeedbackModal
+        user={feedbackModal?.user}
+        type={feedbackModal?.type}
+        rows={feedbackRows}
+        loading={feedbackLoading}
+        error={feedbackError}
+        savingReplyId={savingReplyId}
+        replyDrafts={replyDrafts}
+        onDraft={(item, value) => setReplyDrafts((current) => ({
+          ...current,
+          [`${item.source_type}-${item.id}`]: value
+        }))}
+        onSaveReply={saveFeedbackReply}
+        onClose={() => {
+          setFeedbackModal(null);
+          setFeedbackRows([]);
+          setFeedbackError('');
+          setReplyDrafts({});
+        }}
+      />
       <DeleteModal
         user={deletingUser}
         deleting={deleting}

@@ -29,6 +29,15 @@ function combineDateTime(date, time) {
   return `${date}T${time}`;
 }
 
+function getLocalTimeKey(date = new Date()) {
+  const value = new Date(date);
+  if (value.getSeconds() || value.getMilliseconds()) {
+    value.setMinutes(value.getMinutes() + 1);
+  }
+  value.setSeconds(0, 0);
+  return `${String(value.getHours()).padStart(2, '0')}:${String(value.getMinutes()).padStart(2, '0')}`;
+}
+
 function formatDateTime(value) {
   if (!value) return 'Not set';
   const date = new Date(value);
@@ -92,6 +101,29 @@ function getCarAvailability(car, now = new Date()) {
   }
 
   return { status: 'Available', statusKey: 'available', badgeClass: 'badge-green', note: 'No booking scheduled', noteColor: 'var(--green)', bookable: true };
+}
+
+function getDriverAvailability(driver, now = new Date()) {
+  const currentRentalEnd = new Date(driver?.current_rental_end);
+  if (!Number.isNaN(currentRentalEnd.getTime()) && currentRentalEnd > now) {
+    return {
+      note: `Free in ${formatDuration(currentRentalEnd - now)}`,
+      color: 'var(--red)'
+    };
+  }
+
+  const nextRentalStart = new Date(driver?.next_rental_start);
+  if (!Number.isNaN(nextRentalStart.getTime()) && nextRentalStart > now) {
+    return {
+      note: `Available for ${formatDuration(nextRentalStart - now)}`,
+      color: 'var(--amber)'
+    };
+  }
+
+  return {
+    note: 'No upcoming rental',
+    color: 'var(--green)'
+  };
 }
 
 function calculateRentalSummary(car, pickupDate, pickupTime, returnDate, returnTime, driver) {
@@ -169,6 +201,7 @@ function DriverCard({
   onCommentsToggle
 }) {
   const reviews = Array.isArray(driver.reviews) ? driver.reviews : [];
+  const availability = getDriverAvailability(driver);
 
   return (
     <div
@@ -212,6 +245,9 @@ function DriverCard({
           <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
             Rating {Number(driver.rating || 0).toFixed(1)} | {Number(driver.review_count || 0)} reviews
           </div>
+          <div style={{ fontSize: 11, color: availability.color, marginTop: 3, fontWeight: 700 }}>
+            {availability.note}
+          </div>
           {driver.latest_comment ? <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>Latest: {driver.latest_comment}</div> : null}
         </div>
       </div>
@@ -242,6 +278,9 @@ function DriverCard({
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, color: 'var(--text-3)' }}>
               <span>{review.user_name || 'User'}</span>
               <span>{Number(review.rating || 0).toFixed(0)} rating</span>
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 3 }}>
+              {formatDateTime(review.created_at)}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>{review.comment}</div>
           </div>
@@ -279,10 +318,11 @@ export default function CarRental({
   const [selected, setSelected] = useState(null);
   const [payMethod, setPayMethod] = useState('aba');
   const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [createdRentalId, setCreatedRentalId] = useState('');
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [shaking, setShaking] = useState(null);
   const [pickupDate, setPickupDate] = useState(todayKey);
-  const [pickupTime, setPickupTime] = useState('09:00');
+  const [pickupTime, setPickupTime] = useState(() => getLocalTimeKey());
   const [returnDate, setReturnDate] = useState(addDaysISO(todayKey, 3));
   const [returnTime, setReturnTime] = useState('09:00');
   const [returnTimeTouched, setReturnTimeTouched] = useState(false);
@@ -425,13 +465,38 @@ export default function CarRental({
   }, [needDriver, rentalSummary.valid, rentalSummary.pickup, rentalSummary.dropoff]);
 
   function handlePickupTimeChange(value) {
-    setPickupTime(value);
-    if (!returnTimeTouched) setReturnTime(value);
+    const safeTime = pickupDate === todayKey && value < getLocalTimeKey() ? getLocalTimeKey() : value;
+    setPickupTime(safeTime);
+    if (!returnTimeTouched) setReturnTime(safeTime);
+  }
+
+  function handlePickupDateChange(value) {
+    const safeDate = value && value < todayKey ? todayKey : value;
+    const safeTime = safeDate === todayKey && pickupTime < getLocalTimeKey() ? getLocalTimeKey() : pickupTime;
+    setPickupDate(safeDate);
+    setPickupTime(safeTime);
+    if (returnDate < safeDate) setReturnDate(safeDate);
+    if (!returnTimeTouched && returnDate <= safeDate) setReturnTime(safeTime);
+  }
+
+  function handleReturnDateChange(value) {
+    setReturnDate(value && value < pickupDate ? pickupDate : value);
   }
 
   function validateDetails() {
     if (role === 'guest' || !token) {
       setShowAuthModal(true);
+      return false;
+    }
+    const now = new Date();
+    const pickupValue = new Date(rentalSummary.pickup);
+    const returnValue = new Date(rentalSummary.dropoff);
+    if (!pickupDate || pickupDate < todayKey || Number.isNaN(pickupValue.getTime()) || pickupValue < now) {
+      setDetailError('Pickup date-time cannot be in the past.');
+      return false;
+    }
+    if (!returnDate || returnDate < pickupDate || Number.isNaN(returnValue.getTime()) || returnValue <= pickupValue) {
+      setDetailError('Return date-time must be after pickup date-time.');
       return false;
     }
     if (!rentalSummary.valid) {
@@ -475,6 +540,7 @@ export default function CarRental({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Unable to save rental request.');
+      setCreatedRentalId(data.rental?.id || '');
       setPaymentSuccess(true);
       goStep(4);
     } catch (error) {
@@ -496,11 +562,15 @@ export default function CarRental({
           if (setBookingsTab) setBookingsTab('rentals');
           setPaymentSuccess(false);
           setActive('bookings');
+          const params = new URLSearchParams({ tab: 'rentals' });
+          if (createdRentalId) params.set('rental', createdRentalId);
+          navigate(`/bookings?${params.toString()}`);
         }}>
-          My Bookings
+          View rental ticket
         </button>
         <button className="btn btn-ghost btn-full" onClick={() => {
           setPaymentSuccess(false);
+          setCreatedRentalId('');
           setActive('home');
         }}>
           Back to Home
@@ -508,6 +578,8 @@ export default function CarRental({
       </div>
     </div>
   </div>;
+
+  const currentTimeKey = getLocalTimeKey();
 
   return <div className="page-wide">
     {showAuthModal && <AuthModal onConfirm={() => navigate('/login')} onClose={() => setShowAuthModal(false)} />}
@@ -598,19 +670,19 @@ export default function CarRental({
         <div className="date-range">
           <div>
             <div className="label">Pickup date</div>
-            <input type="date" value={pickupDate} onChange={e => setPickupDate(e.target.value)} />
+            <input type="date" min={todayKey} value={pickupDate} onChange={e => handlePickupDateChange(e.target.value)} />
           </div>
           <div>
             <div className="label">Pickup time</div>
-            <input type="time" value={pickupTime} onChange={e => handlePickupTimeChange(e.target.value)} />
+            <input type="time" min={pickupDate === todayKey ? currentTimeKey : undefined} value={pickupTime} onChange={e => handlePickupTimeChange(e.target.value)} />
           </div>
           <div>
             <div className="label">Return date</div>
-            <input type="date" value={returnDate} onChange={e => setReturnDate(e.target.value)} />
+            <input type="date" min={pickupDate || todayKey} value={returnDate} onChange={e => handleReturnDateChange(e.target.value)} />
           </div>
           <div>
             <div className="label">Return time</div>
-            <input type="time" value={returnTime} onChange={e => { setReturnTimeTouched(true); setReturnTime(e.target.value); }} />
+            <input type="time" min={returnDate === pickupDate ? pickupTime : undefined} value={returnTime} onChange={e => { setReturnTimeTouched(true); setReturnTime(e.target.value); }} />
           </div>
         </div>
 

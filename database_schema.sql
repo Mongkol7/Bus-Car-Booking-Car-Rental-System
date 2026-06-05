@@ -54,6 +54,7 @@ CREATE TABLE users (
     role VARCHAR(50) DEFAULT 'user',
     role_id INT REFERENCES roles(id) ON DELETE RESTRICT DEFAULT 1,
     is_active BOOLEAN DEFAULT TRUE,
+    last_activity_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -198,6 +199,21 @@ CREATE TABLE bus_bookings (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE bus_trip_feedback (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    bus_booking_id INT REFERENCES bus_bookings(id) ON DELETE CASCADE,
+    route_id INT REFERENCES bus_routes(id) ON DELETE SET NULL,
+    company_id INT REFERENCES companies(id) ON DELETE SET NULL,
+    bus_id INT REFERENCES buses(id) ON DELETE SET NULL,
+    feedback_type VARCHAR(20) NOT NULL CHECK (feedback_type IN ('comment', 'report')),
+    comment TEXT NOT NULL,
+    admin_reply TEXT,
+    admin_replied_at TIMESTAMP,
+    admin_replied_by INT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 9. CAR RENTALS (Transactions)
 CREATE TABLE car_rentals (
     id SERIAL PRIMARY KEY,
@@ -214,6 +230,11 @@ CREATE TABLE car_rentals (
     hired_driver_id INT REFERENCES rental_drivers(id) ON DELETE SET NULL,
     rental_base_price DECIMAL(10,2) DEFAULT 0,
     driver_fee DECIMAL(10,2) DEFAULT 0,
+    late_return_hours NUMERIC(8,2) DEFAULT 0,
+    late_return_charge DECIMAL(10,2) DEFAULT 0,
+    damage_description TEXT DEFAULT '',
+    damage_charge DECIMAL(10,2) DEFAULT 0,
+    damage_responsibility VARCHAR(20) DEFAULT 'renter',
     driver_name VARCHAR(150) NOT NULL,
     driver_license VARCHAR(50) NOT NULL,
     total_price DECIMAL(10,2) NOT NULL,

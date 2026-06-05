@@ -96,6 +96,29 @@ function getBookingStartTime(booking) {
   return getTripDepartureTime(booking);
 }
 
+function getBookingCreatedTime(booking) {
+  const createdTime = new Date(booking?.createdAt || booking?.bookedAt).getTime();
+  if (!Number.isNaN(createdTime)) return createdTime;
+  const startTime = getBookingStartTime(booking);
+  return Number.isFinite(startTime) ? startTime : 0;
+}
+
+function canUseDriverFeedback(booking) {
+  if (!booking?.driverName) return false;
+  const status = String(booking.statusKey || '').toLowerCase();
+  if (status === 'returned') return true;
+  if (status === 'cancelled') return false;
+  const pickupTime = new Date(booking.pickupDatetime).getTime();
+  return !Number.isNaN(pickupTime) && pickupTime <= Date.now();
+}
+
+function canUseTripFeedback(booking) {
+  const status = String(booking?.statusKey || '').toLowerCase();
+  if (status === 'cancelled') return false;
+  const departureTime = getTripDepartureTime(booking);
+  return Number.isFinite(departureTime) && departureTime <= Date.now();
+}
+
 function buildRentalTicket(row) {
   return {
     id: `#R-${row.id}`,
@@ -110,6 +133,8 @@ function buildRentalTicket(row) {
     seat: row.plate_number || 'No plate',
     pickupDatetime: row.pickup_datetime,
     returnDatetime: row.return_datetime,
+    bookedAt: row.booked_at,
+    createdAt: row.booked_at,
     paymentMethod: row.payment_method,
     dailyRate: row.daily_rate,
     hourlyRate: row.hourly_rate,
@@ -128,6 +153,10 @@ function buildRentalTicket(row) {
   };
 }
 
+function tripLegBusLabel(leg = {}) {
+  return [leg.company_name, leg.bus_name].filter(Boolean).join(' | ') || 'Bus not assigned';
+}
+
 function buildTripTicket(row) {
   const legs = Array.isArray(row.legs) && row.legs.length ? row.legs : [row];
   const outbound = legs.find((leg) => leg.leg_type === 'outbound') || legs[0] || {};
@@ -137,6 +166,9 @@ function buildTripTicket(row) {
   const seats = Array.isArray(outbound.seats) ? outbound.seats.filter(Boolean) : Array.isArray(row.seats) ? row.seats.filter(Boolean) : [];
   const returnSeats = Array.isArray(returning?.seats) ? returning.seats.filter(Boolean) : [];
   const isRoundTrip = Boolean(row.is_round_trip || returning);
+  const busSummary = isRoundTrip
+    ? `Out: ${tripLegBusLabel(outbound)}${returning ? ` | Back: ${tripLegBusLabel(returning)}` : ''}`
+    : tripLegBusLabel(outbound);
 
   return {
     id: `#${row.ticket_reference || row.booking_reference || `B-${row.first_booking_id}`}`,
@@ -150,15 +182,19 @@ function buildTripTicket(row) {
     bg: outbound.bg || row.bg,
     busName: outbound.bus_name || row.bus_name,
     busType: outbound.bus_type || row.bus_type,
+    busSummary,
     price: formatMoney(row.total_amount),
     subtotal: row.subtotal_amount,
     discount: row.discount_amount,
+    packageWeightKg: Number(row.package_weight_kg || 0),
+    overweightCharge: Number(row.overweight_charge || 0),
     priceEach: outbound.price || row.price_each,
     status: formatStatus(row.status),
     statusKey: String(row.status || '').toLowerCase(),
     date: formatDateTime(departure),
     departureTime: departure,
     arrivalTime: arrival,
+    createdAt: row.latest_created_at || row.created_at,
     time: isRoundTrip ? 'Two-way trip' : `${formatDateTime(departure)} to ${formatDateTime(arrival)}`,
     seat: isRoundTrip ? `Out: ${seats.join(', ') || 'None'} | Back: ${returnSeats.join(', ') || 'None'}` : seats.join(', ') || 'No seats',
     seats,
@@ -167,6 +203,10 @@ function buildTripTicket(row) {
     passengerName: [row.passenger_first_name, row.passenger_last_name].filter(Boolean).join(' '),
     passengerPhone: row.passenger_phone,
     passengerEmail: row.passenger_email,
+    myTripComment: row.my_trip_comment,
+    myTripReport: row.my_trip_report,
+    notifications: Array.isArray(row.notifications) ? row.notifications : [],
+    unreadNotifications: Array.isArray(row.notifications) ? row.notifications.filter((item) => !item.is_read).length : 0,
     isRoundTrip,
     legs
   };
@@ -338,7 +378,7 @@ export default function MyBookings({
     return tripFilter === 'past' ? isPast : !isPast;
   });
   const currentBookings = [...(tab === 'rentals' ? filteredRentals : filteredTrips)]
-    .sort((a, b) => getBookingStartTime(a) - getBookingStartTime(b));
+    .sort((a, b) => getBookingCreatedTime(b) - getBookingCreatedTime(a));
 
   useEffect(() => {
     if (!highlightTarget) return undefined;
@@ -451,6 +491,47 @@ export default function MyBookings({
     }
   }
 
+  async function submitTripFeedback(reference, type) {
+    const feedbackKey = `trip:${reference}`;
+    const form = feedbackForms[feedbackKey] || {};
+    const isReport = type === 'report';
+    const text = isReport ? form.report : form.comment;
+
+    if (!String(text || '').trim()) {
+      setFeedbackStatus((current) => ({
+        ...current,
+        [feedbackKey]: isReport ? 'Report detail is required.' : 'Trip comment is required.'
+      }));
+      return;
+    }
+
+    setFeedbackStatus((current) => ({ ...current, [feedbackKey]: isReport ? 'Submitting report...' : 'Saving comment...' }));
+    try {
+      const response = await fetch(`/api/my/bookings/trips/${encodeURIComponent(reference)}/${isReport ? 'report' : 'comment'}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ comment: text })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Unable to save trip feedback.');
+
+      setFeedbackStatus((current) => ({
+        ...current,
+        [feedbackKey]: data.message || (isReport ? 'Trip report submitted.' : 'Trip comment saved.')
+      }));
+      updateFeedback(feedbackKey, isReport ? { report: '' } : { comment: '' });
+      await loadTrips({ silent: true });
+    } catch (error) {
+      setFeedbackStatus((current) => ({
+        ...current,
+        [feedbackKey]: error.message || 'Unable to save trip feedback.'
+      }));
+    }
+  }
+
   async function markRentalNotificationsRead(rentalId) {
     const rental = rentals.find((item) => item.rawId === rentalId);
     if (!token || !rental || !rental.unreadNotifications) return;
@@ -471,6 +552,29 @@ export default function MyBookings({
     } catch (error) {
       console.error('Unable to mark rental notification as read:', error);
     }
+  }
+
+  async function markTripNotificationsRead(ticketId) {
+    if (!token || !ticketId) return;
+    const ticket = trips.find((item) => String(item.rawId) === String(ticketId));
+    const unreadIds = (ticket?.notifications || [])
+      .filter((notification) => !notification.is_read)
+      .map((notification) => notification.id)
+      .filter(Boolean);
+    if (!unreadIds.length) return;
+
+    setTrips((current) => current.map((item) => String(item.rawId) === String(ticketId)
+      ? {
+          ...item,
+          unreadNotifications: 0,
+          notifications: item.notifications.map((notification) => ({ ...notification, is_read: true }))
+        }
+      : item));
+
+    await Promise.all(unreadIds.map((notificationId) => fetch(`/api/my/notifications/${notificationId}/read`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}` }
+    }).catch(() => null)));
   }
 
   async function cancelBusTicket() {
@@ -518,7 +622,7 @@ export default function MyBookings({
 
   function renderRentalPanel(booking) {
     const expanded = expandedRentalId === booking.rawId;
-    const canReviewDriver = booking.statusKey === 'returned' && booking.driverName;
+    const canReviewDriver = canUseDriverFeedback(booking);
     const form = feedbackForms[booking.rawId] || { rating: 5, comment: '', report: '' };
 
     return <div
@@ -573,7 +677,7 @@ export default function MyBookings({
       </div>}
 
       {booking.driverName && !canReviewDriver ? <div className="page-sub" style={{ marginTop: 12 }}>
-        Driver review and report actions unlock after this rental is returned.
+        Driver review and report actions unlock once the ride starts.
       </div> : null}
 
       {canReviewDriver ? <div className="rental-feedback-grid">
@@ -589,7 +693,7 @@ export default function MyBookings({
             <select value={form.rating || 5} onChange={(event) => updateFeedback(booking.rawId, { rating: event.target.value })}>
               {[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} rating</option>)}
             </select>
-            <input placeholder="Comment after the rental" value={form.comment || ''} onChange={(event) => updateFeedback(booking.rawId, { comment: event.target.value })} />
+            <input placeholder="Comment during or after the rental" value={form.comment || ''} onChange={(event) => updateFeedback(booking.rawId, { comment: event.target.value })} />
           </div>
           <button className="btn btn-ghost btn-sm" type="button" style={{ marginTop: 8 }} onClick={(event) => {
             event.stopPropagation();
@@ -629,29 +733,109 @@ export default function MyBookings({
 
   function renderTripPanel(booking) {
     const expanded = expandedTripId === booking.rawId;
-    if (!booking.isRoundTrip) return null;
+    const canShareFeedback = canUseTripFeedback(booking);
+    const feedbackKey = `trip:${booking.rawId}`;
+    const form = feedbackForms[feedbackKey] || { rating: 5, comment: '', report: '' };
 
     return <div className={`rental-ticket-panel ${expanded ? 'open' : ''}`} aria-hidden={!expanded} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
       <div className="ticket-divider" />
-      <div className="rental-detail-grid">
-        {booking.legs.map((leg) => (
-          <div key={`${booking.rawId}-${leg.leg_type}`} className="rental-driver-box" style={{ marginTop: 0 }}>
-            <div className="label">{leg.leg_type === 'return' ? 'Coming back' : 'Departure'}</div>
-            <div style={{ fontWeight: 700, marginTop: 4 }}>{leg.origin} {'->'} {leg.destination}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>
-              <span className="ticket-date-highlight">{formatDateTime(leg.departure_time)}</span> to {formatDateTime(leg.arrival_time)}
+      {booking.isRoundTrip ? <>
+        <div className="rental-detail-grid">
+          {booking.legs.map((leg) => (
+            <div key={`${booking.rawId}-${leg.leg_type}`} className="rental-driver-box" style={{ marginTop: 0 }}>
+              <div className="label">{leg.leg_type === 'return' ? 'Coming back' : 'Departure'}</div>
+              <div style={{ fontWeight: 700, marginTop: 4 }}>{leg.origin} {'->'} {leg.destination}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>
+                <span className="ticket-date-highlight">{formatDateTime(leg.departure_time)}</span> to {formatDateTime(leg.arrival_time)}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>{leg.company_name || 'Unknown company'}{leg.bus_name ? ` | ${leg.bus_name}` : ''}</div>
+              <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 8 }}>Seats {(leg.seats || []).join(', ') || 'None'}</div>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>{leg.company_name || 'Unknown company'}{leg.bus_name ? ` | ${leg.bus_name}` : ''}</div>
-            <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 8 }}>Seats {(leg.seats || []).join(', ') || 'None'}</div>
+          ))}
+        </div>
+        <div className="rental-detail-grid" style={{ marginTop: 12 }}>
+          <div className="booking-meta-item">Subtotal<span>{formatMoney(booking.subtotal)}</span></div>
+          <div className="booking-meta-item">Two-way discount<span style={{ color: 'var(--green)' }}>-{formatMoney(booking.discount)}</span></div>
+          <div className="booking-meta-item">Payment<span>{String(booking.paymentMethod || 'Not set').toUpperCase()}</span></div>
+          <div className="booking-meta-item">Paid<span>{booking.price}</span></div>
+        </div>
+      </> : null}
+
+      {(Number(booking.packageWeightKg || 0) > 0 || Number(booking.overweightCharge || 0) > 0) ? (
+        <div className="rental-detail-grid" style={{ marginTop: 12 }}>
+          <div className="booking-meta-item">
+            Package weight
+            <span>{Number(booking.packageWeightKg || 0).toFixed(2)} kg</span>
+          </div>
+          <div className="booking-meta-item">
+            Overweight charge
+            <span style={{ color: Number(booking.overweightCharge || 0) > 0 ? 'var(--amber)' : 'var(--text-2)' }}>
+              {formatMoney(booking.overweightCharge)}
+            </span>
+          </div>
+        </div>
+      ) : null}
+
+      {booking.notifications?.length ? <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+        {booking.notifications.map((notification) => (
+          <div key={notification.id} style={{
+            padding: 10,
+            borderRadius: 10,
+            border: notification.is_read ? '1px solid var(--glass-border)' : '1px solid rgba(245,158,11,0.35)',
+            background: notification.is_read ? 'rgba(255,255,255,0.04)' : 'rgba(245,158,11,0.10)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+              <div style={{ fontWeight: 700, fontSize: 12 }}>{notification.title}</div>
+              {!notification.is_read ? <span className="badge badge-amber">New</span> : null}
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.45, marginTop: 4 }}>{notification.message}</div>
           </div>
         ))}
-      </div>
-      <div className="rental-detail-grid" style={{ marginTop: 12 }}>
-        <div className="booking-meta-item">Subtotal<span>{formatMoney(booking.subtotal)}</span></div>
-        <div className="booking-meta-item">Two-way discount<span style={{ color: 'var(--green)' }}>-{formatMoney(booking.discount)}</span></div>
-        <div className="booking-meta-item">Payment<span>{String(booking.paymentMethod || 'Not set').toUpperCase()}</span></div>
-        <div className="booking-meta-item">Paid<span>{booking.price}</span></div>
-      </div>
+      </div> : null}
+
+      {!canShareFeedback ? <div className="page-sub" style={{ marginTop: 12 }}>
+        Trip comment and report actions unlock once the departure time starts.
+      </div> : null}
+
+      {canShareFeedback ? <div className="rental-feedback-grid" style={{ marginTop: 12 }}>
+        <div className="rental-feedback-box">
+          <div className="label">Comment on trip</div>
+          {booking.myTripComment ? <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+            Last comment: {booking.myTripComment.comment}
+            {booking.myTripComment.admin_reply ? <div style={{ color: 'var(--green)', marginTop: 4 }}>
+              Admin reply: {booking.myTripComment.admin_reply}
+            </div> : null}
+          </div> : null}
+          <input style={{ marginTop: 8 }} placeholder="Comment on this trip" value={form.comment || ''} onChange={(event) => updateFeedback(feedbackKey, { comment: event.target.value })} />
+          <button className="btn btn-ghost btn-sm" type="button" style={{ marginTop: 8 }} onClick={(event) => {
+            event.stopPropagation();
+            submitTripFeedback(booking.rawId, 'comment');
+          }}>
+            Save comment
+          </button>
+        </div>
+
+        <div className="rental-feedback-box danger">
+          <div className="label">Report a problem</div>
+          {booking.myTripReport ? <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+            Last report: {booking.myTripReport.comment}
+            {booking.myTripReport.admin_reply ? <div style={{ color: 'var(--green)', marginTop: 4 }}>
+              Admin reply: {booking.myTripReport.admin_reply}
+            </div> : null}
+          </div> : null}
+          <input style={{ marginTop: 8 }} placeholder="Report trip issue" value={form.report || ''} onChange={(event) => updateFeedback(feedbackKey, { report: event.target.value })} />
+          <button className="btn btn-ghost btn-sm" type="button" style={{ marginTop: 8 }} onClick={(event) => {
+            event.stopPropagation();
+            submitTripFeedback(booking.rawId, 'report');
+          }}>
+            Report
+          </button>
+        </div>
+      </div> : null}
+
+      {feedbackStatus[feedbackKey] ? <div style={{ marginTop: 10, fontSize: 12, color: 'var(--accent)' }}>
+        {feedbackStatus[feedbackKey]}
+      </div> : null}
     </div>;
   }
 
@@ -714,7 +898,7 @@ export default function MyBookings({
 
     {(!rentalsLoading || tab !== 'rentals') && (!tripsLoading || tab !== 'trips') && !rentalsError && !tripsError && currentBookings.map((booking, index) => <div
       key={booking.id}
-      className={`booking-item ticket-card scroll-animate quick-scroll-animate ${booking.type === 'rental' || booking.isRoundTrip ? 'rental-ticket-clickable' : ''}`}
+      className={`booking-item ticket-card scroll-animate quick-scroll-animate ${booking.type === 'rental' || booking.type === 'ticket' ? 'rental-ticket-clickable' : ''}`}
       data-ticket-type={booking.type === 'rental' ? 'rental' : 'ticket'}
       data-ticket-id={String(booking.rawId)}
       style={{ '--delay': `${index * 15}ms` }}
@@ -723,21 +907,25 @@ export default function MyBookings({
           const willOpen = expandedRentalId !== booking.rawId;
           setExpandedRentalId(willOpen ? booking.rawId : null);
           if (willOpen) markRentalNotificationsRead(booking.rawId);
-        } else if (booking.isRoundTrip) {
-          setExpandedTripId((current) => current === booking.rawId ? null : booking.rawId);
+        } else if (booking.type === 'ticket') {
+          const willOpen = expandedTripId !== booking.rawId;
+          setExpandedTripId(willOpen ? booking.rawId : null);
+          if (willOpen) markTripNotificationsRead(booking.rawId);
         }
       }}
-      role={booking.type === 'rental' || booking.isRoundTrip ? 'button' : undefined}
-      tabIndex={booking.type === 'rental' || booking.isRoundTrip ? 0 : undefined}
+      role={booking.type === 'rental' || booking.type === 'ticket' ? 'button' : undefined}
+      tabIndex={booking.type === 'rental' || booking.type === 'ticket' ? 0 : undefined}
       onKeyDown={(event) => {
         if (booking.type === 'rental' && (event.key === 'Enter' || event.key === ' ')) {
           event.preventDefault();
           const willOpen = expandedRentalId !== booking.rawId;
           setExpandedRentalId(willOpen ? booking.rawId : null);
           if (willOpen) markRentalNotificationsRead(booking.rawId);
-        } else if (booking.isRoundTrip && (event.key === 'Enter' || event.key === ' ')) {
+        } else if (booking.type === 'ticket' && (event.key === 'Enter' || event.key === ' ')) {
           event.preventDefault();
-          setExpandedTripId((current) => current === booking.rawId ? null : booking.rawId);
+          const willOpen = expandedTripId !== booking.rawId;
+          setExpandedTripId(willOpen ? booking.rawId : null);
+          if (willOpen) markTripNotificationsRead(booking.rawId);
         }
       }}
     >
@@ -754,10 +942,22 @@ export default function MyBookings({
           <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
             {booking.id} | <span className="ticket-date-highlight">{booking.type === 'rental' ? formatDateTime(booking.pickupDatetime) : booking.date}</span>
           </div>
-          {booking.type === 'ticket' ? <div style={{ fontSize: 11, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: booking.color || getCompanyMeta(booking.company).color }} />
-            <span style={{ color: booking.color || getCompanyMeta(booking.company).color }}>{booking.company}</span>
-            {booking.busName ? <span>| {booking.busName}</span> : null}
+          {booking.type === 'ticket' ? <div style={{ fontSize: 11, color: 'var(--text-2)', display: 'grid', gap: 3, marginTop: 4 }}>
+            {booking.isRoundTrip && Array.isArray(booking.legs) ? booking.legs.map((leg) => (
+              <div key={`${booking.rawId}-bus-${leg.leg_type}`} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: leg.color || booking.color || getCompanyMeta(booking.company).color }} />
+                <span style={{ color: leg.color || booking.color || getCompanyMeta(booking.company).color }}>
+                  {leg.leg_type === 'return' ? 'Back' : 'Out'}:
+                </span>
+                <span>{tripLegBusLabel(leg)}</span>
+              </div>
+            )) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: booking.color || getCompanyMeta(booking.company).color }} />
+                <span style={{ color: booking.color || getCompanyMeta(booking.company).color }}>{booking.company}</span>
+                {booking.busName ? <span>| {booking.busName}</span> : null}
+              </div>
+            )}
           </div> : null}
           {booking.type === 'rental' && booking.driverName ? <div style={{ fontSize: 11, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
             <Icon d={icons.user} size={12} color="var(--accent)" />
@@ -765,6 +965,9 @@ export default function MyBookings({
           </div> : null}
           {booking.type === 'rental' && booking.unreadNotifications ? <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 5 }}>
             {booking.unreadNotifications} new rental notice{booking.unreadNotifications === 1 ? '' : 's'}
+          </div> : null}
+          {booking.type === 'ticket' && booking.unreadNotifications ? <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 5 }}>
+            {booking.unreadNotifications} new trip notice{booking.unreadNotifications === 1 ? '' : 's'}
           </div> : null}
         </div>
         <span className={`badge ${getStatusBadge(visibleStatusKey || visibleStatus)}`}>
@@ -783,11 +986,17 @@ export default function MyBookings({
         </div>
         {booking.type === 'ticket' ? <div className="booking-meta-item">
           Bus
-          <span style={{ color: booking.color || getCompanyMeta(booking.company).color }}>{booking.busName || booking.company}</span>
+          <span style={{ color: booking.color || getCompanyMeta(booking.company).color }}>{booking.busSummary || booking.busName || booking.company}</span>
         </div> : <div className="booking-meta-item">
           Driver
           <span>{booking.driverName ? 'Included' : 'Self-drive'}</span>
         </div>}
+        {booking.type === 'ticket' && (Number(booking.packageWeightKg || 0) > 0 || Number(booking.overweightCharge || 0) > 0) ? <div className="booking-meta-item">
+          Overweight
+          <span style={{ color: Number(booking.overweightCharge || 0) > 0 ? 'var(--amber)' : undefined }}>
+            {Number(booking.packageWeightKg || 0).toFixed(2)} kg | {formatMoney(booking.overweightCharge)}
+          </span>
+        </div> : null}
         <div className="booking-meta-item">
           Paid<span>{booking.price}</span>
         </div>

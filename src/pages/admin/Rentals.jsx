@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Icon, icons } from '../../utils/sharedAdmin';
 
+const RENTALS_SECTION_STORAGE_KEY = 'admin_rentals_section';
+const RENTALS_SECTIONS = ['rentals', 'drivers'];
 const STATUS_TABS = ['all', 'pending', 'upcoming', 'active', 'overdue', 'cancelled', 'returned'];
 const DRIVER_STATUS_TABS = ['all', 'available', 'inactive'];
 const EDIT_STATUS_OPTIONS = ['pending', 'confirmed', 'cancelled', 'returned'];
@@ -11,7 +14,9 @@ const EMPTY_FORM = {
   driver_name: '',
   driver_license: '',
   payment_method: 'aba',
-  status: 'pending'
+  status: 'pending',
+  damage_description: '',
+  damage_charge: '0'
 };
 const EMPTY_DRIVER_FORM = {
   name: '',
@@ -29,6 +34,15 @@ async function parseJsonResponse(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Request failed.');
   return data;
+}
+
+function normalizeSection(value) {
+  return RENTALS_SECTIONS.includes(value) ? value : 'rentals';
+}
+
+function getStoredSection() {
+  if (typeof window === 'undefined') return 'rentals';
+  return normalizeSection(window.localStorage.getItem(RENTALS_SECTION_STORAGE_KEY));
 }
 
 function toDateTimeInput(value) {
@@ -165,7 +179,7 @@ function calculateRentalPreview(form, rental) {
 }
 
 function exportCsv(rows) {
-  const headers = ['ID', 'User', 'Email', 'Phone', 'Car', 'Pickup date-time', 'Return date-time', 'Rental hours', 'Daily rate', 'Hourly rate', 'Hourly charge', 'Driver type', 'Hired driver', 'Self-driver / actual driver', 'Driver phone', 'Driver license', 'Driver hourly rate', 'Driver fee', 'Total', 'Payment', 'Status', 'Returned at'];
+  const headers = ['ID', 'User', 'Email', 'Phone', 'Car', 'Pickup date-time', 'Return date-time', 'Rental hours', 'Daily rate', 'Hourly rate', 'Hourly charge', 'Driver type', 'Hired driver', 'Self-driver / actual driver', 'Driver phone', 'Driver license', 'Driver hourly rate', 'Driver fee', 'Late return hours', 'Late return charge', 'Damage responsibility', 'Damage charge', 'Damage description', 'Total', 'Payment', 'Status', 'Returned at'];
   const body = rows.map((rental) => [
     rental.id,
     rental.user_name,
@@ -185,6 +199,11 @@ function exportCsv(rows) {
     rental.hired_driver_license_number || rental.driver_license,
     Number(rental.hired_driver_hourly_rate || 0).toFixed(2),
     Number(rental.driver_fee || 0).toFixed(2),
+    Number(rental.late_return_hours || 0).toFixed(0),
+    Number(rental.late_return_charge || 0).toFixed(2),
+    rental.damage_responsibility || '',
+    Number(rental.damage_charge || 0).toFixed(2),
+    rental.damage_description || '',
     Number(rental.total_price || 0).toFixed(2),
     rental.payment_method,
     rentalStage(rental),
@@ -206,7 +225,20 @@ function RentalModal({ rental, form, error, saving, onChange, onSubmit, onClose 
   const preview = calculateRentalPreview(form, rental);
   const driverHourlyRate = Number(rental?.hired_driver_hourly_rate || 0);
   const driverFeePreview = rental?.hired_driver_id && preview.valid ? Number((preview.hours * driverHourlyRate).toFixed(2)) : 0;
-  const totalPreview = Number((preview.charge + driverFeePreview).toFixed(2));
+  const returnedAtDate = form.status === 'returned'
+    ? (rental?.status === 'returned' && rental?.returned_at ? new Date(rental.returned_at) : new Date())
+    : null;
+  const returnDate = new Date(form.return_datetime);
+  const lateHours = returnedAtDate && !Number.isNaN(returnDate.getTime()) && returnedAtDate > returnDate
+    ? Math.max(1, Math.ceil((returnedAtDate - returnDate) / 3600000))
+    : 0;
+  const lateHourlyRate = preview.hourlyRate + (rental?.hired_driver_id ? driverHourlyRate : 0);
+  const lateChargePreview = Number((lateHours * lateHourlyRate).toFixed(2));
+  const damageChargeRaw = Number(form.damage_charge || 0);
+  const damageCharge = Number.isFinite(damageChargeRaw) ? Math.max(0, damageChargeRaw) : 0;
+  const damageResponsibility = rental?.hired_driver_id ? 'driver' : 'renter';
+  const renterDamageCharge = damageResponsibility === 'renter' ? damageCharge : 0;
+  const totalPreview = Number((preview.charge + driverFeePreview + lateChargePreview + renterDamageCharge).toFixed(2));
   return (
     <div className="modal-overlay">
       <div className="modal-card" style={{ maxWidth: 620 }}>
@@ -314,6 +346,27 @@ function RentalModal({ rental, form, error, saving, onChange, onSubmit, onClose 
             {EDIT_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{displayStatus(status)}</option>)}
           </select>
         </div>
+        <div style={{ marginTop: 12 }}>
+          <label style={{ display: 'grid', gap: 6, fontSize: 12, color: 'var(--amber)' }}>
+            Damage description
+            <textarea name="damage_description" placeholder="Describe any damage found at return" value={form.damage_description} onChange={onChange} style={{ minHeight: 74 }} />
+          </label>
+        </div>
+        <div className="form-row" style={{ marginTop: 12 }}>
+          <label style={{ display: 'grid', gap: 6, fontSize: 12, color: 'var(--amber)' }}>
+            Damage charge
+            <input name="damage_charge" type="number" min="0" step="0.01" value={form.damage_charge} onChange={onChange} />
+          </label>
+          <div style={{ padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+            <div className="td-muted" style={{ fontSize: 11 }}>Damage responsibility</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: damageResponsibility === 'renter' ? 'var(--amber)' : 'var(--red)' }}>
+              {damageResponsibility === 'renter' ? 'Renter charge' : 'Driver responsibility'}
+            </div>
+            <div className="td-muted" style={{ fontSize: 11, marginTop: 4 }}>
+              {damageResponsibility === 'renter' ? 'Added to customer total.' : 'Recorded for driver, not customer total.'}
+            </div>
+          </div>
+        </div>
         <div style={{ marginTop: 12, padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
           <div className="sec-title" style={{ fontSize: 13, marginBottom: 8 }}>Auto charge preview</div>
           <div className="grid2" style={{ gap: 10 }}>
@@ -338,12 +391,24 @@ function RentalModal({ rental, form, error, saving, onChange, onSubmit, onClose 
               <div style={{ fontSize: 13, fontWeight: 700, color: Number(driverFeePreview || rental?.driver_fee || 0) > 0 ? 'var(--green)' : 'var(--text)' }}>{formatMoney(driverFeePreview || rental?.driver_fee)}</div>
             </div>
             <div>
+              <div className="td-muted" style={{ fontSize: 11 }}>Late return</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: lateChargePreview > 0 ? 'var(--amber)' : 'var(--text)' }}>
+                {lateHours} hr | {formatMoney(lateChargePreview)}
+              </div>
+            </div>
+            <div>
+              <div className="td-muted" style={{ fontSize: 11 }}>Damage impact</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: damageCharge > 0 ? 'var(--amber)' : 'var(--text)' }}>
+                {damageResponsibility === 'renter' ? formatMoney(damageCharge) : `${formatMoney(damageCharge)} driver`}
+              </div>
+            </div>
+            <div>
               <div className="td-muted" style={{ fontSize: 11 }}>Estimated total</div>
               <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>{formatMoney(totalPreview || preview.charge)}</div>
             </div>
           </div>
           <div className="td-muted" style={{ fontSize: 11, marginTop: 8 }}>
-            Final total is recalculated by the server from the car hourly rate plus hired-driver fee when assigned.
+            Final total is recalculated by the server from rental charge, hired-driver fee, late return charge, and renter-responsible damage.
           </div>
         </div>
         <div style={{ marginTop: 12 }}>
@@ -384,6 +449,10 @@ function DeleteModal({ rental, deleting, onCancel, onConfirm }) {
 
 function DriverModal({ mode, driver, form, error, saving, onChange, onSubmit, onClose }) {
   const activeRentals = Array.isArray(driver?.active_rental_details) ? driver.active_rental_details : [];
+  const damageRows = Array.isArray(driver?.driver_damage_details) ? driver.driver_damage_details : [];
+  const driverTotalRevenue = Number(driver?.driver_total_revenue || 0);
+  const driverDamageTotal = Number(driver?.driver_damage_total || 0);
+  const driverNetRevenue = Number(driver?.driver_net_revenue ?? (driverTotalRevenue - driverDamageTotal));
   const availability = getDriverAvailability(driver);
 
   return (
@@ -422,6 +491,56 @@ function DriverModal({ mode, driver, form, error, saving, onChange, onSubmit, on
         <textarea name="background" placeholder="Driver background" value={form.background} onChange={onChange} style={{ marginTop: 12, minHeight: 90 }} />
         <input name="languages" placeholder="Languages, comma separated" value={form.languages} onChange={onChange} style={{ marginTop: 12 }} />
         {mode === 'edit' ? (
+          <>
+          <div style={{ marginTop: 14, padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+            <div className="sec-title" style={{ fontSize: 13, marginBottom: 8 }}>Driver revenue</div>
+            <div className="grid2" style={{ gap: 10, marginBottom: 0 }}>
+              <div>
+                <div className="td-muted" style={{ fontSize: 11 }}>Total revenue</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--green)' }}>{formatMoney(driverTotalRevenue)}</div>
+              </div>
+              <div>
+                <div className="td-muted" style={{ fontSize: 11 }}>Damage fees</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: driverDamageTotal > 0 ? 'var(--red)' : 'var(--text)' }}>{formatMoney(driverDamageTotal)}</div>
+              </div>
+              <div>
+                <div className="td-muted" style={{ fontSize: 11 }}>Net after damage</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: driverNetRevenue >= 0 ? 'var(--accent)' : 'var(--red)' }}>{formatMoney(driverNetRevenue)}</div>
+              </div>
+              <div>
+                <div className="td-muted" style={{ fontSize: 11 }}>Damage records</div>
+                <div style={{ fontSize: 14, fontWeight: 800 }}>{damageRows.length}</div>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+            <div className="sec-title" style={{ fontSize: 13, marginBottom: 8 }}>Driver damage fees</div>
+            {damageRows.length ? (
+              <div style={{ display: 'grid', gap: 8, maxHeight: 190, overflow: 'auto', paddingRight: 4 }}>
+                {damageRows.map((damage) => (
+                  <div key={damage.id} style={{ padding: 10, borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.18)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 12 }}>Rental #{damage.id} | {damage.car_name || 'Rental car'}</div>
+                        <div className="td-muted" style={{ fontSize: 11 }}>{damage.plate_number || 'No plate'} | {damage.customer_name || damage.customer_email || 'Unknown customer'}</div>
+                      </div>
+                      <span style={{ color: 'var(--red)', fontWeight: 800, fontSize: 13 }}>{formatMoney(damage.damage_charge)}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.45, marginTop: 8 }}>
+                      {damage.damage_description || 'No damage description.'}
+                    </div>
+                    <div className="td-muted" style={{ fontSize: 11, marginTop: 6 }}>
+                      Returned {damage.returned_at ? formatDateTime(damage.returned_at) : formatDateTime(damage.return_datetime)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="td-muted" style={{ fontSize: 12 }}>No driver-responsible damage fees recorded.</div>
+            )}
+          </div>
+
           <div style={{ marginTop: 14, padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 10 }}>
               <div>
@@ -457,6 +576,7 @@ function DriverModal({ mode, driver, form, error, saving, onChange, onSubmit, on
               <div className="td-muted" style={{ fontSize: 12 }}>No active rentals assigned to this driver.</div>
             )}
           </div>
+          </>
         ) : null}
         <div className="modal-btns" style={{ marginTop: 18 }}>
           <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
@@ -553,7 +673,9 @@ function FeedbackModal({ driver, type, rows, loading, error, savingReplyId, repl
 }
 
 export default function Rentals() {
-  const [section, setSection] = useState('rentals');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialSection = searchParams.has('section') ? normalizeSection(searchParams.get('section')) : getStoredSection();
+  const [section, setSection] = useState(initialSection);
   const [rentals, setRentals] = useState([]);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
@@ -591,6 +713,17 @@ export default function Rentals() {
   useEffect(() => {
     if (section === 'drivers') loadDrivers();
   }, [section]);
+
+  function changeSection(nextSection) {
+    const normalized = normalizeSection(nextSection);
+    setSection(normalized);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(RENTALS_SECTION_STORAGE_KEY, normalized);
+    }
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('section', normalized);
+    setSearchParams(nextParams, { replace: true });
+  }
 
   async function loadRentals(showSpinner = true) {
     if (showSpinner) setLoading(true);
@@ -635,6 +768,8 @@ export default function Rentals() {
         rental.hired_driver_name,
         rental.hired_driver_phone,
         rental.hired_driver_license_number,
+        rental.damage_description,
+        rental.damage_responsibility,
         rental.payment_method,
         rentalStage(rental)
       ].filter(Boolean).join(' ').toLowerCase();
@@ -686,7 +821,9 @@ export default function Rentals() {
       driver_name: rental.driver_name || '',
       driver_license: rental.driver_license || '',
       payment_method: rental.payment_method || 'aba',
-      status: rental.status || 'pending'
+      status: rental.status || 'pending',
+      damage_description: rental.damage_description || '',
+      damage_charge: Number(rental.damage_charge || 0).toFixed(2)
     });
     setFormError('');
   }
@@ -876,7 +1013,7 @@ export default function Rentals() {
 
       <div className="pill-nav observe-animate" style={{ marginBottom: 18 }}>
         {[{ id: 'rentals', label: 'Rentals' }, { id: 'drivers', label: 'Drivers' }].map((item) => (
-          <div key={item.id} className={`pill-tab ${section === item.id ? 'active' : ''}`} onClick={() => setSection(item.id)}>
+          <div key={item.id} className={`pill-tab ${section === item.id ? 'active' : ''}`} onClick={() => changeSection(item.id)}>
             {item.label}
           </div>
         ))}
@@ -967,6 +1104,16 @@ export default function Rentals() {
                       {Number(rental.driver_fee || 0) > 0 ? (
                         <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
                           Driver {formatMoney(rental.driver_fee)}
+                        </div>
+                      ) : null}
+                      {Number(rental.late_return_charge || 0) > 0 ? (
+                        <div style={{ fontSize: 11, color: 'var(--amber)' }}>
+                          Late {Number(rental.late_return_hours || 0).toFixed(0)} hr | {formatMoney(rental.late_return_charge)}
+                        </div>
+                      ) : null}
+                      {Number(rental.damage_charge || 0) > 0 ? (
+                        <div style={{ fontSize: 11, color: rental.damage_responsibility === 'driver' ? 'var(--red)' : 'var(--amber)' }}>
+                          Damage {formatMoney(rental.damage_charge)} {rental.damage_responsibility === 'driver' ? 'driver' : 'renter'}
                         </div>
                       ) : null}
                       <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{String(rental.payment_method || '').toUpperCase()}</div>

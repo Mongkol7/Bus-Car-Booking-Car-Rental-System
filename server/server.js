@@ -8,6 +8,8 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 const TOKEN_SECRET = process.env.TOKEN_SECRET || 'bookride-dev-secret';
+const PACKAGE_ALLOWANCE_KG = 20;
+const OVERWEIGHT_RATE = 0.5;
 
 // Middleware
 app.use(cors()); // Allow frontend to fetch data
@@ -134,7 +136,13 @@ async function getAuthUserFromRequest(req) {
     throw Object.assign(new Error('User account is not available.'), { status: 401 });
   }
 
+  await touchUserActivity(user.rows[0].id);
   return user.rows[0];
+}
+
+async function touchUserActivity(userId, db = pool) {
+  if (!userId) return;
+  await db.query(`UPDATE users SET last_activity_at = NOW() WHERE id = $1`, [userId]);
 }
 
 async function createUserSession(userId, token) {
@@ -144,6 +152,7 @@ async function createUserSession(userId, token) {
      VALUES ($1, $2, $3, $4)`,
     [userId, hashToken(token), 'access', expiresAt]
   );
+  await touchUserActivity(userId);
 }
 
 async function runUserSchemaMigration() {
@@ -173,6 +182,22 @@ async function runUserSchemaMigration() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'user'`);
   await pool.query(`ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id INT REFERENCES roles(id) ON DELETE RESTRICT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP`);
+  await pool.query(`
+    UPDATE users u
+    SET last_activity_at = activity.last_activity_at
+    FROM (
+      SELECT user_id, MAX(activity_at) AS last_activity_at
+      FROM (
+        SELECT user_id, created_at AS activity_at FROM bus_bookings
+        UNION ALL
+        SELECT user_id, booked_at AS activity_at FROM car_rentals
+      ) user_activity
+      GROUP BY user_id
+    ) activity
+    WHERE activity.user_id = u.id
+      AND u.last_activity_at IS NULL
+  `);
   await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS booking_reference VARCHAR(40)`);
   await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_first_name VARCHAR(100)`);
   await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS passenger_last_name VARCHAR(100)`);
@@ -218,6 +243,27 @@ async function runUserSchemaMigration() {
   `);
   await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS package_weight_kg DECIMAL(8,2) DEFAULT 0`);
   await pool.query(`ALTER TABLE bus_bookings ADD COLUMN IF NOT EXISTS overweight_charge DECIMAL(10,2) DEFAULT 0`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bus_trip_feedback (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      bus_booking_id INT REFERENCES bus_bookings(id) ON DELETE CASCADE,
+      route_id INT REFERENCES bus_routes(id) ON DELETE SET NULL,
+      company_id INT REFERENCES companies(id) ON DELETE SET NULL,
+      bus_id INT REFERENCES buses(id) ON DELETE SET NULL,
+      feedback_type VARCHAR(20) NOT NULL CHECK (feedback_type IN ('comment', 'report')),
+      comment TEXT NOT NULL,
+      admin_reply TEXT,
+      admin_replied_at TIMESTAMP,
+      admin_replied_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`ALTER TABLE bus_trip_feedback ADD COLUMN IF NOT EXISTS company_id INT REFERENCES companies(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE bus_trip_feedback ADD COLUMN IF NOT EXISTS bus_id INT REFERENCES buses(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE bus_trip_feedback ADD COLUMN IF NOT EXISTS admin_reply TEXT`);
+  await pool.query(`ALTER TABLE bus_trip_feedback ADD COLUMN IF NOT EXISTS admin_replied_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE bus_trip_feedback ADD COLUMN IF NOT EXISTS admin_replied_by INT REFERENCES users(id) ON DELETE SET NULL`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS rental_drivers (
       id SERIAL PRIMARY KEY,
@@ -267,6 +313,18 @@ async function runUserSchemaMigration() {
   await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS hired_driver_id INT REFERENCES rental_drivers(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS rental_base_price DECIMAL(10,2) DEFAULT 0`);
   await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS driver_fee DECIMAL(10,2) DEFAULT 0`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS late_return_hours NUMERIC(8,2) DEFAULT 0`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS late_return_charge DECIMAL(10,2) DEFAULT 0`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS damage_description TEXT DEFAULT ''`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS damage_charge DECIMAL(10,2) DEFAULT 0`);
+  await pool.query(`ALTER TABLE car_rentals ADD COLUMN IF NOT EXISTS damage_responsibility VARCHAR(20) DEFAULT 'renter'`);
+  await pool.query(`
+    UPDATE car_rentals
+    SET damage_responsibility = CASE WHEN hired_driver_id IS NULL THEN 'renter' ELSE 'driver' END
+    WHERE damage_responsibility IS NULL
+       OR damage_charge IS NULL
+       OR COALESCE(damage_charge, 0) = 0
+  `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_notifications (
       id SERIAL PRIMARY KEY,
@@ -524,9 +582,20 @@ const USER_SELECT = `
     u.created_at,
     COALESCE(bb.bus_bookings_count, 0)::INT AS bus_bookings_count,
     COALESCE(cr.car_rentals_count, 0)::INT AS car_rentals_count,
+    COALESCE(uf.comments_count, 0)::INT AS comments_count,
+    COALESCE(uf.reports_count, 0)::INT AS reports_count,
     (COALESCE(bb.bus_bookings_count, 0) + COALESCE(cr.car_rentals_count, 0))::INT AS total_activity_count,
     COALESCE(bb.bus_total, 0) + COALESCE(cr.rental_total, 0) AS total_spent,
-    GREATEST(bb.last_bus_booking_at, cr.last_car_rental_at) AS last_activity_at
+    CASE
+      WHEN u.last_activity_at IS NULL
+       AND bb.last_bus_booking_at IS NULL
+       AND cr.last_car_rental_at IS NULL THEN NULL
+      ELSE GREATEST(
+        COALESCE(u.last_activity_at, TIMESTAMP '1970-01-01'),
+        COALESCE(bb.last_bus_booking_at, TIMESTAMP '1970-01-01'),
+        COALESCE(cr.last_car_rental_at, TIMESTAMP '1970-01-01')
+      )
+    END AS last_activity_at
   FROM users u
   LEFT JOIN roles r ON r.id = u.role_id
   LEFT JOIN (
@@ -547,6 +616,20 @@ const USER_SELECT = `
     FROM car_rentals
     GROUP BY user_id
   ) cr ON cr.user_id = u.id
+  LEFT JOIN (
+    SELECT
+      user_id,
+      COUNT(*) FILTER (WHERE feedback_kind = 'comment') AS comments_count,
+      COUNT(*) FILTER (WHERE feedback_kind = 'report') AS reports_count
+    FROM (
+      SELECT user_id, feedback_type AS feedback_kind
+      FROM bus_trip_feedback
+      UNION ALL
+      SELECT user_id, CASE WHEN review_type = 'review' THEN 'comment' ELSE 'report' END AS feedback_kind
+      FROM rental_driver_reviews
+    ) feedback
+    GROUP BY user_id
+  ) uf ON uf.user_id = u.id
 `;
 
 function normalizeUserPayload(body, { isCreate = false } = {}) {
@@ -927,6 +1010,11 @@ async function fetchAdminRentalById(rentalId) {
        cr.hired_driver_id,
        cr.rental_base_price,
        cr.driver_fee,
+       COALESCE(cr.late_return_hours, 0) AS late_return_hours,
+       COALESCE(cr.late_return_charge, 0) AS late_return_charge,
+       COALESCE(cr.damage_description, '') AS damage_description,
+       COALESCE(cr.damage_charge, 0) AS damage_charge,
+       COALESCE(cr.damage_responsibility, CASE WHEN cr.hired_driver_id IS NULL THEN 'renter' ELSE 'driver' END) AS damage_responsibility,
        cr.driver_name,
        cr.driver_license,
        cr.total_price,
@@ -1076,7 +1164,7 @@ async function createBusTicketNotifications(bookingIds, options = {}, db = pool)
       type: options.type || 'bus_ticket_update',
       title: options.title || 'Bus ticket update',
       message: options.message || `${first.origin} to ${first.destination} was updated. Seats: ${seats || 'N/A'}.`,
-      action_url: options.action_url || '/bookings?tab=trips',
+      action_url: options.action_url || `/bookings?tab=trips&ticket=${encodeURIComponent(first.ticket_reference)}`,
       action_type: options.action_type || 'view_trip',
       metadata
     }, db);
@@ -1303,11 +1391,12 @@ async function createRouteUpdateNotifications(routeId, existingRoute, updatedRou
 
 function formatUserRow(row) {
   const lastActivity = row.last_activity_at ? new Date(row.last_activity_at) : null;
+  const activeWindowMs = 1000 * 60 * 60 * 24 * 12;
   const isRecent =
     lastActivity &&
     !Number.isNaN(lastActivity.getTime()) &&
-    Date.now() - lastActivity.getTime() <= 1000 * 60 * 60 * 24 * 14;
-  const status = !row.is_active || (lastActivity && !isRecent) ? 'Inactive' : 'Active';
+    Date.now() - lastActivity.getTime() <= activeWindowMs;
+  const status = !row.is_active || !isRecent ? 'Inactive' : 'Active';
 
   return {
     ...row,
@@ -3662,6 +3751,34 @@ app.get('/api/rental-drivers', async (req, res) => {
          rd.experience_years,
          COALESCE(rd.languages, ARRAY[]::TEXT[]) AS languages,
          (
+           SELECT COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00')
+           FROM car_rentals cr
+           WHERE cr.hired_driver_id = rd.id
+             AND cr.status IN ('pending', 'confirmed')
+             AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') <= NOW()
+             AND COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') > NOW()
+           ORDER BY COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') ASC, cr.id ASC
+           LIMIT 1
+         ) AS current_rental_end,
+         (
+           SELECT COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00')
+           FROM car_rentals cr
+           WHERE cr.hired_driver_id = rd.id
+             AND cr.status IN ('pending', 'confirmed')
+             AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') > NOW()
+           ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC
+           LIMIT 1
+         ) AS next_rental_start,
+         (
+           SELECT COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00')
+           FROM car_rentals cr
+           WHERE cr.hired_driver_id = rd.id
+             AND cr.status IN ('pending', 'confirmed')
+             AND COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') > NOW()
+           ORDER BY COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') ASC, cr.id ASC
+           LIMIT 1
+         ) AS next_rental_end,
+         (
            SELECT rdr.comment
            FROM rental_driver_reviews rdr
            WHERE rdr.driver_id = rd.id
@@ -3684,7 +3801,6 @@ app.get('/api/rental-drivers', async (req, res) => {
               WHERE rdr.driver_id = rd.id
                 AND rdr.review_type = 'review'
               ORDER BY rdr.created_at DESC, rdr.id DESC
-              LIMIT 8
             ) review_row
           ),
           '[]'::JSON
@@ -3735,6 +3851,8 @@ async function fetchUserRentalForFeedback(rentalId, userId) {
        cr.user_id,
        cr.hired_driver_id,
        cr.status,
+       COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+       COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
        rd.id AS driver_id
      FROM car_rentals cr
      LEFT JOIN rental_drivers rd ON rd.id = cr.hired_driver_id
@@ -3743,6 +3861,14 @@ async function fetchUserRentalForFeedback(rentalId, userId) {
     [rentalId, userId]
   );
   return result.rows[0] || null;
+}
+
+function rentalFeedbackIsOpen(rental) {
+  const status = String(rental?.status || '').toLowerCase();
+  if (status === 'returned') return true;
+  if (status === 'cancelled') return false;
+  const pickup = new Date(rental.pickup_datetime);
+  return !Number.isNaN(pickup.getTime()) && pickup <= new Date();
 }
 
 app.get('/api/my/rentals', async (req, res) => {
@@ -3764,6 +3890,11 @@ app.get('/api/my/rentals', async (req, res) => {
          cr.hired_driver_id,
          cr.rental_base_price,
          cr.driver_fee,
+         COALESCE(cr.late_return_hours, 0) AS late_return_hours,
+         COALESCE(cr.late_return_charge, 0) AS late_return_charge,
+         COALESCE(cr.damage_description, '') AS damage_description,
+         COALESCE(cr.damage_charge, 0) AS damage_charge,
+         COALESCE(cr.damage_responsibility, CASE WHEN cr.hired_driver_id IS NULL THEN 'renter' ELSE 'driver' END) AS damage_responsibility,
          cr.driver_name,
          cr.driver_license,
          cr.total_price,
@@ -4000,7 +4131,7 @@ app.post('/api/my/rentals/:id/driver-review', async (req, res) => {
     const rental = await fetchUserRentalForFeedback(rentalId, user.id);
     if (!rental) return res.status(404).json({ error: 'Rental ticket not found.' });
     if (!rental.hired_driver_id) return res.status(400).json({ error: 'This rental does not have a hired driver.' });
-    if (rental.status !== 'returned') return res.status(400).json({ error: 'You can review the driver after the rental is returned.' });
+    if (!rentalFeedbackIsOpen(rental)) return res.status(400).json({ error: 'You can review the driver once the rental has started or after it is returned.' });
 
     await pool.query(
       `INSERT INTO rental_driver_reviews (driver_id, user_id, car_rental_id, rating, comment, review_type)
@@ -4026,7 +4157,7 @@ app.post('/api/my/rentals/:id/driver-report', async (req, res) => {
     const rental = await fetchUserRentalForFeedback(rentalId, user.id);
     if (!rental) return res.status(404).json({ error: 'Rental ticket not found.' });
     if (!rental.hired_driver_id) return res.status(400).json({ error: 'This rental does not have a hired driver.' });
-    if (rental.status !== 'returned') return res.status(400).json({ error: 'You can report the driver after the rental is returned.' });
+    if (!rentalFeedbackIsOpen(rental)) return res.status(400).json({ error: 'You can report the driver once the rental has started or after it is returned.' });
 
     await pool.query(
       `INSERT INTO rental_driver_reviews (driver_id, user_id, car_rental_id, comment, review_type)
@@ -4054,6 +4185,7 @@ app.post('/api/rentals', async (req, res) => {
   if (!carId) return res.status(400).json({ error: 'Car is required.' });
   if (pickupDateTime.error) return res.status(400).json({ error: pickupDateTime.error });
   if (returnDateTime.error) return res.status(400).json({ error: returnDateTime.error });
+  if (pickupDateTime.date < new Date()) return res.status(400).json({ error: 'Pickup date-time cannot be in the past.' });
   if (returnDateTime.date <= pickupDateTime.date) return res.status(400).json({ error: 'Return date-time must be after pickup date-time.' });
   if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
 
@@ -5314,6 +5446,173 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
+app.get('/api/admin/users/:id/activity', async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!userId) return res.status(400).json({ error: 'Invalid user id.' });
+
+  try {
+    const user = await fetchAdminUserById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const busBookings = await pool.query(
+      `SELECT
+         bb.id,
+         COALESCE(bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS booking_reference,
+         bb.round_trip_reference,
+         COALESCE(bb.trip_leg, 'outbound') AS trip_leg,
+         bb.seat_number,
+         bb.total_price,
+         bb.payment_method,
+         bb.status,
+         bb.created_at,
+         br.origin,
+         br.destination,
+         br.departure_time,
+         br.arrival_time,
+         b.name AS bus_name,
+         b.type AS bus_type,
+         b.plate_number,
+         c.name AS company_name,
+         c.theme_color AS color
+       FROM bus_bookings bb
+       JOIN bus_routes br ON br.id = bb.route_id
+       JOIN buses b ON b.id = br.bus_id
+       LEFT JOIN companies c ON c.id = b.company_id
+       WHERE bb.user_id = $1
+       ORDER BY bb.created_at DESC, bb.id DESC`,
+      [userId]
+    );
+
+    const carRentals = await pool.query(
+      `SELECT
+         cr.id,
+         cr.total_price,
+         cr.payment_method,
+         cr.status,
+         cr.booked_at,
+         COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+         COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+         COALESCE(cr.rental_hours, 0) AS rental_hours,
+         cr.hired_driver_id,
+         cr.driver_name,
+         rc.name AS car_name,
+         rc.type AS car_type,
+         rc.plate_number
+       FROM car_rentals cr
+       JOIN rental_cars rc ON rc.id = cr.car_id
+       WHERE cr.user_id = $1
+       ORDER BY cr.booked_at DESC, cr.id DESC`,
+      [userId]
+    );
+
+    const comments = await pool.query(
+      `SELECT *
+       FROM (
+         SELECT
+           btf.id,
+           'trip' AS source_type,
+           'Trip comment' AS source_label,
+           COALESCE(bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS item_reference,
+           CONCAT(br.origin, ' to ', br.destination) AS context_title,
+           CONCAT(COALESCE(c.name, b.name, 'Bus'), COALESCE(' | ' || b.plate_number, '')) AS context_subtitle,
+           NULL::INT AS rating,
+           btf.comment,
+           btf.admin_reply,
+           btf.admin_replied_at,
+           btf.created_at
+         FROM bus_trip_feedback btf
+         LEFT JOIN bus_bookings bb ON bb.id = btf.bus_booking_id
+         LEFT JOIN bus_routes br ON br.id = btf.route_id
+         LEFT JOIN buses b ON b.id = btf.bus_id
+         LEFT JOIN companies c ON c.id = btf.company_id
+         WHERE btf.user_id = $1
+           AND btf.feedback_type = 'comment'
+
+         UNION ALL
+
+         SELECT
+           rdr.id,
+           'driver' AS source_type,
+           'Driver comment' AS source_label,
+           CONCAT('R-', cr.id) AS item_reference,
+           COALESCE(rd.name, 'Rental driver') AS context_title,
+           CONCAT(COALESCE(rc.name, 'Rental car'), COALESCE(' | ' || rc.plate_number, '')) AS context_subtitle,
+           rdr.rating,
+           rdr.comment,
+           rdr.admin_reply,
+           rdr.admin_replied_at,
+           rdr.created_at
+         FROM rental_driver_reviews rdr
+         LEFT JOIN rental_drivers rd ON rd.id = rdr.driver_id
+         LEFT JOIN car_rentals cr ON cr.id = rdr.car_rental_id
+         LEFT JOIN rental_cars rc ON rc.id = cr.car_id
+         WHERE rdr.user_id = $1
+           AND rdr.review_type = 'review'
+       ) feedback
+       ORDER BY created_at DESC, id DESC`,
+      [userId]
+    );
+
+    const reports = await pool.query(
+      `SELECT *
+       FROM (
+         SELECT
+           btf.id,
+           'trip' AS source_type,
+           'Trip report' AS source_label,
+           COALESCE(bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS item_reference,
+           CONCAT(br.origin, ' to ', br.destination) AS context_title,
+           CONCAT(COALESCE(c.name, b.name, 'Bus'), COALESCE(' | ' || b.plate_number, '')) AS context_subtitle,
+           NULL::INT AS rating,
+           btf.comment,
+           btf.admin_reply,
+           btf.admin_replied_at,
+           btf.created_at
+         FROM bus_trip_feedback btf
+         LEFT JOIN bus_bookings bb ON bb.id = btf.bus_booking_id
+         LEFT JOIN bus_routes br ON br.id = btf.route_id
+         LEFT JOIN buses b ON b.id = btf.bus_id
+         LEFT JOIN companies c ON c.id = btf.company_id
+         WHERE btf.user_id = $1
+           AND btf.feedback_type = 'report'
+
+         UNION ALL
+
+         SELECT
+           rdr.id,
+           'driver' AS source_type,
+           'Driver report' AS source_label,
+           CONCAT('R-', cr.id) AS item_reference,
+           COALESCE(rd.name, 'Rental driver') AS context_title,
+           CONCAT(COALESCE(rc.name, 'Rental car'), COALESCE(' | ' || rc.plate_number, '')) AS context_subtitle,
+           rdr.rating,
+           rdr.comment,
+           rdr.admin_reply,
+           rdr.admin_replied_at,
+           rdr.created_at
+         FROM rental_driver_reviews rdr
+         LEFT JOIN rental_drivers rd ON rd.id = rdr.driver_id
+         LEFT JOIN car_rentals cr ON cr.id = rdr.car_rental_id
+         LEFT JOIN rental_cars rc ON rc.id = cr.car_id
+         WHERE rdr.user_id = $1
+           AND rdr.review_type = 'report'
+       ) feedback
+       ORDER BY created_at DESC, id DESC`,
+      [userId]
+    );
+
+    res.json({
+      user,
+      bus_bookings: busBookings.rows,
+      car_rentals: carRentals.rows,
+      comments: comments.rows,
+      reports: reports.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/roles', async (req, res) => {
   try {
     const roles = await fetchAdminRoles();
@@ -5746,6 +6045,9 @@ app.get('/api/admin/bookings', async (req, res) => {
          bb.id,
          bb.user_id,
          bb.route_id,
+         bb.booking_reference,
+         bb.round_trip_reference,
+         COALESCE(bb.trip_leg, 'outbound') AS trip_leg,
          bb.seat_number,
          bb.total_price,
          bb.package_weight_kg,
@@ -5762,9 +6064,46 @@ app.get('/api/admin/bookings', async (req, res) => {
          br.arrival_time,
          b.name AS bus_name,
          b.type AS bus_type,
+         b.plate_number,
          c.id AS company_id,
          c.name AS company_name,
-         c.theme_color AS color
+         c.theme_color AS color,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', btf.id,
+             'feedback_type', btf.feedback_type,
+             'comment', btf.comment,
+             'admin_reply', btf.admin_reply,
+             'admin_replied_at', btf.admin_replied_at,
+             'created_at', btf.created_at,
+             'route_id', btf.route_id,
+             'bus_id', btf.bus_id,
+             'company_id', btf.company_id
+           )
+           FROM bus_trip_feedback btf
+           WHERE btf.bus_booking_id = bb.id
+             AND btf.feedback_type = 'comment'
+           ORDER BY btf.created_at DESC, btf.id DESC
+           LIMIT 1
+         ) AS trip_feedback_comment,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', btf.id,
+             'feedback_type', btf.feedback_type,
+             'comment', btf.comment,
+             'admin_reply', btf.admin_reply,
+             'admin_replied_at', btf.admin_replied_at,
+             'created_at', btf.created_at,
+             'route_id', btf.route_id,
+             'bus_id', btf.bus_id,
+             'company_id', btf.company_id
+           )
+           FROM bus_trip_feedback btf
+           WHERE btf.bus_booking_id = bb.id
+             AND btf.feedback_type = 'report'
+           ORDER BY btf.created_at DESC, btf.id DESC
+           LIMIT 1
+         ) AS trip_feedback_report
        FROM bus_bookings bb
        JOIN users u ON u.id = bb.user_id
        JOIN bus_routes br ON br.id = bb.route_id
@@ -5775,6 +6114,120 @@ app.get('/api/admin/bookings', async (req, res) => {
     res.json({ bookings: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/bookings/group', async (req, res) => {
+  const bookingIds = Array.from(new Set((Array.isArray(req.body.booking_ids) ? req.body.booking_ids : []).map(Number).filter(Boolean)));
+  const packageWeightKg = normalizeMoney(req.body.package_weight_kg ?? 0);
+  const paymentMethod = normalizeText(req.body.payment_method).toLowerCase();
+  const status = normalizeText(req.body.status).toLowerCase();
+
+  if (!bookingIds.length) return res.status(400).json({ error: 'Booking ids are required.' });
+  if (!Number.isFinite(packageWeightKg) || packageWeightKg < 0) return res.status(400).json({ error: 'Package weight must be zero or greater.' });
+  if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
+  if (!BOOKING_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid booking status.' });
+
+  try {
+    const existingResult = await pool.query(
+      `SELECT bb.*, br.origin, br.destination
+       FROM bus_bookings bb
+       JOIN bus_routes br ON br.id = bb.route_id
+       WHERE bb.id = ANY($1::INT[])
+       ORDER BY bb.id`,
+      [bookingIds]
+    );
+    const existingRows = existingResult.rows;
+    if (existingRows.length !== bookingIds.length) {
+      return res.status(404).json({ error: 'One or more booking seats were not found.' });
+    }
+
+    const activeRows = existingRows.filter((row) => row.status !== 'cancelled');
+    const currentPackageWeight = existingRows.reduce((sum, row) => sum + Number(row.package_weight_kg || 0), 0);
+    const currentOverweightCharge = existingRows.reduce((sum, row) => sum + Number(row.overweight_charge || 0), 0);
+    const basePrices = existingRows.map((row) => Math.max(Number(row.total_price || 0) - Number(row.overweight_charge || 0), 0));
+    const baseTotal = basePrices.reduce((sum, value) => sum + value, 0);
+    const packageWeightForUpdate = status === 'cancelled' ? currentPackageWeight : packageWeightKg;
+    const allowanceKg = PACKAGE_ALLOWANCE_KG * existingRows.length;
+    const overweightKg = Math.max(packageWeightForUpdate - allowanceKg, 0);
+    const overweightCharge = overweightKg * OVERWEIGHT_RATE;
+
+    if (baseTotal <= 0) return res.status(400).json({ error: 'Total price must be greater than zero.' });
+
+    const allocatedWeights = existingRows.map((_, index) => {
+      const remainingRows = existingRows.length - index;
+      const used = existingRows.slice(0, index).reduce((sum, __, usedIndex) => sum + Number((packageWeightForUpdate / existingRows.length).toFixed(2)), 0);
+      if (remainingRows === 1) return Number((packageWeightForUpdate - used).toFixed(2));
+      return Number((packageWeightForUpdate / existingRows.length).toFixed(2));
+    });
+    const allocatedCharges = existingRows.map((_, index) => {
+      const remainingRows = existingRows.length - index;
+      const used = existingRows.slice(0, index).reduce((sum, __, usedIndex) => sum + Number((overweightCharge / existingRows.length).toFixed(2)), 0);
+      if (remainingRows === 1) return Number((overweightCharge - used).toFixed(2));
+      return Number((overweightCharge / existingRows.length).toFixed(2));
+    });
+
+    for (let index = 0; index < existingRows.length; index += 1) {
+      const row = existingRows[index];
+      const rowWeight = status === 'cancelled' ? Number(row.package_weight_kg || 0) : allocatedWeights[index];
+      const rowCharge = status === 'cancelled' ? Number(row.overweight_charge || 0) : allocatedCharges[index];
+      const rowTotal = basePrices[index] + rowCharge;
+      await pool.query(
+        `UPDATE bus_bookings
+         SET total_price = $1,
+             package_weight_kg = $2,
+             overweight_charge = $3,
+             payment_method = $4,
+             status = $5
+         WHERE id = $6`,
+        [rowTotal.toFixed(2), rowWeight.toFixed(2), rowCharge.toFixed(2), paymentMethod, status, row.id]
+      );
+    }
+
+    await syncBusBookingTransactions(bookingIds);
+
+    const cancelledIds = existingRows
+      .filter((row) => row.status !== 'cancelled' && status === 'cancelled')
+      .map((row) => row.id);
+    if (cancelledIds.length) {
+      const first = existingRows[0];
+      await createBusTicketNotifications(cancelledIds, {
+        type: 'bus_ticket_cancelled',
+        title: 'Your bus ticket was cancelled',
+        message: `${first.origin} to ${first.destination} was cancelled by admin. Open My Bookings for details.`,
+        action_type: 'view_trip',
+        metadata: { reason: 'admin grouped booking status cancelled' }
+      });
+    }
+
+    const packageChanged =
+      activeRows.length > 0 &&
+      status !== 'cancelled' &&
+      (
+        Math.abs(currentPackageWeight - packageWeightForUpdate) >= 0.01 ||
+        Math.abs(currentOverweightCharge - overweightCharge) >= 0.01
+      );
+    if (packageChanged) {
+      const first = existingRows[0];
+      await createBusTicketNotifications(bookingIds, {
+        type: 'bus_overweight_updated',
+        title: 'Package overweight charge updated',
+        message: `${first.origin} to ${first.destination}: package weight ${packageWeightForUpdate.toFixed(2)} kg, overweight charge $${overweightCharge.toFixed(2)}. Your ticket total was updated.`,
+        action_type: 'view_trip',
+        metadata: {
+          reason: 'admin grouped package overweight update',
+          package_weight_kg: Number(packageWeightForUpdate.toFixed(2)),
+          overweight_charge: Number(overweightCharge.toFixed(2)),
+          previous_package_weight_kg: Number(currentPackageWeight.toFixed(2)),
+          previous_overweight_charge: Number(currentOverweightCharge.toFixed(2)),
+          total_price: Number((baseTotal + overweightCharge).toFixed(2))
+        }
+      });
+    }
+
+    res.json({ updated_ids: bookingIds });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -5796,12 +6249,13 @@ app.put('/api/admin/bookings/:id', async (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Booking not found.' });
     const currentTotal = Number(existing.total_price || 0);
     const currentOverweightCharge = Number(existing.overweight_charge || 0);
+    const currentPackageWeight = Number(existing.package_weight_kg || 0);
     const baseBookingPrice = Math.max(currentTotal - currentOverweightCharge, 0);
     const packageWeightForUpdate = status === 'cancelled'
       ? Number(existing.package_weight_kg || 0)
       : packageWeightKg;
-    const overweightKg = Math.max(packageWeightForUpdate - 20, 0);
-    const overweightCharge = overweightKg * 0.5;
+    const overweightKg = Math.max(packageWeightForUpdate - PACKAGE_ALLOWANCE_KG, 0);
+    const overweightCharge = overweightKg * OVERWEIGHT_RATE;
     const totalPrice = baseBookingPrice + overweightCharge;
 
     if (!Number.isFinite(totalPrice) || totalPrice <= 0) return res.status(400).json({ error: 'Total price must be greater than zero.' });
@@ -5826,6 +6280,31 @@ app.put('/api/admin/bookings/:id', async (req, res) => {
         message: `${existing.origin} to ${existing.destination} was cancelled by admin. Open My Bookings for details.`,
         action_type: 'view_trip',
         metadata: { reason: 'admin booking status cancelled' }
+      });
+    }
+
+    const packageChanged =
+      existing.status !== 'cancelled' &&
+      status !== 'cancelled' &&
+      (
+        Math.abs(currentPackageWeight - packageWeightForUpdate) >= 0.01 ||
+        Math.abs(currentOverweightCharge - overweightCharge) >= 0.01
+      );
+
+    if (packageChanged) {
+      await createBusTicketNotifications(bookingId, {
+        type: 'bus_overweight_updated',
+        title: 'Package overweight charge updated',
+        message: `${existing.origin} to ${existing.destination}: package weight ${packageWeightForUpdate.toFixed(2)} kg, overweight charge $${overweightCharge.toFixed(2)}. Your ticket total was updated.`,
+        action_type: 'view_trip',
+        metadata: {
+          reason: 'admin package overweight update',
+          package_weight_kg: Number(packageWeightForUpdate.toFixed(2)),
+          overweight_charge: Number(overweightCharge.toFixed(2)),
+          previous_package_weight_kg: Number(currentPackageWeight.toFixed(2)),
+          previous_overweight_charge: Number(currentOverweightCharge.toFixed(2)),
+          total_price: Number(totalPrice.toFixed(2))
+        }
       });
     }
 
@@ -5864,6 +6343,71 @@ app.delete('/api/admin/bookings/:id', async (req, res) => {
   }
 });
 
+app.put('/api/admin/bus-trip-feedback/:id/reply', async (req, res) => {
+  const feedbackId = Number(req.params.id);
+  const reply = normalizeText(req.body.admin_reply || req.body.reply);
+  if (!feedbackId) return res.status(400).json({ error: 'Invalid feedback id.' });
+  if (!reply) return res.status(400).json({ error: 'Reply is required.' });
+
+  try {
+    const admin = await getOptionalAuthUserFromRequest(req);
+    const result = await pool.query(
+      `UPDATE bus_trip_feedback
+       SET admin_reply = $1,
+           admin_replied_at = NOW(),
+           admin_replied_by = $2
+       WHERE id = $3
+       RETURNING id, admin_reply, admin_replied_at`,
+      [reply, admin?.id || null, feedbackId]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Trip feedback not found.' });
+
+    const details = await pool.query(
+      `SELECT
+         btf.id,
+         btf.user_id,
+         btf.bus_booking_id,
+         btf.feedback_type,
+         COALESCE(bb.round_trip_reference, bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS ticket_reference,
+         br.origin,
+         br.destination,
+         b.name AS bus_name,
+         c.name AS company_name
+       FROM bus_trip_feedback btf
+       JOIN bus_bookings bb ON bb.id = btf.bus_booking_id
+       JOIN bus_routes br ON br.id = bb.route_id
+       JOIN buses b ON b.id = br.bus_id
+       LEFT JOIN companies c ON c.id = b.company_id
+       WHERE btf.id = $1`,
+      [feedbackId]
+    );
+    const feedback = details.rows[0];
+    if (feedback?.user_id && feedback?.bus_booking_id) {
+      const isReport = feedback.feedback_type === 'report';
+      await createUserNotification({
+        user_id: feedback.user_id,
+        bus_booking_id: feedback.bus_booking_id,
+        booking_reference: feedback.ticket_reference,
+        type: 'bus_trip_feedback_reply',
+        title: isReport ? 'Admin replied to your trip report' : 'Admin replied to your trip comment',
+        message: `Admin replied about ${feedback.origin} to ${feedback.destination}${feedback.company_name ? ` with ${feedback.company_name}` : ''}.`,
+        action_url: `/bookings?tab=trips&ticket=${encodeURIComponent(feedback.ticket_reference || feedback.bus_booking_id)}`,
+        action_type: 'view_trip',
+        metadata: {
+          feedback_id: feedback.id,
+          feedback_type: feedback.feedback_type,
+          bus_name: feedback.bus_name,
+          admin_reply: reply
+        }
+      });
+    }
+
+    res.json({ feedback: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/rental-drivers', async (req, res) => {
   try {
     const result = await pool.query(
@@ -5883,8 +6427,42 @@ app.get('/api/admin/rental-drivers', async (req, res) => {
          rd.created_at,
          (SELECT COUNT(*)::INT FROM car_rentals cr WHERE cr.hired_driver_id = rd.id AND cr.status IN ('pending', 'confirmed')) AS active_rentals,
          (SELECT COUNT(*)::INT FROM car_rentals cr WHERE cr.hired_driver_id = rd.id) AS total_rentals,
+         COALESCE((SELECT SUM(cr.driver_fee) FROM car_rentals cr WHERE cr.hired_driver_id = rd.id AND cr.status <> 'cancelled'), 0) AS driver_total_revenue,
+         COALESCE((SELECT SUM(cr.damage_charge) FROM car_rentals cr WHERE cr.hired_driver_id = rd.id AND cr.damage_responsibility = 'driver' AND cr.status <> 'cancelled'), 0) AS driver_damage_total,
+         (
+           COALESCE((SELECT SUM(cr.driver_fee) FROM car_rentals cr WHERE cr.hired_driver_id = rd.id AND cr.status <> 'cancelled'), 0)
+           - COALESCE((SELECT SUM(cr.damage_charge) FROM car_rentals cr WHERE cr.hired_driver_id = rd.id AND cr.damage_responsibility = 'driver' AND cr.status <> 'cancelled'), 0)
+         ) AS driver_net_revenue,
          (SELECT COUNT(*)::INT FROM rental_driver_reviews rdr WHERE rdr.driver_id = rd.id AND rdr.review_type = 'review') AS reviews_count,
          (SELECT COUNT(*)::INT FROM rental_driver_reviews rdr WHERE rdr.driver_id = rd.id AND rdr.review_type = 'report') AS reports_count,
+         COALESCE(
+           (
+             SELECT JSON_AGG(damage_row ORDER BY damage_row.returned_at DESC NULLS LAST, damage_row.id DESC)
+             FROM (
+               SELECT
+                 cr.id,
+                 cr.status,
+                 COALESCE(cr.pickup_datetime, cr.pickup_date + TIME '09:00:00') AS pickup_datetime,
+                 COALESCE(cr.return_datetime, cr.return_date + TIME '09:00:00') AS return_datetime,
+                 cr.returned_at,
+                 cr.damage_charge,
+                 COALESCE(cr.damage_description, '') AS damage_description,
+                 CONCAT(u.first_name, ' ', u.last_name) AS customer_name,
+                 u.email AS customer_email,
+                 rc.name AS car_name,
+                 rc.plate_number
+               FROM car_rentals cr
+               JOIN users u ON u.id = cr.user_id
+               JOIN rental_cars rc ON rc.id = cr.car_id
+               WHERE cr.hired_driver_id = rd.id
+                 AND cr.damage_responsibility = 'driver'
+                 AND COALESCE(cr.damage_charge, 0) > 0
+                 AND cr.status <> 'cancelled'
+               ORDER BY cr.returned_at DESC NULLS LAST, cr.id DESC
+             ) damage_row
+           ),
+           '[]'::JSON
+         ) AS driver_damage_details,
          COALESCE(
            (
              SELECT JSON_AGG(active_rental_row ORDER BY active_rental_row.pickup_datetime ASC, active_rental_row.id ASC)
@@ -6133,6 +6711,39 @@ app.put('/api/admin/rental-driver-feedback/:id/reply', async (req, res) => {
       [reply, admin?.id || null, feedbackId]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Feedback not found.' });
+    const details = await pool.query(
+      `SELECT
+         rdr.id,
+         rdr.user_id,
+         rdr.car_rental_id,
+         rdr.review_type,
+         rd.name AS driver_name,
+         rc.name AS car_name
+       FROM rental_driver_reviews rdr
+       LEFT JOIN rental_drivers rd ON rd.id = rdr.driver_id
+       LEFT JOIN car_rentals cr ON cr.id = rdr.car_rental_id
+       LEFT JOIN rental_cars rc ON rc.id = cr.car_id
+       WHERE rdr.id = $1`,
+      [feedbackId]
+    );
+    const feedback = details.rows[0];
+    if (feedback?.user_id && feedback?.car_rental_id) {
+      const isReport = feedback.review_type === 'report';
+      await createUserNotification({
+        user_id: feedback.user_id,
+        car_rental_id: feedback.car_rental_id,
+        type: 'driver_feedback_reply',
+        title: isReport ? 'Admin replied to your driver report' : 'Admin replied to your driver comment',
+        message: `Admin replied about ${feedback.driver_name || 'your driver'}${feedback.car_name ? ` for ${feedback.car_name}` : ''}.`,
+        action_url: `/bookings?tab=rentals&rental=${feedback.car_rental_id}`,
+        action_type: 'view_rental',
+        metadata: {
+          feedback_id: feedback.id,
+          review_type: feedback.review_type,
+          admin_reply: reply
+        }
+      });
+    }
     res.json({ feedback: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -6157,6 +6768,11 @@ app.get('/api/admin/rentals', async (req, res) => {
          cr.hired_driver_id,
          cr.rental_base_price,
          cr.driver_fee,
+         COALESCE(cr.late_return_hours, 0) AS late_return_hours,
+         COALESCE(cr.late_return_charge, 0) AS late_return_charge,
+         COALESCE(cr.damage_description, '') AS damage_description,
+         COALESCE(cr.damage_charge, 0) AS damage_charge,
+         COALESCE(cr.damage_responsibility, CASE WHEN cr.hired_driver_id IS NULL THEN 'renter' ELSE 'driver' END) AS damage_responsibility,
          cr.driver_name,
          cr.driver_license,
          cr.total_price,
@@ -6202,6 +6818,8 @@ app.put('/api/admin/rentals/:id', async (req, res) => {
   const driverLicense = normalizeText(req.body.driver_license);
   const paymentMethod = normalizeText(req.body.payment_method).toLowerCase();
   const status = normalizeText(req.body.status).toLowerCase();
+  const damageDescription = normalizeText(req.body.damage_description);
+  const damageCharge = normalizeMoney(req.body.damage_charge ?? 0);
 
   if (!rentalId) return res.status(400).json({ error: 'Invalid rental id.' });
   if (pickupDateTime.error) return res.status(400).json({ error: pickupDateTime.error });
@@ -6210,10 +6828,27 @@ app.put('/api/admin/rentals/:id', async (req, res) => {
   if (!driverName || !driverLicense) return res.status(400).json({ error: 'Driver name and license are required.' });
   if (!PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ error: 'Invalid payment method.' });
   if (!RENTAL_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid rental status.' });
+  if (!Number.isFinite(damageCharge) || damageCharge < 0) return res.status(400).json({ error: 'Damage charge must be zero or greater.' });
 
   try {
     const existing = await fetchAdminRentalById(rentalId);
     if (!existing) return res.status(404).json({ error: 'Rental not found.' });
+    const driverHourlyRate = Number(existing.hired_driver_hourly_rate || 0);
+    const pricing = calculateRentalPricing(pickupDateTime, returnDateTime, existing.daily_rate, driverHourlyRate);
+    const returnedAtDate = status === 'returned'
+      ? (existing.status === 'returned' && existing.returned_at ? new Date(existing.returned_at) : new Date())
+      : null;
+    const returnedAtValue = returnedAtDate
+      ? `${returnedAtDate.getFullYear()}-${String(returnedAtDate.getMonth() + 1).padStart(2, '0')}-${String(returnedAtDate.getDate()).padStart(2, '0')} ${String(returnedAtDate.getHours()).padStart(2, '0')}:${String(returnedAtDate.getMinutes()).padStart(2, '0')}:${String(returnedAtDate.getSeconds()).padStart(2, '0')}`
+      : null;
+    const lateHours = returnedAtDate && returnedAtDate > returnDateTime.date
+      ? Math.max(1, Math.ceil((returnedAtDate - returnDateTime.date) / 3600000))
+      : 0;
+    const lateHourlyRate = Number(existing.daily_rate || 0) / 24 + (existing.hired_driver_id ? driverHourlyRate : 0);
+    const lateReturnCharge = Number((lateHours * lateHourlyRate).toFixed(2));
+    const damageResponsibility = existing.hired_driver_id ? 'driver' : 'renter';
+    const renterDamageCharge = damageResponsibility === 'renter' ? damageCharge : 0;
+    const totalPrice = Number((pricing.basePrice + pricing.driverFee + lateReturnCharge + renterDamageCharge).toFixed(2));
 
     await pool.query(
       `UPDATE car_rentals
@@ -6221,38 +6856,41 @@ app.put('/api/admin/rentals/:id', async (req, res) => {
            return_date = $2,
            pickup_datetime = $3,
            return_datetime = $4,
-           rental_hours = GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)),
-           hourly_charge = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2),
-           rental_base_price = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2),
-           driver_fee = CASE
-             WHEN car_rentals.hired_driver_id IS NULL THEN 0
-             ELSE ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * COALESCE((SELECT hourly_rate FROM rental_drivers WHERE id = car_rentals.hired_driver_id), 0))::NUMERIC, 2)
-           END,
-           total_price = ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * (rc.daily_rate / 24.0))::NUMERIC, 2) + CASE
-             WHEN car_rentals.hired_driver_id IS NULL THEN 0
-             ELSE ROUND((GREATEST(1, CEIL(EXTRACT(EPOCH FROM (($4)::TIMESTAMP - ($3)::TIMESTAMP)) / 3600.0)) * COALESCE((SELECT hourly_rate FROM rental_drivers WHERE id = car_rentals.hired_driver_id), 0))::NUMERIC, 2)
-           END,
-           driver_name = $5,
-           driver_license = $6,
-           payment_method = ($7)::payment_method,
-           status = ($8)::booking_status,
-           returned_at = CASE
-             WHEN ($8)::booking_status = 'returned'::booking_status AND car_rentals.status <> 'returned'::booking_status THEN NOW()
-             WHEN ($8)::booking_status = 'returned'::booking_status THEN COALESCE(car_rentals.returned_at, NOW())
-             ELSE NULL
-           END
-        FROM rental_cars rc
-       WHERE car_rentals.id = $9
-         AND rc.id = car_rentals.car_id`,
+           rental_hours = $5,
+           hourly_charge = $6,
+           rental_base_price = $6,
+           driver_fee = $7,
+           late_return_hours = $8,
+           late_return_charge = $9,
+           damage_description = $10,
+           damage_charge = $11,
+           damage_responsibility = $12,
+           total_price = $13,
+           driver_name = $14,
+           driver_license = $15,
+           payment_method = ($16)::payment_method,
+           status = ($17)::booking_status,
+           returned_at = $18
+       WHERE id = $19`,
       [
         pickupDateTime.dateKey,
         returnDateTime.dateKey,
         pickupDateTime.value,
         returnDateTime.value,
+        pricing.hours,
+        pricing.basePrice,
+        pricing.driverFee,
+        lateHours,
+        lateReturnCharge,
+        damageDescription,
+        damageCharge,
+        damageResponsibility,
+        totalPrice,
         driverName,
         driverLicense,
         paymentMethod,
         status,
+        returnedAtValue,
         rentalId
       ]
     );
@@ -6823,6 +7461,89 @@ app.put('/api/my/profile/password', async (req, res) => {
   }
 });
 
+async function fetchUserTripForFeedback(reference, userId) {
+  const result = await pool.query(
+    `SELECT
+       bb.id,
+       bb.user_id,
+       bb.route_id,
+       bb.status,
+       COALESCE(bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0'))) AS booking_reference,
+       bb.round_trip_reference,
+       COALESCE(bb.trip_leg, 'outbound') AS trip_leg,
+       r.departure_time,
+       r.origin,
+       r.destination,
+       b.id AS bus_id,
+       b.name AS bus_name,
+       b.type AS bus_type,
+       b.plate_number,
+       c.id AS company_id,
+       c.name AS company_name
+     FROM bus_bookings bb
+     JOIN bus_routes r ON r.id = bb.route_id
+     JOIN buses b ON b.id = r.bus_id
+     LEFT JOIN companies c ON c.id = b.company_id
+     WHERE bb.user_id = $1
+       AND (
+         bb.booking_reference = $2
+         OR bb.round_trip_reference = $2
+         OR CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0')) = $2
+       )
+     ORDER BY
+       CASE WHEN COALESCE(bb.trip_leg, 'outbound') = 'outbound' THEN 0 ELSE 1 END,
+       r.departure_time ASC,
+       bb.id ASC
+     LIMIT 1`,
+    [userId, reference]
+  );
+  return result.rows[0] || null;
+}
+
+function tripFeedbackIsOpen(booking) {
+  const status = String(booking?.status || '').toLowerCase();
+  if (status === 'cancelled') return false;
+  const departure = new Date(booking?.departure_time);
+  return !Number.isNaN(departure.getTime()) && departure <= new Date();
+}
+
+async function submitBusTripFeedback(req, res, feedbackType) {
+  const reference = normalizeText(req.params.reference);
+  const comment = normalizeText(req.body.comment || req.body.report);
+  if (!reference) return res.status(400).json({ error: 'Ticket reference is required.' });
+  if (!comment) return res.status(400).json({ error: feedbackType === 'report' ? 'Report detail is required.' : 'Trip comment is required.' });
+
+  try {
+    const user = await getAuthUserFromRequest(req);
+    const booking = await fetchUserTripForFeedback(reference, user.id);
+    if (!booking) return res.status(404).json({ error: 'Ticket not found.' });
+    if (String(booking.status || '').toLowerCase() === 'cancelled') return res.status(400).json({ error: 'Cancelled trip tickets cannot receive feedback.' });
+    if (!tripFeedbackIsOpen(booking)) return res.status(400).json({ error: 'Trip feedback unlocks once the departure time has started.' });
+
+    const result = await pool.query(
+      `INSERT INTO bus_trip_feedback (
+         user_id,
+         bus_booking_id,
+         route_id,
+         company_id,
+         bus_id,
+         feedback_type,
+         comment
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, feedback_type, comment, created_at`,
+      [user.id, booking.id, booking.route_id, booking.company_id || null, booking.bus_id || null, feedbackType, comment]
+    );
+
+    res.status(201).json({
+      message: feedbackType === 'report' ? 'Trip report submitted successfully.' : 'Trip comment saved successfully.',
+      feedback: result.rows[0]
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+}
+
 app.get('/api/my/bookings/trips', async (req, res) => {
   try {
     const user = await getAuthUserFromRequest(req);
@@ -6838,6 +7559,8 @@ app.get('/api/my/bookings/trips', async (req, res) => {
          bb.total_price,
          COALESCE(bb.original_price, bb.total_price) AS original_price,
          COALESCE(bb.discount_amount, 0) AS discount_amount,
+         COALESCE(bb.package_weight_kg, 0) AS package_weight_kg,
+         COALESCE(bb.overweight_charge, 0) AS overweight_charge,
          bb.payment_method,
          bb.status,
          bb.created_at,
@@ -6859,7 +7582,60 @@ app.get('/api/my/bookings/trips', async (req, res) => {
          b.plate_number,
          c.name AS company_name,
          c.theme_color AS color,
-         c.theme_bg AS bg
+         c.theme_bg AS bg,
+         COALESCE((
+           SELECT JSON_AGG(
+             JSON_BUILD_OBJECT(
+               'id', un.id,
+               'type', un.type,
+               'title', un.title,
+               'message', un.message,
+               'is_read', un.is_read,
+               'created_at', un.created_at,
+               'metadata', un.metadata
+             )
+             ORDER BY un.created_at DESC, un.id DESC
+           )
+           FROM user_notifications un
+           WHERE un.user_id = bb.user_id
+             AND (
+               un.bus_booking_id = bb.id
+               OR un.booking_reference = COALESCE(bb.round_trip_reference, bb.booking_reference, CONCAT('BT-', LPAD(bb.id::TEXT, 6, '0')))
+               OR un.booking_reference = bb.booking_reference
+             )
+         ), '[]'::JSON) AS notifications,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', btf.id,
+             'feedback_type', btf.feedback_type,
+             'comment', btf.comment,
+             'admin_reply', btf.admin_reply,
+             'admin_replied_at', btf.admin_replied_at,
+             'created_at', btf.created_at
+           )
+           FROM bus_trip_feedback btf
+           WHERE btf.bus_booking_id = bb.id
+             AND btf.user_id = bb.user_id
+             AND btf.feedback_type = 'comment'
+           ORDER BY btf.created_at DESC, btf.id DESC
+           LIMIT 1
+         ) AS my_trip_comment,
+         (
+           SELECT JSON_BUILD_OBJECT(
+             'id', btf.id,
+             'feedback_type', btf.feedback_type,
+             'comment', btf.comment,
+             'admin_reply', btf.admin_reply,
+             'admin_replied_at', btf.admin_replied_at,
+             'created_at', btf.created_at
+           )
+           FROM bus_trip_feedback btf
+           WHERE btf.bus_booking_id = bb.id
+             AND btf.user_id = bb.user_id
+             AND btf.feedback_type = 'report'
+           ORDER BY btf.created_at DESC, btf.id DESC
+           LIMIT 1
+         ) AS my_trip_report
        FROM bus_bookings bb
        JOIN bus_routes r ON r.id = bb.route_id
        JOIN buses b ON b.id = r.bus_id
@@ -6894,6 +7670,11 @@ app.get('/api/my/bookings/trips', async (req, res) => {
           subtotal_amount: 0,
           discount_amount: 0,
           total_amount: 0,
+          package_weight_kg: 0,
+          overweight_charge: 0,
+          notifications: [],
+          my_trip_comment: null,
+          my_trip_report: null,
           legs: []
         });
       }
@@ -6905,6 +7686,19 @@ app.get('/api/my/bookings/trips', async (req, res) => {
       ticket.subtotal_amount += Number(row.original_price || row.total_price || 0);
       ticket.discount_amount += Number(row.discount_amount || 0);
       ticket.total_amount += Number(row.total_price || 0);
+      ticket.package_weight_kg += Number(row.package_weight_kg || 0);
+      ticket.overweight_charge += Number(row.overweight_charge || 0);
+      (Array.isArray(row.notifications) ? row.notifications : []).forEach((notification) => {
+        if (!ticket.notifications.some((item) => Number(item.id) === Number(notification.id))) {
+          ticket.notifications.push(notification);
+        }
+      });
+      if (row.my_trip_comment && (!ticket.my_trip_comment || new Date(row.my_trip_comment.created_at) > new Date(ticket.my_trip_comment.created_at))) {
+        ticket.my_trip_comment = row.my_trip_comment;
+      }
+      if (row.my_trip_report && (!ticket.my_trip_report || new Date(row.my_trip_report.created_at) > new Date(ticket.my_trip_report.created_at))) {
+        ticket.my_trip_report = row.my_trip_report;
+      }
 
       const legKey = `${row.trip_leg || 'outbound'}-${row.booking_reference || row.route_id}`;
       let leg = ticket.legs.find((item) => item.leg_key === legKey);
@@ -6919,6 +7713,8 @@ app.get('/api/my/bookings/trips', async (req, res) => {
           total_amount: 0,
           subtotal_amount: 0,
           discount_amount: 0,
+          package_weight_kg: 0,
+          overweight_charge: 0,
           payment_method: row.payment_method,
           status: row.status,
           origin: row.origin,
@@ -6944,6 +7740,8 @@ app.get('/api/my/bookings/trips', async (req, res) => {
       leg.subtotal_amount += Number(row.original_price || row.total_price || 0);
       leg.discount_amount += Number(row.discount_amount || 0);
       leg.total_amount += Number(row.total_price || 0);
+      leg.package_weight_kg += Number(row.package_weight_kg || 0);
+      leg.overweight_charge += Number(row.overweight_charge || 0);
     });
 
     const trips = Array.from(tickets.values())
@@ -6952,12 +7750,17 @@ app.get('/api/my/bookings/trips', async (req, res) => {
         subtotal_amount: Number(ticket.subtotal_amount.toFixed(2)),
         discount_amount: Number(ticket.discount_amount.toFixed(2)),
         total_amount: Number(ticket.total_amount.toFixed(2)),
+        package_weight_kg: Number(ticket.package_weight_kg.toFixed(2)),
+        overweight_charge: Number(ticket.overweight_charge.toFixed(2)),
+        notifications: ticket.notifications.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
         legs: ticket.legs
           .map((leg) => ({
             ...leg,
             subtotal_amount: Number(leg.subtotal_amount.toFixed(2)),
             discount_amount: Number(leg.discount_amount.toFixed(2)),
-            total_amount: Number(leg.total_amount.toFixed(2))
+            total_amount: Number(leg.total_amount.toFixed(2)),
+            package_weight_kg: Number(leg.package_weight_kg.toFixed(2)),
+            overweight_charge: Number(leg.overweight_charge.toFixed(2))
           }))
           .sort((a, b) => (a.leg_type === 'outbound' ? -1 : 1) - (b.leg_type === 'outbound' ? -1 : 1))
       }))
@@ -6967,6 +7770,14 @@ app.get('/api/my/bookings/trips', async (req, res) => {
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
+});
+
+app.post('/api/my/bookings/trips/:reference/comment', async (req, res) => {
+  await submitBusTripFeedback(req, res, 'comment');
+});
+
+app.post('/api/my/bookings/trips/:reference/report', async (req, res) => {
+  await submitBusTripFeedback(req, res, 'report');
 });
 
 app.post('/api/my/bookings/trips/:reference/cancel', async (req, res) => {

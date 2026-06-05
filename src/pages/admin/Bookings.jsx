@@ -87,20 +87,82 @@ function statusBadge(status) {
   return 'badge-red';
 }
 
-function calculatePackageSummary(form) {
+function calculatePackageSummary(form, seatCount = 1) {
   const parsedBasePrice = Number(form.base_booking_price || 0);
   const parsedPackageWeight = Number(form.package_weight_kg || 0);
   const basePrice = Number.isFinite(parsedBasePrice) ? parsedBasePrice : 0;
   const packageWeight = Number.isFinite(parsedPackageWeight) ? Math.max(parsedPackageWeight, 0) : 0;
-  const overweightKg = Math.max(packageWeight - PACKAGE_ALLOWANCE_KG, 0);
+  const allowanceKg = PACKAGE_ALLOWANCE_KG * Math.max(1, Number(seatCount || 1));
+  const overweightKg = Math.max(packageWeight - allowanceKg, 0);
   const overweightCharge = overweightKg * OVERWEIGHT_RATE;
   return {
     basePrice,
     packageWeight,
+    allowanceKg,
     overweightKg,
     overweightCharge,
     finalPrice: basePrice + overweightCharge
   };
+}
+
+function getTripFeedbackItems(booking) {
+  if (!booking) return [];
+  return [
+    { key: 'comment', label: 'Comment', feedback: booking.trip_feedback_comment, color: 'var(--accent)' },
+    { key: 'report', label: 'Report', feedback: booking.trip_feedback_report, color: 'var(--red)' }
+  ].filter((item) => item.feedback?.id);
+}
+
+function bookingGroupKey(booking) {
+  return booking.booking_reference || `${booking.id}`;
+}
+
+function mergeFeedback(current, next) {
+  if (!current) return next || null;
+  if (!next) return current;
+  return new Date(next.created_at).getTime() > new Date(current.created_at).getTime() ? next : current;
+}
+
+function groupBookingRows(rows) {
+  const groups = new Map();
+
+  rows.forEach((booking) => {
+    const key = bookingGroupKey(booking);
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        ...booking,
+        booking_group_key: key,
+        booking_ids: [booking.id],
+        group_count: 1,
+        seat_numbers: [booking.seat_number].filter(Boolean),
+        total_price: Number(booking.total_price || 0),
+        package_weight_kg: Number(booking.package_weight_kg || 0),
+        overweight_charge: Number(booking.overweight_charge || 0)
+      });
+      return;
+    }
+
+    existing.booking_ids.push(booking.id);
+    existing.group_count += 1;
+    if (booking.seat_number && !existing.seat_numbers.includes(booking.seat_number)) {
+      existing.seat_numbers.push(booking.seat_number);
+    }
+    existing.seat_number = existing.seat_numbers.join(', ');
+    existing.total_price = Number(existing.total_price || 0) + Number(booking.total_price || 0);
+    existing.package_weight_kg = Number(existing.package_weight_kg || 0) + Number(booking.package_weight_kg || 0);
+    existing.overweight_charge = Number(existing.overweight_charge || 0) + Number(booking.overweight_charge || 0);
+    existing.trip_feedback_comment = mergeFeedback(existing.trip_feedback_comment, booking.trip_feedback_comment);
+    existing.trip_feedback_report = mergeFeedback(existing.trip_feedback_report, booking.trip_feedback_report);
+  });
+
+  return Array.from(groups.values()).map((booking) => ({
+    ...booking,
+    seat_number: booking.seat_numbers?.join(', ') || booking.seat_number || '',
+    total_price: Number(booking.total_price || 0).toFixed(2),
+    package_weight_kg: Number(booking.package_weight_kg || 0).toFixed(2),
+    overweight_charge: Number(booking.overweight_charge || 0).toFixed(2)
+  }));
 }
 
 function isDateFilterValue(value) {
@@ -163,7 +225,7 @@ function buildBookingFilterSearch(state) {
 function exportCsv(rows) {
   const headers = ['ID', 'User', 'Email', 'Phone', 'Route', 'Departure', 'Arrival', 'Seat', 'Package Weight', 'Overweight Charge', 'Booked At', 'Paid', 'Payment', 'Status'];
   const body = rows.map((booking) => [
-    booking.id,
+    booking.booking_reference || booking.id,
     booking.user_name,
     booking.email,
     booking.phone,
@@ -190,9 +252,24 @@ function exportCsv(rows) {
   URL.revokeObjectURL(url);
 }
 
-function BookingModal({ form, error, saving, onChange, onSubmit, onClose }) {
-  const packageSummary = calculatePackageSummary(form);
+function BookingModal({
+  booking,
+  form,
+  error,
+  saving,
+  feedbackReplyDrafts,
+  savingFeedbackReplyId,
+  onFeedbackReplyChange,
+  onFeedbackReplySave,
+  onChange,
+  onSubmit,
+  onClose
+}) {
+  const groupedSeatCount = Math.max(1, Number(booking?.group_count || 1));
+  const isGroupedBooking = groupedSeatCount > 1;
+  const packageSummary = calculatePackageSummary(form, groupedSeatCount);
   const packageLocked = form.status === 'cancelled';
+  const feedbackItems = getTripFeedbackItems(booking);
 
   return (
     <div className="modal-overlay">
@@ -200,7 +277,9 @@ function BookingModal({ form, error, saving, onChange, onSubmit, onClose }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
           <div>
             <div className="modal-title">Edit booking</div>
-            <div className="modal-sub">Update seat, payment, and status</div>
+            <div className="modal-sub">
+              {isGroupedBooking ? `Update payment, status, and package charge for ${groupedSeatCount} seats` : 'Update seat, payment, and status'}
+            </div>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>
             <Icon d={icons.x} size={12} />
@@ -212,7 +291,14 @@ function BookingModal({ form, error, saving, onChange, onSubmit, onClose }) {
           </div>
         ) : null}
         <div className="form-row">
-          <input name="seat_number" placeholder="Seat number" value={form.seat_number} onChange={onChange} />
+          <input
+            name="seat_number"
+            placeholder="Seat number"
+            value={form.seat_number}
+            onChange={onChange}
+            disabled={isGroupedBooking}
+            title={isGroupedBooking ? 'Grouped bookings keep the original individual seats.' : undefined}
+          />
           <input name="total_price" type="number" min="0" step="0.01" placeholder="Total price" value={packageSummary.finalPrice.toFixed(2)} readOnly />
         </div>
         <div style={{ marginBottom: 14 }}>
@@ -233,7 +319,9 @@ function BookingModal({ form, error, saving, onChange, onSubmit, onClose }) {
             }}
           />
           <div className="td-muted" style={{ fontSize: 11, marginTop: 6 }}>
-            {packageLocked ? 'Cancelled bookings cannot edit overweight package charge.' : 'Allowance 20kg. Overweight charge $0.50/kg.'}
+            {packageLocked
+              ? 'Cancelled bookings cannot edit overweight package charge.'
+              : `Allowance ${packageSummary.allowanceKg.toFixed(0)}kg. Overweight charge $0.50/kg.`}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginTop: 10 }}>
             <div style={{ padding: '8px 10px', borderRadius: 8, background: 'var(--glass)', border: '0.5px solid var(--glass-border)' }}>
@@ -258,6 +346,45 @@ function BookingModal({ form, error, saving, onChange, onSubmit, onClose }) {
             {STATUS_TABS.filter((status) => status !== 'all').map((status) => <option key={status} value={status}>{status}</option>)}
           </select>
         </div>
+        {feedbackItems.length ? (
+          <div style={{ marginTop: 16, display: 'grid', gap: 10 }}>
+            <div className="label">Trip feedback</div>
+            {feedbackItems.map((item) => {
+              const feedback = item.feedback;
+              const draft = feedbackReplyDrafts[feedback.id] ?? feedback.admin_reply ?? '';
+              return (
+                <div key={feedback.id} style={{ padding: 12, borderRadius: 8, border: '0.5px solid var(--glass-border)', background: 'var(--glass)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                    <span className={`badge ${item.key === 'report' ? 'badge-red' : 'badge-blue'}`}>{item.label}</span>
+                    <span className="td-muted" style={{ fontSize: 11 }}>{formatDateTime(feedback.created_at)}</span>
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: 12.5, lineHeight: 1.45, color: 'var(--text-1)' }}>{feedback.comment}</div>
+                  {feedback.admin_reply ? (
+                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--green)' }}>
+                      Admin reply: {feedback.admin_reply}
+                    </div>
+                  ) : null}
+                  <textarea
+                    value={draft}
+                    onChange={(event) => onFeedbackReplyChange(feedback.id, event.target.value)}
+                    placeholder={`Reply to this trip ${item.key}`}
+                    rows={3}
+                    style={{ marginTop: 10, width: '100%', resize: 'vertical' }}
+                  />
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    type="button"
+                    style={{ marginTop: 8 }}
+                    onClick={() => onFeedbackReplySave(feedback.id)}
+                    disabled={savingFeedbackReplyId === feedback.id}
+                  >
+                    {savingFeedbackReplyId === feedback.id ? 'Saving reply...' : 'Save reply'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         <div className="modal-btns" style={{ marginTop: 18 }}>
           <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn btn-primary" onClick={onSubmit} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
@@ -274,7 +401,7 @@ function DeleteModal({ booking, deleting, onCancel, onConfirm }) {
       <div className="modal-card" style={{ maxWidth: 440 }}>
         <div className="modal-title">Delete booking?</div>
         <div className="modal-sub" style={{ marginBottom: 18 }}>
-          Booking #{booking.id} will be removed from the database.
+          Booking {booking.booking_reference || `#${booking.id}`} will be removed from the database.
         </div>
         <div className="modal-btns">
           <button className="btn btn-ghost" onClick={onCancel} disabled={deleting}>Cancel</button>
@@ -302,6 +429,8 @@ export default function Bookings() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [feedbackReplyDrafts, setFeedbackReplyDrafts] = useState({});
+  const [savingFeedbackReplyId, setSavingFeedbackReplyId] = useState(null);
   const [deletingBooking, setDeletingBooking] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -339,9 +468,12 @@ export default function Bookings() {
     try {
       setPageError('');
       const data = await parseJsonResponse(await fetch('/api/admin/bookings'));
-      setBookings(data.bookings || []);
+      const rows = data.bookings || [];
+      setBookings(rows);
+      return rows;
     } catch (error) {
       setPageError(error.message || 'Unable to load bookings.');
+      return [];
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -361,6 +493,8 @@ export default function Bookings() {
         || String(booking.company_id || 'none') === companyFilter;
       const haystack = [
         booking.id,
+        booking.booking_reference,
+        booking.round_trip_reference,
         booking.user_name,
         booking.email,
         booking.phone,
@@ -372,12 +506,16 @@ export default function Bookings() {
         booking.company_name,
         booking.bus_name,
         booking.bus_type,
-        booking.payment_method
+        booking.payment_method,
+        booking.trip_feedback_comment?.comment,
+        booking.trip_feedback_comment?.admin_reply,
+        booking.trip_feedback_report?.comment,
+        booking.trip_feedback_report?.admin_reply
       ].filter(Boolean).join(' ').toLowerCase();
       return matchesStatus && matchesDate && matchesCompany && (!normalized || haystack.includes(normalized));
     });
 
-    return [...filtered].sort((a, b) => {
+    return groupBookingRows(filtered).sort((a, b) => {
       let compare = 0;
       if (sortBy === 'id') {
         compare = Number(a.id || 0) - Number(b.id || 0);
@@ -416,7 +554,12 @@ export default function Bookings() {
   function openEdit(booking) {
     const overweightCharge = Number(booking.overweight_charge || 0);
     const baseBookingPrice = Math.max(Number(booking.total_price || 0) - overweightCharge, 0);
+    const nextReplyDrafts = {};
+    getTripFeedbackItems(booking).forEach((item) => {
+      nextReplyDrafts[item.feedback.id] = item.feedback.admin_reply || '';
+    });
     setEditing(booking);
+    setFeedbackReplyDrafts(nextReplyDrafts);
     setForm({
       seat_number: booking.seat_number || '',
       total_price: String(booking.total_price || ''),
@@ -434,6 +577,7 @@ export default function Bookings() {
     setEditing(null);
     setForm(EMPTY_FORM);
     setFormError('');
+    setFeedbackReplyDrafts({});
   }
 
   function handleChange(event) {
@@ -446,11 +590,12 @@ export default function Bookings() {
     setSaving(true);
     setFormError('');
     try {
+      const isGroupedBooking = Number(editing.group_count || 1) > 1;
       await parseJsonResponse(
-        await fetch(`/api/admin/bookings/${editing.id}`, {
+        await fetch(isGroupedBooking ? '/api/admin/bookings/group' : `/api/admin/bookings/${editing.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form)
+          body: JSON.stringify(isGroupedBooking ? { ...form, booking_ids: editing.booking_ids || [] } : form)
         })
       );
       setEditing(null);
@@ -461,6 +606,36 @@ export default function Bookings() {
       setFormError(error.message || 'Unable to save booking.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  function handleFeedbackReplyChange(feedbackId, value) {
+    setFeedbackReplyDrafts((current) => ({ ...current, [feedbackId]: value }));
+  }
+
+  async function saveTripFeedbackReply(feedbackId) {
+    const reply = String(feedbackReplyDrafts[feedbackId] || '').trim();
+    if (!reply) {
+      setFormError('Reply is required.');
+      return;
+    }
+
+    setSavingFeedbackReplyId(feedbackId);
+    setFormError('');
+    try {
+      await parseJsonResponse(
+        await fetch(`/api/admin/bus-trip-feedback/${feedbackId}/reply`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ admin_reply: reply })
+        })
+      );
+      const rows = await loadBookings(false);
+      setEditing((current) => rows.find((booking) => booking.id === current?.id) || current);
+    } catch (error) {
+      setFormError(error.message || 'Unable to save trip feedback reply.');
+    } finally {
+      setSavingFeedbackReplyId(null);
     }
   }
 
@@ -577,9 +752,15 @@ export default function Bookings() {
                   const arrival = getScheduleParts(booking.arrival_time);
                   const packageWeight = Number(booking.package_weight_kg || 0);
                   const overweightCharge = Number(booking.overweight_charge || 0);
+                  const feedbackItems = getTripFeedbackItems(booking);
                   return (
-                    <tr key={booking.id}>
-                      <td style={{ color: 'var(--accent)', fontSize: 12 }}>#{booking.id}</td>
+                    <tr key={booking.booking_group_key || booking.id}>
+                      <td style={{ color: 'var(--accent)', fontSize: 12 }}>
+                        {booking.booking_reference || `#${booking.id}`}
+                        {Number(booking.group_count || 1) > 1 ? (
+                          <div className="td-muted" style={{ fontSize: 11 }}>{booking.group_count} seats</div>
+                        ) : null}
+                      </td>
                       <td style={{ fontWeight: 500 }}>{booking.user_name}</td>
                       <td>
                         <div style={{ fontSize: 12 }}>{booking.email}</div>
@@ -591,6 +772,15 @@ export default function Bookings() {
                           <span style={{ width: 7, height: 7, borderRadius: '50%', background: companyColor }} />
                           {booking.company_name || booking.bus_name}
                         </div>
+                        {feedbackItems.length ? (
+                          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 6 }}>
+                            {feedbackItems.map((item) => (
+                              <span key={item.feedback.id} className={`badge ${item.key === 'report' ? 'badge-red' : 'badge-blue'}`}>
+                                Trip {item.label}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         <div style={{ color: 'var(--accent)', fontWeight: 500 }}>
@@ -616,8 +806,21 @@ export default function Bookings() {
                       <td><span className={`badge ${statusBadge(booking.status)}`}>{booking.status}</span></td>
                       <td>
                         <div style={{ display: 'flex', gap: 5 }}>
-                          <button className="btn btn-ghost btn-sm" onClick={() => openEdit(booking)}><Icon d={icons.edit} size={12} /></button>
-                          <button className="btn btn-danger btn-sm" onClick={() => setDeletingBooking(booking)}><Icon d={icons.trash} size={12} /></button>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => openEdit(booking)}
+                            title={Number(booking.group_count || 1) > 1 ? 'Edit grouped booking package, payment, and status.' : 'Edit booking'}
+                          >
+                            <Icon d={icons.edit} size={12} />
+                          </button>
+                          <button
+                            className="btn btn-danger btn-sm"
+                            onClick={() => setDeletingBooking(booking)}
+                            disabled={Number(booking.group_count || 1) > 1}
+                            title={Number(booking.group_count || 1) > 1 ? 'Grouped multi-seat bookings are shown as one row.' : 'Delete booking'}
+                          >
+                            <Icon d={icons.trash} size={12} />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -633,7 +836,19 @@ export default function Bookings() {
       </div>
 
       {editing ? (
-        <BookingModal form={form} error={formError} saving={saving} onChange={handleChange} onSubmit={saveBooking} onClose={closeEdit} />
+        <BookingModal
+          booking={editing}
+          form={form}
+          error={formError}
+          saving={saving}
+          feedbackReplyDrafts={feedbackReplyDrafts}
+          savingFeedbackReplyId={savingFeedbackReplyId}
+          onFeedbackReplyChange={handleFeedbackReplyChange}
+          onFeedbackReplySave={saveTripFeedbackReply}
+          onChange={handleChange}
+          onSubmit={saveBooking}
+          onClose={closeEdit}
+        />
       ) : null}
       <DeleteModal booking={deletingBooking} deleting={deleting} onCancel={() => setDeletingBooking(null)} onConfirm={deleteBooking} />
     </div>
